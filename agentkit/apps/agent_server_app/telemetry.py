@@ -105,8 +105,10 @@ class Telemetry:
             }
             if exception:
                 self.handle_exception(span, exception)
-                attributes["error_type"] = exception.__class__.__name__
-
+                if getattr(exception, "status_code", None):
+                    attributes["error_type"] = f"{exception.__class__.__name__}_{exception.status_code}"
+                else:
+                    attributes["error_type"] = exception.__class__.__name__
             # only record invoke request latency metrics
             if (
                 hasattr(span, "start_time")
