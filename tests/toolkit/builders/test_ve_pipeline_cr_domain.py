@@ -88,3 +88,27 @@ def test_resolve_cr_domain_prefers_explicit_builder_provider(monkeypatch):
 
     domain = builder._resolve_cr_domain(cfg, "ap-southeast-1")
     assert domain == "ins-ap-southeast-1.cr.bytepluses.com"
+
+
+def test_cloud_strategy_sets_agentkit_region_in_builder_config(monkeypatch):
+    monkeypatch.delenv("AGENTKIT_CLOUD_PROVIDER", raising=False)
+    monkeypatch.delenv("CLOUD_PROVIDER", raising=False)
+
+    from agentkit.toolkit.config import CommonConfig, CloudStrategyConfig
+    from agentkit.toolkit.config.region_resolver import RegionConfigResolver
+    from agentkit.toolkit.strategies.cloud_strategy import CloudStrategy
+
+    strategy_config = CloudStrategyConfig.from_dict(
+        {"region": "ap-southeast-1"}, skip_render=True
+    )
+    common_config = CommonConfig(
+        agent_name="agentkit-app",
+        entry_point="agent.py",
+        launch_type="cloud",
+    )
+
+    strategy = CloudStrategy(config_manager=None, reporter=None)
+    builder_cfg = strategy._to_builder_config(common_config, strategy_config)
+
+    resolver = RegionConfigResolver.from_strategy_config(strategy_config)
+    assert builder_cfg.agentkit_region == resolver.resolve("agentkit")

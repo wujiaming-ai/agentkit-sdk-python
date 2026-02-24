@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Optional
 
 from agentkit.platform.configuration import VolcConfiguration, Endpoint, Credentials
+from agentkit.platform.console_urls import agentkit_enable_services_url
 from agentkit.platform.provider import CloudProvider
 from agentkit.platform.constants import DEFAULT_REGION_RULES
 
@@ -27,6 +28,7 @@ __all__ = [
     "CloudProvider",
     "resolve_endpoint",
     "resolve_credentials",
+    "agentkit_enable_services_url",
     "DEFAULT_REGION_RULES",
 ]
 

@@ -64,6 +64,10 @@ class VeCPCRBuilderConfig(AutoSerializableMixin):
         default=None,
         metadata={"system": True, "description": "Resolved cloud provider"},
     )
+    agentkit_region: str = field(
+        default="",
+        metadata={"system": True, "description": "AgentKit service region"},
+    )
 
     tos_bucket: str = field(
         default=AUTO_CREATE_VE,
@@ -1054,8 +1058,28 @@ class VeCPCRBuilder(Builder):
 
         except Exception as e:
             if "AccountDisable" in str(e):
+                from agentkit.platform import (
+                    VolcConfiguration,
+                    agentkit_enable_services_url,
+                )
+
+                provider = getattr(config, "cloud_provider", None) or getattr(
+                    getattr(config, "common_config", None), "cloud_provider", None
+                )
+                region_hint = (
+                    getattr(config, "agentkit_region", None)
+                    or getattr(config, "cp_region", None)
+                    or getattr(config, "cr_region", None)
+                    or getattr(config, "tos_region", None)
+                )
+                url = agentkit_enable_services_url(
+                    platform_config=VolcConfiguration(
+                        region=region_hint or None, provider=provider or None
+                    )
+                )
                 raise Exception(
-                    "Tos Service is not enabled, please enable it in the console. Enable services at: https://console.volcengine.com/agentkit/region:agentkit+cn-beijing/auth"
+                    "Tos Service is not enabled, please enable it in the console. "
+                    f"Enable services at: {url}"
                 )
             if "TooManyBuckets" in str(e):
                 raise Exception(

@@ -102,7 +102,13 @@ class LifecycleExecutor(BaseExecutor):
 
             if missing:
                 self.logger.warning(f"Services not enabled: {missing}")
-                return PreflightResult(passed=False, missing_services=missing)
+                from agentkit.platform import agentkit_enable_services_url
+
+                return PreflightResult(
+                    passed=False,
+                    missing_services=missing,
+                    auth_url=agentkit_enable_services_url(region=region),
+                )
 
             self.logger.debug(f"All required services are enabled: {required_list}")
             return PreflightResult(passed=True, missing_services=[])

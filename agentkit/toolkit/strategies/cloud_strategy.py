@@ -301,6 +301,7 @@ class CloudStrategy(Strategy):
         return VeCPCRBuilderConfig(
             common_config=common_config,
             cloud_provider=resolved_provider,
+            agentkit_region=resolver.resolve("agentkit"),
             cp_region=resolver.resolve("cp"),
             tos_bucket=strategy_config.tos_bucket,
             tos_region=resolver.resolve("tos"),

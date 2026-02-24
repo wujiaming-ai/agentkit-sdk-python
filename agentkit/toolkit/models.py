@@ -200,9 +200,7 @@ class PreflightResult:
 
     passed: bool
     missing_services: List[str] = field(default_factory=list)
-    auth_url: str = (
-        "https://console.volcengine.com/agentkit/region:agentkit+cn-beijing/auth"
-    )
+    auth_url: str = ""
 
     @property
     def message(self) -> str:

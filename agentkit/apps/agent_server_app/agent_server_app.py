@@ -169,20 +169,18 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             async def event_generator():
                 try:
                     stream_mode = (
-                        StreamingMode.SSE
-                        if req.streaming
-                        else StreamingMode.NONE
+                        StreamingMode.SSE if req.streaming else StreamingMode.NONE
                     )
                     runner = await self.server.get_runner_async(req.app_name)
                     async with Aclosing(
-                            runner.run_async(
-                                user_id=req.user_id,
-                                session_id=req.session_id,
-                                new_message=req.new_message,
-                                state_delta=req.state_delta,
-                                run_config=RunConfig(streaming_mode=stream_mode),
-                                invocation_id=req.invocation_id,
-                            )
+                        runner.run_async(
+                            user_id=req.user_id,
+                            session_id=req.session_id,
+                            new_message=req.new_message,
+                            state_delta=req.state_delta,
+                            run_config=RunConfig(streaming_mode=stream_mode),
+                            invocation_id=req.invocation_id,
+                        )
                     ) as agen:
                         async for event in agen:
                             # ADK Web renders artifacts from `actions.artifactDelta`
@@ -191,9 +189,9 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                             # 2) a content-less "action-only" event carrying `artifactDelta`
                             events_to_stream = [event]
                             if (
-                                    event.actions.artifact_delta
-                                    and event.content
-                                    and event.content.parts
+                                event.actions.artifact_delta
+                                and event.content
+                                and event.content.parts
                             ):
                                 content_event = event.model_copy(deep=True)
                                 content_event.actions.artifact_delta = {}
@@ -230,9 +228,9 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         routes = self.app.router.routes
         for i, r in enumerate(routes):
             if (
-                    getattr(r, "path", None) == "/run_sse"
-                    and "POST" in getattr(r, "methods", set())
-                    and getattr(r,"endpoint", None) == run_agent_sse
+                getattr(r, "path", None) == "/run_sse"
+                and "POST" in getattr(r, "methods", set())
+                and getattr(r, "endpoint", None) == run_agent_sse
             ):
                 routes.insert(0, routes.pop(i))
                 break
@@ -265,7 +263,9 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             # Determine app_name from loader
             app_names = self.server.agent_loader.list_agents()
             if not app_names:
-                exception = HTTPException(status_code=404, detail="No agents configured")
+                exception = HTTPException(
+                    status_code=404, detail="No agents configured"
+                )
                 telemetry.trace_agent_server_finish(
                     path="/invoke", func_result="", exception=exception
                 )
@@ -292,7 +292,6 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                     except Exception:
                         text = ""
             content = types.UserContent(parts=[types.Part(text=text or "")])
-
 
             # Ensure session exists
             session = await self.server.session_service.get_session(

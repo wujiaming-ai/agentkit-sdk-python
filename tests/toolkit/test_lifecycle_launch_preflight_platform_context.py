@@ -89,3 +89,45 @@ def test_lifecycle_launch_preflight_uses_platform_context(monkeypatch) -> None:
 
     after = VolcConfiguration()
     assert after.provider.value == "volcengine"
+
+
+def test_agentkit_enable_services_url_byteplus_region(monkeypatch) -> None:
+    from agentkit.platform.context import default_cloud_provider
+    from agentkit.platform import agentkit_enable_services_url
+
+    monkeypatch.delenv("AGENTKIT_CONSOLE_PROJECT_NAME", raising=False)
+
+    with default_cloud_provider("byteplus"):
+        url = agentkit_enable_services_url(region="ap-southeast-1")
+
+    assert (
+        url
+        == "https://console.byteplus.com/agentkit/region:agentkit+ap-southeast-1/auth?projectName=default"
+    )
+
+
+def test_preflight_sets_auth_url_by_provider_and_region(monkeypatch) -> None:
+    import agentkit.sdk.account.client as account_client_mod
+    from agentkit.platform.context import default_cloud_provider
+    from agentkit.toolkit.executors.build_executor import BuildExecutor
+    from agentkit.toolkit.reporter import SilentReporter
+
+    class _FakeAccountClient:
+        def __init__(self, region=None):
+            self.region = region
+
+        def get_services_status(self, service_names):
+            return {name: "Disabled" for name in service_names}
+
+    monkeypatch.setattr(account_client_mod, "AgentkitAccountClient", _FakeAccountClient)
+    monkeypatch.delenv("AGENTKIT_CONSOLE_PROJECT_NAME", raising=False)
+
+    ex = BuildExecutor(reporter=SilentReporter())
+    with default_cloud_provider("byteplus"):
+        result = ex._preflight_check("build", "cloud", region="ap-southeast-1")
+
+    assert result.passed is False
+    assert (
+        result.auth_url
+        == "https://console.byteplus.com/agentkit/region:agentkit+ap-southeast-1/auth?projectName=default"
+    )
