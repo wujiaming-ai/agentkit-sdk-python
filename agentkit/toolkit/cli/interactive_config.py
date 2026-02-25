@@ -178,6 +178,7 @@ class AutoPromptGenerator:
         dataclass_type: type,
         existing_config: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
+        carry_over_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         self.current_dataclass_type = dataclass_type
         if not is_dataclass(dataclass_type):
@@ -185,6 +186,12 @@ class AutoPromptGenerator:
 
         config = {}
         existing_config = existing_config or {}
+        if carry_over_config is not None and not isinstance(carry_over_config, dict):
+            raise TypeError(
+                "carry_over_config must be a dict when provided; "
+                f"got {type(carry_over_config).__name__}"
+            )
+        carry_over = existing_config if carry_over_config is None else carry_over_config
 
         # Get dataclass metadata
         # Try to get from class attributes; if not found, create instance to get field values
@@ -267,8 +274,8 @@ class AutoPromptGenerator:
             if field.metadata.get("hidden", False) or field.metadata.get(
                 "system", False
             ):
-                if field_name in existing_config:
-                    config[field_name] = existing_config[field_name]
+                if isinstance(carry_over, dict) and field_name in carry_over:
+                    config[field_name] = carry_over[field_name]
 
         # Filter out MISSING values
         filtered_config = {}
@@ -1222,8 +1229,14 @@ def generate_config_from_dataclass(
     dataclass_type: type,
     existing_config: Optional[Dict[str, Any]] = None,
     context: Optional[Dict[str, Any]] = None,
+    carry_over_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    return auto_prompt.generate_config(dataclass_type, existing_config, context=context)
+    return auto_prompt.generate_config(
+        dataclass_type,
+        existing_config,
+        context=context,
+        carry_over_config=carry_over_config,
+    )
 
 
 def create_common_config_interactively(
@@ -1245,6 +1258,11 @@ def create_common_config_interactively(
     """
     from agentkit.toolkit.config import CommonConfig
 
-    existing = CommonConfig.from_dict(existing_config or {})
-    config_dict = auto_prompt.generate_config(CommonConfig, existing.to_dict())
+    raw_existing_config = existing_config or {}
+    existing = CommonConfig.from_dict(raw_existing_config)
+    config_dict = auto_prompt.generate_config(
+        CommonConfig,
+        existing.to_dict(),
+        carry_over_config=raw_existing_config,
+    )
     return CommonConfig.from_dict(config_dict)

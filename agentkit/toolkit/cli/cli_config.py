@@ -372,7 +372,7 @@ def _interactive_config(config_file: Optional[str] = None):
     )
 
     common_config = create_common_config_interactively(
-        config.get_common_config().to_dict()
+        (config.get_raw_data() or {}).get("common", {})
     )
     config.update_common_config(common_config)
 
