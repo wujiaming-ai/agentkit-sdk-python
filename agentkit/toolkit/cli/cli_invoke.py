@@ -30,6 +30,26 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
+def _sanitize_headers_for_display(headers: dict) -> dict:
+    if not isinstance(headers, dict):
+        return {}
+    redacted_keys = {
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "x-auth-token",
+        "api-key",
+    }
+    out: dict = {}
+    for k, v in headers.items():
+        key = str(k)
+        if key.lower() in redacted_keys:
+            out[key] = "******"
+        else:
+            out[key] = v
+    return out
+
+
 def _extract_text_chunks_from_langchain_event(event: dict) -> list[str]:
     """Extract incremental text chunks from LangChain message_to_dict-style events.
 
@@ -211,13 +231,29 @@ def build_a2a_payload(
 
 
 def invoke_command(
-    config_file: Path = typer.Option("agentkit.yaml", help="Configuration file"),
+    config_file: Optional[Path] = typer.Option(
+        None, "--config-file", help="Configuration file"
+    ),
     message: str = typer.Argument(None, help="Simple message to send to agent"),
     payload: str = typer.Option(
         None, "--payload", "-p", help="JSON payload to send (advanced option)"
     ),
     headers: str = typer.Option(
         None, "--headers", "-h", help="JSON headers for request (advanced option)"
+    ),
+    runtime_id: str = typer.Option(
+        None, "--runtime-id", "-r", help="Runtime ID for direct invocation"
+    ),
+    endpoint: str = typer.Option(
+        None, "--endpoint", "-e", help="Endpoint URL for direct invocation"
+    ),
+    region: str = typer.Option(
+        None, "--region", help="Region for Runtime lookup (used with --runtime-id)"
+    ),
+    a2a: bool = typer.Option(
+        False,
+        "--a2a",
+        help="Force A2A JSON-RPC envelope (direct invocation mode only)",
     ),
     show_reasoning: bool = typer.Option(
         False,
@@ -262,8 +298,28 @@ def invoke_command(
             "[red]Error: Must provide either a message or --payload option.[/red]"
         )
         raise typer.Exit(1)
-    config = get_config(config_path=config_file)
-    common_config = config.get_common_config()
+
+    direct_mode = bool(runtime_id or endpoint)
+    if direct_mode and config_file is not None:
+        console.print(
+            "[red]Error: --config-file cannot be used with --runtime-id/--endpoint.[/red]"
+        )
+        raise typer.Exit(1)
+    if runtime_id and endpoint:
+        console.print(
+            "[red]Error: Cannot specify both --runtime-id and --endpoint.[/red]"
+        )
+        raise typer.Exit(1)
+    if region and not runtime_id:
+        console.print(
+            "[red]Error: --region can only be used together with --runtime-id.[/red]"
+        )
+        raise typer.Exit(1)
+    if a2a and not direct_mode:
+        console.print(
+            "[red]Error: --a2a can only be used with --runtime-id or --endpoint.[/red]"
+        )
+        raise typer.Exit(1)
 
     # Process headers
     default_headers = {
@@ -286,25 +342,27 @@ def invoke_command(
             )
             raise typer.Exit(1)
         final_headers.update(custom_headers)
-        console.print(f"[blue]Using merged headers: {final_headers}[/blue]")
-    else:
-        console.print(f"[blue]Using default headers: {final_headers}[/blue]")
-
-    final_payload = build_standard_payload(message, payload)
-    agent_type = getattr(common_config, "agent_type", "") or getattr(
-        common_config, "template_type", ""
-    )
-    is_a2a = isinstance(agent_type, str) and "a2a" in agent_type.lower()
-
-    # If it's an A2A Agent, reconstruct payload using A2A constructor
-    if is_a2a:
         console.print(
-            "[cyan]Detected A2A agent type - constructing A2A JSON-RPC envelope[/cyan]"
+            f"[blue]Using merged headers: {_sanitize_headers_for_display(final_headers)}[/blue]"
         )
-        final_payload = build_a2a_payload(message, payload, final_headers)
+    else:
+        console.print(
+            f"[blue]Using default headers: {_sanitize_headers_for_display(final_headers)}[/blue]"
+        )
 
     if apikey:
+        if runtime_id:
+            console.print(
+                "[red]Error: --apikey cannot be used together with --runtime-id. "
+                "--runtime-id mode resolves the Runtime and infers its auth type automatically: "
+                "for API Key (key_auth), omit auth flags and the CLI will fetch and inject the API key; "
+                'for JWT/OAuth (custom_jwt), provide an Authorization header via --headers \'{"Authorization":"Bearer <token>"}\'. '
+                "If you want to pass an API key manually, use --endpoint together with --apikey.[/red]"
+            )
+            raise typer.Exit(1)
         final_headers["Authorization"] = f"Bearer {apikey}"
+
+    final_payload = build_standard_payload(message, payload)
 
     from agentkit.toolkit.context import ExecutionContext
 
@@ -312,12 +370,72 @@ def invoke_command(
     ExecutionContext.set_reporter(reporter)
 
     executor = InvokeExecutor(reporter=reporter)
-    result = executor.execute(
-        payload=final_payload,
-        config_file=str(config_file),
-        headers=final_headers,
-        stream=None,  # Automatically determined by Runner
-    )
+
+    if direct_mode:
+        if endpoint and not apikey and not final_headers.get("Authorization"):
+            console.print(
+                "[red]Error: --endpoint requires --apikey or an Authorization header provided via --headers.[/red]"
+            )
+            raise typer.Exit(1)
+
+        direct_common = {
+            "agent_name": "direct_invoke",
+            "entry_point": "agent.py",
+            "launch_type": "cloud",
+        }
+
+        is_a2a_payload = isinstance(final_payload, dict) and bool(
+            final_payload.get("jsonrpc")
+        )
+        if a2a:
+            final_payload = build_a2a_payload(message, payload, final_headers)
+            is_a2a_payload = True
+
+        if is_a2a_payload:
+            direct_common["agent_type"] = "a2a"
+
+        direct_cloud: dict[str, Any] = {}
+        if region:
+            direct_cloud["region"] = region
+        if runtime_id:
+            direct_cloud["runtime_id"] = runtime_id
+        if endpoint:
+            direct_cloud["runtime_endpoint"] = endpoint
+            if apikey:
+                direct_cloud["runtime_apikey"] = apikey
+            else:
+                direct_cloud["runtime_auth_type"] = "custom_jwt"
+
+        config_dict = {"common": direct_common, "launch_types": {"cloud": direct_cloud}}
+
+        result = executor.execute(
+            payload=final_payload,
+            config_dict=config_dict,
+            headers=final_headers,
+            stream=None,
+        )
+    else:
+        config_path = config_file or Path("agentkit.yaml")
+        config = get_config(config_path=config_path)
+        common_config = config.get_common_config()
+
+        agent_type = getattr(common_config, "agent_type", "") or getattr(
+            common_config, "template_type", ""
+        )
+        is_a2a = isinstance(agent_type, str) and "a2a" in agent_type.lower()
+
+        if is_a2a:
+            console.print(
+                "[cyan]Detected A2A agent type - constructing A2A JSON-RPC envelope[/cyan]"
+            )
+            final_payload = build_a2a_payload(message, payload, final_headers)
+
+        result = executor.execute(
+            payload=final_payload,
+            config_file=str(config_path),
+            headers=final_headers,
+            stream=None,  # Automatically determined by Runner
+        )
 
     if not result.success:
         console.print(f"[red]❌ Invocation failed: {result.error}[/red]")

@@ -416,7 +416,8 @@ class VeAgentkitRuntimeRunner(Runner):
         """
         try:
             runner_config = config
-            is_jwt_auth = runner_config.runtime_auth_type == AUTH_TYPE_CUSTOM_JWT
+            effective_auth_type = runner_config.runtime_auth_type
+            is_jwt_auth = effective_auth_type == AUTH_TYPE_CUSTOM_JWT
 
             # Get Runtime endpoint and API key
             endpoint = runner_config.runtime_endpoint
@@ -455,6 +456,14 @@ class VeAgentkitRuntimeRunner(Runner):
                             error_code=ErrorCode.RESOURCE_NOT_FOUND,
                         )
                     raise e
+
+                authorizer = getattr(runtime, "authorizer_configuration", None)
+                if authorizer and getattr(authorizer, "custom_jwt_authorizer", None):
+                    effective_auth_type = AUTH_TYPE_CUSTOM_JWT
+                elif authorizer and getattr(authorizer, "key_auth", None):
+                    effective_auth_type = AUTH_TYPE_KEY_AUTH
+                is_jwt_auth = effective_auth_type == AUTH_TYPE_CUSTOM_JWT
+
                 endpoint = self.get_public_endpoint_of_runtime(runtime)
 
                 # Only fetch API key for key_auth mode
@@ -468,7 +477,7 @@ class VeAgentkitRuntimeRunner(Runner):
                 # Validate based on auth type
                 if not endpoint:
                     error_msg = "Failed to obtain Runtime endpoint. The 'agentkit invoke' command only supports public network endpoints."
-                    logger.error(f"{error_msg}, runtime: {runtime}")
+                    logger.error(error_msg)
                     return InvokeResult(
                         success=False,
                         error=error_msg,
@@ -476,7 +485,7 @@ class VeAgentkitRuntimeRunner(Runner):
                     )
                 if not is_jwt_auth and not api_key:
                     error_msg = "Failed to obtain Runtime API key."
-                    logger.error(f"{error_msg}, runtime: {runtime}")
+                    logger.error(error_msg)
                     return InvokeResult(
                         success=False,
                         error=error_msg,
