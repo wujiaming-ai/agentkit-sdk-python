@@ -17,7 +17,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -43,6 +46,8 @@ from agentkit.utils.global_config_io import (
 logger = logging.getLogger(__name__)
 
 VEFAAS_IAM_CREDENTIAL_PATH = "/var/run/secrets/iam/credential"
+VEFAAS_IAM_CREDENTIAL_FALLBACK_TTL_SECONDS = 60
+VEFAAS_IAM_CREDENTIAL_MIN_VALIDITY_SECONDS = 60
 
 
 @dataclass
@@ -59,6 +64,8 @@ class Credentials:
     access_key: str
     secret_key: str
     session_token: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    source: Optional[str] = None
 
     def __repr__(self) -> str:
         masked_sk = "*" * 6
@@ -68,7 +75,9 @@ class Credentials:
         return (
             f"Credentials(access_key='{self.access_key}', "
             f"secret_key='{masked_sk}', "
-            f"session_token={'***' if self.session_token else 'None'})"
+            f"session_token={'***' if self.session_token else 'None'}, "
+            f"expires_at={self.expires_at.isoformat() if self.expires_at else 'None'}, "
+            f"source={self.source or 'None'})"
         )
 
 
@@ -115,6 +124,15 @@ class VolcConfiguration:
             or normalize_cloud_provider(cfg_provider)
             or CloudProvider.VOLCENGINE
         )
+        self._vefaas_cache_mtime_ns: Optional[int] = None
+        self._vefaas_cache_loaded_at_monotonic: Optional[float] = None
+        self._vefaas_cache_credentials: Optional[Credentials] = None
+        self._vefaas_lock = threading.Lock()
+
+    def get_vefaas_iam_credentials(
+        self, *, force: bool = False
+    ) -> Optional[Credentials]:
+        return self._get_credential_from_vefaas_iam(force=force)
 
     @property
     def provider(self) -> CloudProvider:
@@ -202,11 +220,13 @@ class VolcConfiguration:
         """
         # 1. Explicit
         if self._ak and self._sk:
-            return Credentials(
+            creds = Credentials(
                 access_key=self._ak,
                 secret_key=self._sk,
                 session_token=self._token,
+                source="explicit",
             )
+            return creds
 
         # 2. Service-specific Environment Variables
         if creds := self._get_service_env_credentials(service_key):
@@ -293,7 +313,7 @@ class VolcConfiguration:
                 sk = sk or _get(f"VOLC_{svc_upper}_SECRETKEY")
 
         if ak and sk:
-            return Credentials(access_key=ak, secret_key=sk)
+            return Credentials(access_key=ak, secret_key=sk, source="dotenv")
 
         # Global keys
         if self._provider == CloudProvider.BYTEPLUS:
@@ -304,7 +324,7 @@ class VolcConfiguration:
             sk = _get("VOLCENGINE_SECRET_KEY") or _get("VOLC_SECRETKEY")
 
         if ak and sk:
-            return Credentials(access_key=ak, secret_key=sk)
+            return Credentials(access_key=ak, secret_key=sk, source="dotenv")
 
         return None
 
@@ -323,7 +343,7 @@ class VolcConfiguration:
                 sk = sk or os.getenv(f"VOLC_{svc_upper}_SECRETKEY")
 
         if ak and sk:
-            return Credentials(access_key=ak, secret_key=sk)
+            return Credentials(access_key=ak, secret_key=sk, source="service_env")
         return None
 
     def _get_global_env_credentials(self) -> Optional[Credentials]:
@@ -335,7 +355,7 @@ class VolcConfiguration:
             sk = os.getenv("VOLCENGINE_SECRET_KEY") or os.getenv("VOLC_SECRETKEY")
 
         if ak and sk:
-            return Credentials(access_key=ak, secret_key=sk)
+            return Credentials(access_key=ak, secret_key=sk, source="global_env")
         return None
 
     def _get_config_file_credentials(self) -> Optional[Credentials]:
@@ -346,10 +366,14 @@ class VolcConfiguration:
             gc_ak = get_global_config_str("volcengine", "access_key")
             gc_sk = get_global_config_str("volcengine", "secret_key")
         if gc_ak and gc_sk:
-            return Credentials(access_key=gc_ak, secret_key=gc_sk)
+            return Credentials(
+                access_key=gc_ak, secret_key=gc_sk, source="global_config"
+            )
         return None
 
-    def _get_credential_from_vefaas_iam(self) -> Optional[Credentials]:
+    def _get_credential_from_vefaas_iam(
+        self, *, force: bool = False
+    ) -> Optional[Credentials]:
         """
         Internal helper to attempt retrieving credentials from VeFaaS IAM environment.
         """
@@ -360,14 +384,89 @@ class VolcConfiguration:
             return None
 
         try:
+            mtime_ns = path.stat().st_mtime_ns
+        except Exception:
+            return None
+
+        now = datetime.now(tz=timezone.utc)
+
+        def _get_cached_if_usable(
+            *, min_validity_seconds: int
+        ) -> Optional[Credentials]:
+            with self._vefaas_lock:
+                cached = self._vefaas_cache_credentials
+                if not cached or self._vefaas_cache_mtime_ns != mtime_ns:
+                    return None
+
+                if cached.expires_at is None:
+                    loaded_at = self._vefaas_cache_loaded_at_monotonic
+                    if loaded_at is None:
+                        return None
+                    if (
+                        time.monotonic() - loaded_at
+                        <= VEFAAS_IAM_CREDENTIAL_FALLBACK_TTL_SECONDS
+                    ):
+                        return cached
+                    return None
+
+                if (cached.expires_at - now).total_seconds() > min_validity_seconds:
+                    return cached
+                return None
+
+        if not force:
+            cached = _get_cached_if_usable(
+                min_validity_seconds=VEFAAS_IAM_CREDENTIAL_MIN_VALIDITY_SECONDS
+            )
+            if cached is not None:
+                return cached
+
+        try:
             with open(path, "r") as f:
                 cred_dict = json.load(f)
-                return Credentials(
-                    access_key=cred_dict.get("access_key_id", ""),
-                    secret_key=cred_dict.get("secret_access_key", ""),
-                    session_token=cred_dict.get("session_token", ""),
+                access_key = str(cred_dict.get("access_key_id") or "")
+                secret_key = str(cred_dict.get("secret_access_key") or "")
+                session_token = str(cred_dict.get("session_token") or "") or None
+
+                expired_time_raw = cred_dict.get("expired_time")
+                expires_at: Optional[datetime] = None
+                if expired_time_raw:
+                    try:
+                        s = str(expired_time_raw)
+                        if s.endswith("Z"):
+                            s = s[:-1] + "+00:00"
+                        expires_at = datetime.fromisoformat(s)
+                        if expires_at.tzinfo is None:
+                            expires_at = expires_at.replace(tzinfo=timezone.utc)
+                        expires_at = expires_at.astimezone(timezone.utc)
+                    except Exception:
+                        expires_at = None
+
+                if not access_key or not secret_key:
+                    return None
+
+                if expires_at is not None:
+                    if expires_at <= now:
+                        return None
+
+                creds = Credentials(
+                    access_key=access_key,
+                    secret_key=secret_key,
+                    session_token=session_token,
+                    expires_at=expires_at,
+                    source="vefaas",
                 )
+                with self._vefaas_lock:
+                    self._vefaas_cache_mtime_ns = mtime_ns
+                    self._vefaas_cache_loaded_at_monotonic = time.monotonic()
+                    self._vefaas_cache_credentials = creds
+                return creds
         except Exception as e:
+            if not force:
+                cached = _get_cached_if_usable(
+                    min_validity_seconds=VEFAAS_IAM_CREDENTIAL_MIN_VALIDITY_SECONDS
+                )
+                if cached is not None:
+                    return cached
             logger.warning(f"Found VeFaaS credential file but failed to parse: {e}")
             return None
 

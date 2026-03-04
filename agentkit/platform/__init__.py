@@ -88,7 +88,9 @@ def resolve_credentials(
     # 1. Explicit args take absolute precedence
     if explicit_access_key and explicit_secret_key:
         return Credentials(
-            access_key=explicit_access_key, secret_key=explicit_secret_key
+            access_key=explicit_access_key,
+            secret_key=explicit_secret_key,
+            source="explicit_args",
         )
 
     cfg = platform_config or VolcConfiguration()
