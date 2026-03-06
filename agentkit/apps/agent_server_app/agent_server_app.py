@@ -100,6 +100,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         short_term_memory: BaseSessionService | ShortTermMemory | None = None,
         *,
         app: App | None = None,
+        allow_origins: list[str] | None = None,
     ) -> None:
         super().__init__()
 
@@ -147,7 +148,9 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 await handler()
             yield
 
-        self.app = self.server.get_fast_api_app(lifespan=lifespan)
+        self.app = self.server.get_fast_api_app(
+            lifespan=lifespan, allow_origins=allow_origins
+        )
 
         @self.app.post("/run_sse")
         async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
