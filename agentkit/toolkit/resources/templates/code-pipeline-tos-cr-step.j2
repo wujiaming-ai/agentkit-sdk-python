@@ -26,22 +26,24 @@ stages:
                 shell: BASH
             - step: step-c4
               displayName: 镜像构建推送至镜像仓库服务
-              component: build@2.0.0/buildkit-cr@3.0.0
+              component: build@2.0.0/buildkit-cr@5.0.0
               inputs:
+                buildParams: ""
                 compression: gzip
                 contextPath: $PROJECT_ROOT_DIR
                 crDomain: $CR_DOMAIN
-                crNamespace: $CR_NAMESPACE
-                crRegion: $CR_REGION
-                crRegistryInstance: $CR_INSTANCE
-                crRepo: $CR_OCI
-                crTag: $CR_TAG
+                namespace: $CR_NAMESPACE
+                region: $CR_REGION
+                registryInstance: $CR_INSTANCE
+                repo: $CR_OCI
+                tag: $CR_TAG
                 disableSSLVerify: true
                 dockerfiles:
                     default:
                         path: $DOCKERFILE_PATH
                 loginCredential: []
                 useCache: false
+                nydusify: true
           outputs:
             - imageOutput_step-c4
           workspace: {}
