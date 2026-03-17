@@ -16,7 +16,6 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
-from typing_extensions import override
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -42,9 +41,10 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 from opentelemetry import trace
+from typing_extensions import override
 from veadk import Agent
-from veadk.runner import Runner
 from veadk.memory.short_term_memory import ShortTermMemory
+from veadk.runner import Runner
 
 from agentkit.apps.agent_server_app.middleware import (
     AgentkitTelemetryHTTPMiddleware,
@@ -137,7 +137,12 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             agents_dir=".",
         )
 
-        runner = Runner(agent=root_agent)
+        runner = Runner(
+            agent=root_agent,
+            short_term_memory=short_term_memory
+            if isinstance(short_term_memory, ShortTermMemory)
+            else None,
+        )
         _a2a_server_app = to_a2a(agent=root_agent, runner=runner)
 
         @asynccontextmanager
