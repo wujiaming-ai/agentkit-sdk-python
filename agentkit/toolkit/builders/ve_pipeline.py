@@ -952,6 +952,7 @@ class VeCPCRBuilder(Builder):
             import time
 
             created_in_this_run = False
+            name_conflict_not_created = False
 
             # Step 1: ensure bucket exists / accessible
             if auto_created_bucket:
@@ -988,9 +989,7 @@ class VeCPCRBuilder(Builder):
                         created_in_this_run = True
                     except tos.exceptions.TosServerError as e:
                         if e.status_code == 409:
-                            # The bucket name is already taken (possibly by another account).
-                            # Ownership verification in step 2 will block the upload.
-                            pass
+                            name_conflict_not_created = True
                         else:
                             raise
 
@@ -1032,9 +1031,42 @@ class VeCPCRBuilder(Builder):
                 )
                 raise Exception(error_msg)
 
+            if name_conflict_not_created and owned:
+                actual_location = tos_service.get_bucket_location(bucket_name)
+                current_region = getattr(
+                    tos_service, "actual_region", config.tos_region
+                )
+                if actual_location:
+                    raise Exception(
+                        f"TOS bucket '{bucket_name}' exists in region '{actual_location}', "
+                        f"but the current configuration targets region '{current_region}'. "
+                        "TOS buckets are region-scoped and cannot be accessed across regions. "
+                        "Please either switch to the bucket's region or use a different bucket name "
+                        f"(e.g. '{bucket_name}-{current_region.split('-')[-1]}')."
+                    )
+                else:
+                    raise Exception(
+                        f"TOS bucket '{bucket_name}' is owned by your account but does not exist "
+                        f"in the current region '{current_region}'. It may reside in another region. "
+                        "TOS buckets are region-scoped and cannot be accessed across regions. "
+                        "Please either switch to the bucket's region or use a different bucket name."
+                    )
+
             self.reporter.success(
                 f"TOS bucket ownership verified for current account: {bucket_name}"
             )
+
+            if created_in_this_run:
+                data_plane_timeout_s = 30
+                data_plane_interval_s = 3
+                data_plane_deadline = time.time() + data_plane_timeout_s
+                while not tos_service.bucket_exists():
+                    if time.time() >= data_plane_deadline:
+                        raise Exception(
+                            f"TOS bucket '{bucket_name}' was created but is not yet "
+                            "available for uploads. Please retry in a few seconds."
+                        )
+                    time.sleep(data_plane_interval_s)
 
             # Update config with auto-generated bucket name if applicable
             if auto_created_bucket:

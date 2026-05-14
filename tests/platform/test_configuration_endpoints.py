@@ -64,6 +64,24 @@ class TestConfigurationEndpoints:
         cp_ep = config.get_service_endpoint("cp")
         assert cp_ep.region == "cn-beijing"
 
+    def test_tos_region_follows_user_region(self, clean_env, mock_global_config):
+        """TOS must follow user-specified region without any implicit remapping.
+
+        Historically cn-shanghai was silently mapped to cn-beijing for TOS.
+        That mapping has been removed so users can target the TOS region they
+        actually configured (cn-shanghai, cn-beijing, etc.).
+        """
+        config = VolcConfiguration(region="cn-shanghai")
+
+        tos_ep = config.get_service_endpoint("tos")
+        assert tos_ep.region == "cn-shanghai"
+        assert tos_ep.host == "tos-cn-shanghai.volces.com"
+
+        config_bj = VolcConfiguration(region="cn-beijing")
+        tos_bj_ep = config_bj.get_service_endpoint("tos")
+        assert tos_bj_ep.region == "cn-beijing"
+        assert tos_bj_ep.host == "tos-cn-beijing.volces.com"
+
     def test_region_mapping_custom(self, clean_env, mock_global_config):
         """Test user defined region mapping rules."""
         mock_global_config.update(

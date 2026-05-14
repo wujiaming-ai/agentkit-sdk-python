@@ -266,6 +266,30 @@ class TOSService:
             return False
         return name in set(self.list_bucket_names())
 
+    def get_bucket_location(self, bucket_name: Optional[str] = None) -> Optional[str]:
+        """Return the region (location) of a bucket owned by this account.
+
+        Uses the already-available ListBuckets data so no extra API call is needed
+        beyond what ``bucket_is_owned`` / ``list_bucket_names`` already do.
+
+        Args:
+            bucket_name: Bucket name to look up. Defaults to configured bucket.
+
+        Returns:
+            The region string (e.g. ``"cn-beijing"``) or ``None`` if not found.
+        """
+        name = bucket_name or self.config.bucket
+        if not name:
+            return None
+        try:
+            out = self.client.list_buckets()
+            for b in getattr(out, "buckets", None) or []:
+                if getattr(b, "name", None) == name:
+                    return getattr(b, "location", None)
+        except Exception as e:
+            logger.warning(f"Failed to get bucket location: {str(e)}")
+        return None
+
     def bucket_exists(self) -> bool:
         """Check if the configured bucket exists.
 

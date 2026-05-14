@@ -29,7 +29,6 @@ class ServiceMeta:
 DEFAULT_REGION_RULES = {
     "cn-shanghai": {
         "cp": "cn-beijing",
-        "tos": "cn-beijing",
     }
 }
 
