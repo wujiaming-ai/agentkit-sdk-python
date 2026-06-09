@@ -21,6 +21,7 @@ import typer
 from agentkit.toolkit.cli.sandbox.sandbox_create import create_command
 from agentkit.toolkit.cli.sandbox.sandbox_exec import exec_command
 from agentkit.toolkit.cli.sandbox.sandbox_get import get_command
+from agentkit.toolkit.cli.sandbox.sandbox_terminal import terminal_command
 
 sandbox_app = typer.Typer(
     name="sandbox",
@@ -31,3 +32,4 @@ sandbox_app = typer.Typer(
 sandbox_app.command("create")(create_command)
 sandbox_app.command("get")(get_command)
 sandbox_app.command("exec")(exec_command)
+sandbox_app.command("terminal")(terminal_command)

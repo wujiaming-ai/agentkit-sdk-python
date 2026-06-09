@@ -44,6 +44,7 @@ dependencies = [
     "volcengine",
     "pyfiglet>=1.0.2",
     "typing_extensions>=4.12",
+    "websocket-client>=1.8.0",
     "pyreadline3; sys_platform == 'win32'",
 ]
 

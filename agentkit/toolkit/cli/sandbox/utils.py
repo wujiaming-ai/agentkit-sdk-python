@@ -25,6 +25,7 @@ import typer
 
 SANDBOX_SESSION_STORE_PATH = Path(".agentkit") / "sandbox" / "sessions.json"
 SANDBOX_EXEC_ROUTE = "/v1/shell/exec"
+SANDBOX_TERMINAL_ROUTE = "/v1/shell/ws"
 SANDBOX_EXEC_TIMEOUT_SECONDS = 300
 
 
@@ -76,6 +77,56 @@ def save_session_result(result: dict[str, object]) -> None:
     )
 
 
+def update_session_result(
+    user_session_id: str,
+    updates: dict[str, object],
+) -> dict[str, object]:
+    path = _get_session_store_path()
+    data = load_session_store(path)
+
+    result = data.get(user_session_id)
+    if result is None:
+        error(f"Sandbox session not found: {user_session_id}")
+    if not isinstance(result, dict):
+        error(f"Invalid sandbox session record: {user_session_id}")
+
+    result.update(updates)
+    data[user_session_id] = result
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return result
+
+
+def remove_session_result_key(
+    user_session_id: str,
+    key: str,
+    expected_value: object | None = None,
+) -> dict[str, object]:
+    path = _get_session_store_path()
+    data = load_session_store(path)
+
+    result = data.get(user_session_id)
+    if result is None:
+        error(f"Sandbox session not found: {user_session_id}")
+    if not isinstance(result, dict):
+        error(f"Invalid sandbox session record: {user_session_id}")
+
+    if expected_value is not None and result.get(key) != expected_value:
+        return result
+    if key not in result:
+        return result
+
+    result.pop(key)
+    data[user_session_id] = result
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return result
+
+
 def get_session_result(user_session_id: str) -> dict[str, object]:
     path = _get_session_store_path()
     data = load_session_store(path)
@@ -99,6 +150,26 @@ def build_exec_url(endpoint: object) -> str:
     return urlunsplit(
         (parts.scheme, parts.netloc, exec_path, parts.query, parts.fragment)
     )
+
+
+def build_terminal_ws_url(endpoint: object, shell_id: str | None = None) -> str:
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        error("Sandbox session endpoint is missing")
+
+    parts = urlsplit(endpoint.strip())
+    if parts.scheme in {"http", "https"}:
+        scheme = "ws"
+    else:
+        scheme = parts.scheme
+
+    path = parts.path.rstrip("/")
+    ws_path = f"{path}{SANDBOX_TERMINAL_ROUTE}" if path else SANDBOX_TERMINAL_ROUTE
+    query = parts.query
+    if shell_id:
+        separator = "&" if query else ""
+        query = f"{query}{separator}session_id={shell_id}"
+
+    return urlunsplit((scheme, parts.netloc, ws_path, query, parts.fragment))
 
 
 def rename_exec_session_id(payload: object) -> object:
