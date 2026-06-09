@@ -140,8 +140,9 @@ def test_add_cors_compat_middleware_splits_literal_and_regex():
     )
 
     [middleware] = app.user_middleware
+    options = getattr(middleware, "options", None) or getattr(middleware, "kwargs", {})
     assert middleware.cls.__name__ == "CORSMiddleware"
-    assert middleware.kwargs["allow_origins"] == ["*"]
-    assert middleware.kwargs["allow_origin_regex"] == "https://.*\\.example\\.com"
-    assert middleware.kwargs["allow_methods"] == ["*"]
-    assert middleware.kwargs["allow_headers"] == ["*"]
+    assert options["allow_origins"] == ["*"]
+    assert options["allow_origin_regex"] == "https://.*\\.example\\.com"
+    assert options["allow_methods"] == ["*"]
+    assert options["allow_headers"] == ["*"]
