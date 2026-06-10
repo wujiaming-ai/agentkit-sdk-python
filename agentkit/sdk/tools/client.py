@@ -47,7 +47,6 @@ from .types import (
 
 class AgentkitToolsClient(BaseAgentkitClient):
     """AgentKit Tools Management Service"""
-
     API_ACTIONS: Dict[str, str] = {
         "CreateSession": "CreateSession",
         "CreateTool": "CreateTool",
@@ -76,6 +75,7 @@ class AgentkitToolsClient(BaseAgentkitClient):
             session_token=session_token,
             service_name="tools",
         )
+
 
     def create_session(self, request: CreateSessionRequest) -> CreateSessionResponse:
         return self._invoke_api(
@@ -112,9 +112,7 @@ class AgentkitToolsClient(BaseAgentkitClient):
             response_type=GetSessionResponse,
         )
 
-    def get_session_logs(
-        self, request: GetSessionLogsRequest
-    ) -> GetSessionLogsResponse:
+    def get_session_logs(self, request: GetSessionLogsRequest) -> GetSessionLogsResponse:
         return self._invoke_api(
             api_action="GetSessionLogs",
             request=request,
