@@ -31,6 +31,38 @@ from agentkit.toolkit.cli.sandbox.utils import (
 DEFAULT_SANDBOX_TTL = 28800
 SANDBOX_TOOL_ID_ENV = "AGENTKIT_SANDBOX_TOOL_ID"
 SANDBOX_TTL_ENV = "AGENTKIT_SANDBOX_TTL"
+MODEL_NAME_ENV_KEYS = ("OPENCODE_MODEL", "CODEX_MODEL", "ANTHROPIC_MODEL")
+MODEL_API_KEY_ENV_KEYS = (
+    "OPENCODE_API_KEY",
+    "CODEX_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+)
+
+
+def _append_envs(
+    envs: list[tools_types.EnvsItemForCreateSession],
+    keys: tuple[str, ...],
+    value: Optional[str],
+) -> None:
+    resolved = (value or "").strip()
+    if not resolved:
+        return
+
+    envs.extend(
+        tools_types.EnvsItemForCreateSession(key=key, value=resolved)
+        for key in keys
+    )
+
+
+def build_model_envs(
+    *,
+    model_name: Optional[str] = None,
+    model_api_key: Optional[str] = None,
+) -> list[tools_types.EnvsItemForCreateSession] | None:
+    envs: list[tools_types.EnvsItemForCreateSession] = []
+    _append_envs(envs, MODEL_NAME_ENV_KEYS, model_name)
+    _append_envs(envs, MODEL_API_KEY_ENV_KEYS, model_api_key)
+    return envs or None
 
 
 def _resolve_tool_id(
@@ -144,12 +176,14 @@ def _create_session(
     session_id: str,
     tool_id: str,
     ttl: int,
+    envs: Optional[list[tools_types.EnvsItemForCreateSession]] = None,
 ) -> dict[str, object]:
     request = tools_types.CreateSessionRequest(
         tool_id=tool_id,
         ttl=ttl,
         ttl_unit="second",
         user_session_id=session_id,
+        envs=envs,
     )
     response = client.create_session(request)
     return _build_create_result(response, session_id, tool_id)
@@ -159,6 +193,7 @@ def ensure_sandbox_session(
     session_id: Optional[str] = None,
     tool_id: Optional[str] = None,
     ttl: Optional[int] = None,
+    envs: Optional[list[tools_types.EnvsItemForCreateSession]] = None,
 ) -> dict[str, object]:
     resolved_session_id = session_id or str(uuid.uuid4())
     existing = find_session_result(resolved_session_id) if session_id else None
@@ -184,6 +219,7 @@ def ensure_sandbox_session(
         resolved_session_id,
         resolved_tool_id,
         _resolve_ttl(ttl),
+        envs=envs,
     )
     save_session_result(result)
     return result

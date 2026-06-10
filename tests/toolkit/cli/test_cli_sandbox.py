@@ -75,8 +75,12 @@ def _patch_store_path(monkeypatch, tmp_path):
     return store_path
 
 
-def _patch_exec_session(monkeypatch, cli_exec, session):
-    def fake_ensure_sandbox_session(session_id=None, tool_id=None):
+def _patch_exec_session(monkeypatch, cli_exec, session, capture=None):
+    def fake_ensure_sandbox_session(session_id=None, tool_id=None, **kwargs):
+        if capture is not None:
+            capture["session_id"] = session_id
+            capture["tool_id"] = tool_id
+            capture.update(kwargs)
         return session
 
     monkeypatch.setattr(
@@ -87,7 +91,7 @@ def _patch_exec_session(monkeypatch, cli_exec, session):
 
 
 def _patch_shell_session(monkeypatch, cli_shell, session):
-    def fake_ensure_sandbox_session(session_id=None, tool_id=None):
+    def fake_ensure_sandbox_session(session_id=None, tool_id=None, **_kwargs):
         return session
 
     monkeypatch.setattr(
@@ -150,6 +154,40 @@ def test_ensure_sandbox_session_options_override_env(monkeypatch, tmp_path) -> N
     assert request.tool_id == "tool-cli"
     assert request.ttl == 120
     assert request.user_session_id == "user-cli"
+
+
+def test_ensure_sandbox_session_passes_envs_to_create_session(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _patch_store_path(monkeypatch, tmp_path)
+    envs = session_create.build_model_envs(
+        model_name="claude-sonnet-4",
+        model_api_key="secret-key",
+    )
+
+    session_create.ensure_sandbox_session(
+        session_id="user-cli",
+        tool_id="tool-cli",
+        envs=envs,
+    )
+
+    request_envs = _FakeToolsClient.last_request.envs
+    assert [(item.key, item.value) for item in request_envs] == [
+        ("OPENCODE_MODEL", "claude-sonnet-4"),
+        ("CODEX_MODEL", "claude-sonnet-4"),
+        ("ANTHROPIC_MODEL", "claude-sonnet-4"),
+        ("OPENCODE_API_KEY", "secret-key"),
+        ("CODEX_API_KEY", "secret-key"),
+        ("ANTHROPIC_AUTH_TOKEN", "secret-key"),
+    ]
 
 
 def test_session_create_command_is_removed() -> None:
@@ -548,6 +586,79 @@ def test_cli_exec_runs_command_option(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert captured["ws_url"] == "ws://sandbox.example.com/v1/shell/ws?token=abc"
     assert captured["initial_command"] == "codex"
+
+
+def test_cli_exec_passes_model_options_to_session_create(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    stored_session = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com/?token=abc",
+    }
+    store_path.write_text(
+        json.dumps({"user-1": stored_session}),
+        encoding="utf-8",
+    )
+    captured_session = {}
+    _patch_exec_session(
+        monkeypatch,
+        cli_exec,
+        stored_session,
+        capture=captured_session,
+    )
+
+    def fake_connect(_ws_url, initial_command=None, on_shell_id=None):
+        assert initial_command is None
+        assert on_shell_id is not None
+
+    monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
+
+    result = runner.invoke(
+        app,
+        [
+            "exec",
+            "--session-id",
+            "user-1",
+            "--model-name",
+            "claude-sonnet-4",
+            "--model-api-key",
+            "secret-key",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured_session["session_id"] == "user-1"
+    assert [(item.key, item.value) for item in captured_session["envs"]] == [
+        ("OPENCODE_MODEL", "claude-sonnet-4"),
+        ("CODEX_MODEL", "claude-sonnet-4"),
+        ("ANTHROPIC_MODEL", "claude-sonnet-4"),
+        ("OPENCODE_API_KEY", "secret-key"),
+        ("CODEX_API_KEY", "secret-key"),
+        ("ANTHROPIC_AUTH_TOKEN", "secret-key"),
+    ]
+
+
+def test_cli_exec_rejects_model_base_url_option() -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        [
+            "exec",
+            "--model-base-url",
+            "https://models.example.com",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "No such option" in result.output
 
 
 def test_cli_exec_supports_shell_id_and_empty_command(

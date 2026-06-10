@@ -32,6 +32,7 @@ import typer
 
 from agentkit.toolkit.cli.sandbox.session_create import (
     SANDBOX_TOOL_ID_ENV,
+    build_model_envs,
     ensure_sandbox_session,
 )
 from agentkit.toolkit.cli.sandbox.utils import (
@@ -257,12 +258,32 @@ def exec_command(
         "--shell-id",
         help="Existing shell terminal ID to connect to.",
     ),
+    model_name: Optional[str] = typer.Option(
+        None,
+        "--model-name",
+        help=(
+            "Model name to inject into OPENCODE_MODEL, CODEX_MODEL, "
+            "and ANTHROPIC_MODEL when creating a sandbox session."
+        ),
+    ),
+    model_api_key: Optional[str] = typer.Option(
+        None,
+        "--model-api-key",
+        help=(
+            "Model API key to inject into OPENCODE_API_KEY, CODEX_API_KEY, "
+            "and ANTHROPIC_AUTH_TOKEN when creating a sandbox session."
+        ),
+    ),
 ) -> None:
     """Open a streaming sandbox exec session. Press Ctrl-] or type exit/exit()."""
     try:
         session = ensure_sandbox_session(
             session_id=session_id,
             tool_id=tool_id,
+            envs=build_model_envs(
+                model_name=model_name,
+                model_api_key=model_api_key,
+            ),
         )
     except typer.Exit:
         raise

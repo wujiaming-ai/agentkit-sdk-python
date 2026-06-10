@@ -104,6 +104,10 @@ Options:
   `--command codex` to start the remote Codex TUI.
 - `--shell-id`: optional. Existing shell terminal ID to connect to. When this is
   set and `--command` is omitted, no initial command is sent.
+- `--model-name`: optional. When creating a sandbox session, injects the value
+  as `OPENCODE_MODEL`, `CODEX_MODEL`, and `ANTHROPIC_MODEL`.
+- `--model-api-key`: optional. When creating a sandbox session, injects the
+  value as `OPENCODE_API_KEY`, `CODEX_API_KEY`, and `ANTHROPIC_AUTH_TOKEN`.
 
 The command connects to `<endpoint>/v1/shell/ws`, streams remote output to local
 stdout, forwards local stdin as terminal input, sends terminal resize events, and
