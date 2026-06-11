@@ -384,6 +384,47 @@ def _wait_for_tool_ready(
         time.sleep(interval_seconds)
 
 
+def create_tool(
+    *,
+    tool_type: str = DEFAULT_CREATE_TOOL_TYPE,
+    tool_name: Optional[str] = None,
+    tos_bucket: Optional[str] = None,
+    region: str = DEFAULT_CREATE_TOOL_REGION,
+    model_name: Optional[str] = None,
+    model_api_key: Optional[str] = None,
+    model_base_url: Optional[str] = None,
+) -> dict[str, object]:
+    resolved_region = _normalize_region(region)
+    credentials = _load_env_credentials(resolved_region)
+    request = _build_create_tool_request(
+        tool_type=tool_type,
+        name=tool_name,
+        tos_bucket=tos_bucket,
+        region=resolved_region,
+        credentials=credentials,
+        model_name=model_name,
+        model_api_key=model_api_key,
+        model_base_url=model_base_url,
+    )
+    client = AgentkitToolsClient(
+        access_key=credentials.access_key,
+        secret_key=credentials.secret_key,
+        region=resolved_region,
+        session_token=credentials.session_token or "",
+    )
+    response = client.create_tool(request)
+    tool_id = response.tool_id
+    if not tool_id:
+        raise RuntimeError("CreateTool response missing ToolId")
+    final_tool = _wait_for_tool_ready(client, tool_id)
+    return {
+        "tool_id": tool_id,
+        "tool_type": final_tool.tool_type or request.tool_type,
+        "name": final_tool.name or request.name,
+        "status": final_tool.status or TOOL_READY_STATUS,
+    }
+
+
 def create_command(
     tool_type: str = typer.Option(
         DEFAULT_CREATE_TOOL_TYPE,
@@ -433,34 +474,20 @@ def create_command(
 ) -> None:
     """Create an AgentKit Tool with optional TOS mount."""
     try:
-        resolved_region = _normalize_region(region)
-        credentials = _load_env_credentials(resolved_region)
-        request = _build_create_tool_request(
+        result = create_tool(
             tool_type=tool_type,
-            name=tool_name,
+            tool_name=tool_name,
             tos_bucket=tos_bucket,
-            region=resolved_region,
-            credentials=credentials,
+            region=region,
             model_name=model_name,
             model_api_key=model_api_key,
             model_base_url=model_base_url,
         )
-        client = AgentkitToolsClient(
-            access_key=credentials.access_key,
-            secret_key=credentials.secret_key,
-            region=resolved_region,
-            session_token=credentials.session_token or "",
-        )
-        response = client.create_tool(request)
-        tool_id = response.tool_id
-        if not tool_id:
-            raise RuntimeError("CreateTool response missing ToolId")
-        final_tool = _wait_for_tool_ready(client, tool_id)
     except (typer.Abort, typer.Exit):
         raise
     except Exception as exc:
         error(str(exc))
 
     typer.echo("工具创建成功")
-    typer.echo(f"工具ID：{tool_id}")
-    typer.echo(f"状态：{final_tool.status or TOOL_READY_STATUS}")
+    typer.echo(f"工具ID：{result['tool_id']}")
+    typer.echo(f"状态：{result['status']}")

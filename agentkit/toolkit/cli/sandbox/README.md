@@ -64,8 +64,11 @@ Options:
 - `--session-id`: optional. Sandbox session ID used as the local session key.
   If omitted, a UUID is generated and the command creates a sandbox session
   through the same idempotent session ensure flow as `exec`.
-- `--tool-id`: optional. Defaults to `AGENTKIT_SANDBOX_TOOL_ID`. If no existing
-  local session can be reused and neither value is set, the command fails.
+- `--tool-id`: optional. Defaults to `AGENTKIT_SANDBOX_TOOL_ID`. If neither is
+  set, the CLI resolves a tool by `--tool-type`.
+- `--tool-type`: optional. `CodeEnv` or `SkillEnv`; defaults to `CodeEnv`.
+  Used when resolving or creating a tool after `--tool-id` and
+  `AGENTKIT_SANDBOX_TOOL_ID` are both absent.
 - `--command`: required. Command to execute in the sandbox.
 - `--exec-dir`: optional execution directory.
 - `--shell-id`: optional shell terminal ID for re-entering an existing shell.
@@ -97,8 +100,11 @@ Options:
 - `--session-id`: optional. Sandbox session ID used as the local
   session key. If omitted, a UUID is generated and the command creates a
   sandbox session through the same idempotent session ensure flow.
-- `--tool-id`: optional. Defaults to `AGENTKIT_SANDBOX_TOOL_ID`. If no existing
-  local session can be reused and neither value is set, the command fails.
+- `--tool-id`: optional. Defaults to `AGENTKIT_SANDBOX_TOOL_ID`. If neither is
+  set, the CLI resolves a tool by `--tool-type`.
+- `--tool-type`: optional. `CodeEnv` or `SkillEnv`; defaults to `CodeEnv`.
+  Used when resolving or creating a tool after `--tool-id` and
+  `AGENTKIT_SANDBOX_TOOL_ID` are both absent.
 - `--command`: optional. Initial command to run after the exec session is ready.
   Omit this option to connect without running an initial command. Use
   `--command codex` to start the remote Codex TUI.
@@ -147,10 +153,44 @@ Repeated exec opens with the same `session_id` refresh the previous
 entry when the remote session is reachable, or overwrite it after recreating the
 remote session.
 
+When `--tool-id` and `AGENTKIT_SANDBOX_TOOL_ID` are both omitted, `exec` and
+`shell` resolve one tool per type through:
+
+1. `.agentkit/tool.json`
+2. `ListTools` filtered by `ToolType`
+3. automatic `agentkit create --tool-type <type>`-equivalent creation
+
+Resolved tool records are stored in:
+
+```text
+.agentkit/tool.json
+```
+
+Example:
+
+```json
+{
+  "CodeEnv": {
+    "tool_id": "t-code-example",
+    "tool_type": "CodeEnv",
+    "name": "agentkit-codeenv-example",
+    "status": "Ready"
+  },
+  "SkillEnv": {
+    "tool_id": "t-skill-example",
+    "tool_type": "SkillEnv",
+    "name": "agentkit-skillenv-example",
+    "status": "Ready"
+  }
+}
+```
+
 ## Module Layout
 
-- `../cli.py`: registers `get`, `exec`, and `shell` as top-level commands.
+- `../cli.py`: registers `create`, `get`, `exec`, and `shell` as top-level commands.
 - `session_create.py`: shared session creation and idempotent ensure helpers.
+- `tool_resolve.py`: shared sandbox tool resolution and local tool cache helpers.
+- `cli_create.py`: create command implementation.
 - `cli_get.py`: get command implementation.
 - `cli_shell.py`: shell command implementation.
 - `cli_exec.py`: streaming exec command implementation.

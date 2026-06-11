@@ -35,6 +35,7 @@ from agentkit.toolkit.cli.sandbox.session_create import (
     build_model_envs,
     ensure_sandbox_session,
 )
+from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
 from agentkit.toolkit.cli.sandbox.utils import (
     build_terminal_ws_url,
     error,
@@ -245,6 +246,11 @@ def exec_command(
         "--tool-id",
         help=f"Sandbox tool ID. Defaults to {SANDBOX_TOOL_ID_ENV}.",
     ),
+    tool_type: SandboxToolType = typer.Option(
+        SandboxToolType.CODE_ENV,
+        "--tool-type",
+        help="Sandbox tool type to resolve when --tool-id is omitted.",
+    ),
     command: Optional[str] = typer.Option(
         None,
         "--command",
@@ -280,6 +286,7 @@ def exec_command(
         session = ensure_sandbox_session(
             session_id=session_id,
             tool_id=tool_id,
+            tool_type=tool_type.value,
             envs=build_model_envs(
                 model_name=model_name,
                 model_api_key=model_api_key,

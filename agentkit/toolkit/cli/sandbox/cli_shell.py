@@ -25,6 +25,7 @@ from agentkit.toolkit.cli.sandbox.session_create import (
     SANDBOX_TOOL_ID_ENV,
     ensure_sandbox_session,
 )
+from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
 from agentkit.toolkit.cli.sandbox.utils import (
     SANDBOX_EXEC_TIMEOUT_SECONDS,
     build_exec_url,
@@ -48,6 +49,11 @@ def shell_command(
         "--tool-id",
         help=f"Sandbox tool ID. Defaults to {SANDBOX_TOOL_ID_ENV}.",
     ),
+    tool_type: SandboxToolType = typer.Option(
+        SandboxToolType.CODE_ENV,
+        "--tool-type",
+        help="Sandbox tool type to resolve when --tool-id is omitted.",
+    ),
     command: str = typer.Option(
         ...,
         "--command",
@@ -69,6 +75,7 @@ def shell_command(
         session = ensure_sandbox_session(
             session_id=session_id,
             tool_id=tool_id,
+            tool_type=tool_type.value,
         )
     except typer.Exit:
         raise

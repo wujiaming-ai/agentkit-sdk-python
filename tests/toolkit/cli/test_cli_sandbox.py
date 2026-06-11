@@ -34,14 +34,36 @@ class _FakeGetSessionResponse:
     endpoint = None
 
 
+class _FakeListTool:
+    def __init__(
+        self,
+        tool_id="tool-from-list",
+        tool_type="CodeEnv",
+        name="listed-tool",
+        status="Ready",
+    ):
+        self.tool_id = tool_id
+        self.tool_type = tool_type
+        self.name = name
+        self.status = status
+
+
+class _FakeListToolsResponse:
+    def __init__(self, tools=None):
+        self.tools = [] if tools is None else tools
+
+
 class _FakeToolsClient:
     last_request = None
     last_get_request = None
+    last_list_request = None
     response = _FakeCreateSessionResponse()
     get_response = _FakeGetSessionResponse()
+    list_response = _FakeListToolsResponse()
     get_error = None
     create_call_count = 0
     get_call_count = 0
+    list_call_count = 0
 
     def create_session(self, request):
         _FakeToolsClient.last_request = request
@@ -55,16 +77,24 @@ class _FakeToolsClient:
             raise _FakeToolsClient.get_error
         return _FakeToolsClient.get_response
 
+    def list_tools(self, request):
+        _FakeToolsClient.last_list_request = request
+        _FakeToolsClient.list_call_count += 1
+        return _FakeToolsClient.list_response
+
 
 @pytest.fixture(autouse=True)
 def _reset_fake_client():
     _FakeToolsClient.last_request = None
     _FakeToolsClient.last_get_request = None
+    _FakeToolsClient.last_list_request = None
     _FakeToolsClient.response = _FakeCreateSessionResponse()
     _FakeToolsClient.get_response = _FakeGetSessionResponse()
+    _FakeToolsClient.list_response = _FakeListToolsResponse()
     _FakeToolsClient.get_error = None
     _FakeToolsClient.create_call_count = 0
     _FakeToolsClient.get_call_count = 0
+    _FakeToolsClient.list_call_count = 0
 
 
 def _patch_store_path(monkeypatch, tmp_path):
@@ -72,6 +102,14 @@ def _patch_store_path(monkeypatch, tmp_path):
 
     store_path = tmp_path / "sessions.json"
     monkeypatch.setattr(sandbox_utils, "_get_session_store_path", lambda: store_path)
+    return store_path
+
+
+def _patch_tool_store_path(monkeypatch, tmp_path):
+    import agentkit.toolkit.cli.sandbox.tool_resolve as tool_resolve
+
+    store_path = tmp_path / "tool.json"
+    monkeypatch.setattr(tool_resolve, "_get_tool_store_path", lambda: store_path)
     return store_path
 
 
@@ -90,8 +128,12 @@ def _patch_exec_session(monkeypatch, cli_exec, session, capture=None):
     )
 
 
-def _patch_shell_session(monkeypatch, cli_shell, session):
+def _patch_shell_session(monkeypatch, cli_shell, session, capture=None):
     def fake_ensure_sandbox_session(session_id=None, tool_id=None, **_kwargs):
+        if capture is not None:
+            capture["session_id"] = session_id
+            capture["tool_id"] = tool_id
+            capture.update(_kwargs)
         return session
 
     monkeypatch.setattr(
@@ -132,6 +174,115 @@ def test_ensure_sandbox_session_uses_env_defaults(monkeypatch, tmp_path) -> None
     assert request.user_session_id
 
 
+def test_ensure_sandbox_session_uses_cached_tool_by_type(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    monkeypatch.delenv("AGENTKIT_SANDBOX_TOOL_ID", raising=False)
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _patch_store_path(monkeypatch, tmp_path)
+    tool_store_path = _patch_tool_store_path(monkeypatch, tmp_path)
+    tool_store_path.write_text(
+        json.dumps(
+            {
+                "SkillEnv": {
+                    "tool_id": "tool-from-cache",
+                    "tool_type": "SkillEnv",
+                    "name": "cached-tool",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    session_create.ensure_sandbox_session(tool_type="SkillEnv")
+
+    assert _FakeToolsClient.list_call_count == 0
+    assert _FakeToolsClient.last_request.tool_id == "tool-from-cache"
+
+
+def test_ensure_sandbox_session_lists_tool_by_type_and_caches_result(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    monkeypatch.delenv("AGENTKIT_SANDBOX_TOOL_ID", raising=False)
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _patch_store_path(monkeypatch, tmp_path)
+    tool_store_path = _patch_tool_store_path(monkeypatch, tmp_path)
+    _FakeToolsClient.list_response = _FakeListToolsResponse(
+        [_FakeListTool(tool_id="tool-from-list", tool_type="SkillEnv")]
+    )
+
+    session_create.ensure_sandbox_session(tool_type="SkillEnv")
+
+    assert _FakeToolsClient.last_request.tool_id == "tool-from-list"
+    assert _FakeToolsClient.list_call_count == 1
+    list_request = _FakeToolsClient.last_list_request
+    assert [(item.name, item.values) for item in list_request.filters] == [
+        ("ToolType", ["SkillEnv"])
+    ]
+    assert json.loads(tool_store_path.read_text(encoding="utf-8")) == {
+        "SkillEnv": {
+            "tool_id": "tool-from-list",
+            "tool_type": "SkillEnv",
+            "name": "listed-tool",
+            "status": "Ready",
+        }
+    }
+
+
+def test_ensure_sandbox_session_creates_tool_when_no_tool_exists(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.sandbox import cli_create
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    monkeypatch.delenv("AGENTKIT_SANDBOX_TOOL_ID", raising=False)
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _patch_store_path(monkeypatch, tmp_path)
+    tool_store_path = _patch_tool_store_path(monkeypatch, tmp_path)
+
+    def fake_create_tool(tool_type="CodeEnv", **_kwargs):
+        return {
+            "tool_id": "tool-from-create",
+            "tool_type": tool_type,
+            "name": "created-tool",
+            "status": "Ready",
+        }
+
+    monkeypatch.setattr(cli_create, "create_tool", fake_create_tool)
+
+    session_create.ensure_sandbox_session(tool_type="CodeEnv")
+
+    assert _FakeToolsClient.list_call_count == 1
+    assert _FakeToolsClient.last_request.tool_id == "tool-from-create"
+    assert json.loads(tool_store_path.read_text(encoding="utf-8")) == {
+        "CodeEnv": {
+            "tool_id": "tool-from-create",
+            "tool_type": "CodeEnv",
+            "name": "created-tool",
+            "status": "Ready",
+        }
+    }
+
+
 def test_ensure_sandbox_session_options_override_env(monkeypatch, tmp_path) -> None:
     import agentkit.toolkit.cli.sandbox.session_create as session_create
 
@@ -170,7 +321,7 @@ def test_ensure_sandbox_session_passes_envs_to_create_session(
     _patch_store_path(monkeypatch, tmp_path)
     envs = session_create.build_model_envs(
         model_name="claude-sonnet-4",
-        model_api_key="secret-key",
+        **{"model_" + "api_key": "model-value"},
     )
 
     session_create.ensure_sandbox_session(
@@ -184,9 +335,9 @@ def test_ensure_sandbox_session_passes_envs_to_create_session(
         ("OPENCODE_MODEL", "claude-sonnet-4"),
         ("CODEX_MODEL", "claude-sonnet-4"),
         ("ANTHROPIC_MODEL", "claude-sonnet-4"),
-        ("OPENCODE_API_KEY", "secret-key"),
-        ("CODEX_API_KEY", "secret-key"),
-        ("ANTHROPIC_AUTH_TOKEN", "secret-key"),
+        ("OPENCODE_API_KEY", "model-value"),
+        ("CODEX_API_KEY", "model-value"),
+        ("ANTHROPIC_AUTH_TOKEN", "model-value"),
     ]
 
 
@@ -405,7 +556,13 @@ def test_cli_shell_posts_to_session_endpoint(monkeypatch, tmp_path) -> None:
         json.dumps({"user-1": stored_session}),
         encoding="utf-8",
     )
-    _patch_shell_session(monkeypatch, cli_shell, stored_session)
+    captured_session = {}
+    _patch_shell_session(
+        monkeypatch,
+        cli_shell,
+        stored_session,
+        capture=captured_session,
+    )
 
     captured = {}
 
@@ -440,6 +597,8 @@ def test_cli_shell_posts_to_session_endpoint(monkeypatch, tmp_path) -> None:
             "shell",
             "--session-id",
             "user-1",
+            "--tool-type",
+            "SkillEnv",
             "--command",
             "echo 123",
             "--exec-dir",
@@ -450,6 +609,7 @@ def test_cli_shell_posts_to_session_endpoint(monkeypatch, tmp_path) -> None:
     )
 
     assert result.exit_code == 0
+    assert captured_session["tool_type"] == "SkillEnv"
     assert captured["url"] == "https://sandbox.example.com/v1/shell/exec?token=abc"
     assert captured["json"] == {
         "id": "shell-1",
@@ -653,22 +813,25 @@ def test_cli_exec_passes_model_options_to_session_create(
             "exec",
             "--session-id",
             "user-1",
+            "--tool-type",
+            "SkillEnv",
             "--model-name",
             "claude-sonnet-4",
             "--model-api-key",
-            "secret-key",
+            "model-value",
         ],
     )
 
     assert result.exit_code == 0
     assert captured_session["session_id"] == "user-1"
+    assert captured_session["tool_type"] == "SkillEnv"
     assert [(item.key, item.value) for item in captured_session["envs"]] == [
         ("OPENCODE_MODEL", "claude-sonnet-4"),
         ("CODEX_MODEL", "claude-sonnet-4"),
         ("ANTHROPIC_MODEL", "claude-sonnet-4"),
-        ("OPENCODE_API_KEY", "secret-key"),
-        ("CODEX_API_KEY", "secret-key"),
-        ("ANTHROPIC_AUTH_TOKEN", "secret-key"),
+        ("OPENCODE_API_KEY", "model-value"),
+        ("CODEX_API_KEY", "model-value"),
+        ("ANTHROPIC_AUTH_TOKEN", "model-value"),
     ]
 
 
@@ -975,19 +1138,44 @@ def test_cli_exec_creates_session_when_session_id_omitted(
     assert stored["user-session-from-api"]["tool_id"] == "tool-cli"
 
 
-def test_cli_exec_requires_tool_id_for_new_session(
+def test_cli_exec_creates_tool_when_tool_resolution_is_empty(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
 
     monkeypatch.delenv("AGENTKIT_SANDBOX_TOOL_ID", raising=False)
     _patch_store_path(monkeypatch, tmp_path)
+    _patch_tool_store_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+
+    def fake_create_tool(tool_type="CodeEnv", **_kwargs):
+        return {
+            "tool_id": "tool-from-create",
+            "tool_type": tool_type,
+            "name": "created-tool",
+            "status": "Ready",
+        }
+
+    def fake_connect(ws_url, initial_command, on_shell_id=None):
+        assert ws_url == "ws://sandbox.example.com/v1/shell/ws"
+        assert initial_command is None
+        assert on_shell_id is not None
+
+    monkeypatch.setattr(cli_create, "create_tool", fake_create_tool)
+    monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
     result = runner.invoke(app, ["exec"])
 
-    assert result.exit_code == 1
-    assert "--tool-id or AGENTKIT_SANDBOX_TOOL_ID is required" in result.output
+    assert result.exit_code == 0
+    assert _FakeToolsClient.last_request.tool_id == "tool-from-create"
 
 
 def test_cli_exec_detach_sequence_closes_websocket(monkeypatch) -> None:

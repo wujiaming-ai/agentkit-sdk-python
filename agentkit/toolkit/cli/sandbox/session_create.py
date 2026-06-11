@@ -22,6 +22,10 @@ from typing import Optional
 
 from agentkit.sdk.tools.client import AgentkitToolsClient
 from agentkit.sdk.tools import types as tools_types
+from agentkit.toolkit.cli.sandbox.tool_resolve import (
+    DEFAULT_SANDBOX_TOOL_TYPE,
+    resolve_sandbox_tool_id,
+)
 from agentkit.toolkit.cli.sandbox.utils import (
     error,
     find_session_result,
@@ -63,17 +67,6 @@ def build_model_envs(
     _append_envs(envs, MODEL_NAME_ENV_KEYS, model_name)
     _append_envs(envs, MODEL_API_KEY_ENV_KEYS, model_api_key)
     return envs or None
-
-
-def _resolve_tool_id(
-    tool_id: Optional[str],
-    default_tool_id: object = None,
-) -> str:
-    default = default_tool_id if isinstance(default_tool_id, str) else ""
-    resolved = (tool_id or os.getenv(SANDBOX_TOOL_ID_ENV) or default).strip()
-    if not resolved:
-        error(f"--tool-id or {SANDBOX_TOOL_ID_ENV} is required")
-    return resolved
 
 
 def _resolve_ttl(ttl: Optional[int]) -> int:
@@ -192,17 +185,21 @@ def _create_session(
 def ensure_sandbox_session(
     session_id: Optional[str] = None,
     tool_id: Optional[str] = None,
+    tool_type: str = DEFAULT_SANDBOX_TOOL_TYPE,
     ttl: Optional[int] = None,
     envs: Optional[list[tools_types.EnvsItemForCreateSession]] = None,
 ) -> dict[str, object]:
     resolved_session_id = session_id or str(uuid.uuid4())
     existing = find_session_result(resolved_session_id) if session_id else None
-    resolved_tool_id = _resolve_tool_id(
-        tool_id,
+    client = AgentkitToolsClient()
+    resolved_tool_id = resolve_sandbox_tool_id(
+        tool_id=tool_id,
+        tool_type=tool_type,
         default_tool_id=existing.get("tool_id") if existing else None,
+        client=client,
+        env_var_name=SANDBOX_TOOL_ID_ENV,
     )
 
-    client = AgentkitToolsClient()
     if existing:
         result = _get_existing_remote_session(
             client,
