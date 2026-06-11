@@ -38,7 +38,8 @@ python3 -m pip show agentkit-sdk-python
 
 ### Get
 
-Read a created sandbox session from the local session store.
+Sync sessions for the current tool, then read a sandbox session from the local
+session store.
 
 ```bash
 agentkit get --session-id 123456789
@@ -47,6 +48,17 @@ agentkit get --session-id 123456789
 Options:
 
 - `--session-id`: required. Sandbox session ID to look up.
+- `--tool-id`: optional. Defaults to `AGENTKIT_SANDBOX_TOOL_ID`. If neither is
+  set, the CLI resolves an existing tool by `--tool-type`.
+- `--tool-type`: optional. `CodeEnv` or `SkillEnv`; defaults to `CodeEnv`.
+  Used when resolving the current tool after `--tool-id` and
+  `AGENTKIT_SANDBOX_TOOL_ID` are both absent.
+
+Before returning, `get` calls `ListSessions` for the resolved tool and follows
+`NextToken` until all pages are loaded. The returned remote sessions replace
+the same tool's records in `.agentkit/sandbox/sessions.json`; records for other
+tools are preserved. Sessions whose `UserSessionId` is empty are ignored because
+they were not created through this CLI's session flow.
 
 ### Shell
 

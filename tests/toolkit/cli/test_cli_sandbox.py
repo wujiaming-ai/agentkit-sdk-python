@@ -34,6 +34,24 @@ class _FakeGetSessionResponse:
     endpoint = None
 
 
+class _FakeSessionInfo:
+    def __init__(
+        self,
+        user_session_id="user-1",
+        session_id="instance-1",
+        endpoint="https://sandbox.example.com",
+    ):
+        self.user_session_id = user_session_id
+        self.session_id = session_id
+        self.endpoint = endpoint
+
+
+class _FakeListSessionsResponse:
+    def __init__(self, session_infos=None, next_token=None):
+        self.session_infos = [] if session_infos is None else session_infos
+        self.next_token = next_token
+
+
 class _FakeListTool:
     def __init__(
         self,
@@ -57,13 +75,17 @@ class _FakeToolsClient:
     last_request = None
     last_get_request = None
     last_list_request = None
+    last_list_sessions_request = None
+    list_sessions_requests = []
     response = _FakeCreateSessionResponse()
     get_response = _FakeGetSessionResponse()
     list_response = _FakeListToolsResponse()
+    list_sessions_responses = [_FakeListSessionsResponse()]
     get_error = None
     create_call_count = 0
     get_call_count = 0
     list_call_count = 0
+    list_sessions_call_count = 0
 
     def create_session(self, request):
         _FakeToolsClient.last_request = request
@@ -82,19 +104,33 @@ class _FakeToolsClient:
         _FakeToolsClient.list_call_count += 1
         return _FakeToolsClient.list_response
 
+    def list_sessions(self, request):
+        _FakeToolsClient.last_list_sessions_request = request
+        _FakeToolsClient.list_sessions_requests.append(request)
+        index = _FakeToolsClient.list_sessions_call_count
+        _FakeToolsClient.list_sessions_call_count += 1
+        responses = _FakeToolsClient.list_sessions_responses
+        if index < len(responses):
+            return responses[index]
+        return responses[-1]
+
 
 @pytest.fixture(autouse=True)
 def _reset_fake_client():
     _FakeToolsClient.last_request = None
     _FakeToolsClient.last_get_request = None
     _FakeToolsClient.last_list_request = None
+    _FakeToolsClient.last_list_sessions_request = None
+    _FakeToolsClient.list_sessions_requests = []
     _FakeToolsClient.response = _FakeCreateSessionResponse()
     _FakeToolsClient.get_response = _FakeGetSessionResponse()
     _FakeToolsClient.list_response = _FakeListToolsResponse()
+    _FakeToolsClient.list_sessions_responses = [_FakeListSessionsResponse()]
     _FakeToolsClient.get_error = None
     _FakeToolsClient.create_call_count = 0
     _FakeToolsClient.get_call_count = 0
     _FakeToolsClient.list_call_count = 0
+    _FakeToolsClient.list_sessions_call_count = 0
 
 
 def _patch_store_path(monkeypatch, tmp_path):
@@ -345,11 +381,9 @@ def test_create_command_requires_env_credentials(monkeypatch) -> None:
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
 
-    class MissingCredentialsConfiguration:
-        def __init__(self, region=None):
-            pass
-
-        def get_service_credentials(self, service_key):
+    class MissingCredentialsTOSService:
+        def __init__(self, _config):
+            service_key = "tos"
             raise ValueError(
                 "\n".join(
                     [
@@ -364,16 +398,12 @@ def test_create_command_requires_env_credentials(monkeypatch) -> None:
                 )
             )
 
-    monkeypatch.setattr(
-        cli_create,
-        "VolcConfiguration",
-        MissingCredentialsConfiguration,
-    )
+    monkeypatch.setattr(cli_create, "TOSService", MissingCredentialsTOSService)
 
-    result = runner.invoke(app, ["create"])
+    result = runner.invoke(app, ["create", "--tos-bucket", "my-bucket"])
 
     assert result.exit_code == 1
-    assert "Volcengine credentials not found (Service: agentkit)." in result.output
+    assert "Volcengine credentials not found (Service: tos)." in result.output
     assert "agentkit config --global --set volcengine.access_key" in result.output
 
 
@@ -495,6 +525,7 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
 
 def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     stored_result = {
@@ -503,10 +534,32 @@ def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
         "instance_id": "session-1",
         "endpoint": "https://sandbox.example.com",
     }
+    remote_result = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "remote-session-1",
+        "endpoint": "https://remote.example.com",
+    }
     store_path.write_text(
         json.dumps({"user-1": stored_result}, indent=2),
         encoding="utf-8",
     )
+    monkeypatch.setattr(
+        cli_get,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="user-1",
+                    session_id="remote-session-1",
+                    endpoint="https://remote.example.com",
+                )
+            ]
+        )
+    ]
 
     result = runner.invoke(
         app,
@@ -514,7 +567,164 @@ def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
     )
 
     assert result.exit_code == 0
-    assert json.loads(result.output) == stored_result
+    assert json.loads(result.output) == remote_result
+    assert json.loads(store_path.read_text(encoding="utf-8")) == {
+        "user-1": remote_result
+    }
+
+
+def test_cli_get_syncs_remote_sessions_with_pagination(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    store_path.write_text(
+        json.dumps(
+            {
+                "stale-user": {
+                    "session_id": "stale-user",
+                    "tool_id": "tool-1",
+                    "instance_id": "stale-instance",
+                    "endpoint": "https://stale.example.com",
+                },
+                "user-2": {
+                    "session_id": "user-2",
+                    "tool_id": "tool-1",
+                    "instance_id": "old-instance-2",
+                    "endpoint": "https://old.example.com",
+                    "terminal_shell_id": "shell-local",
+                },
+                "other-user": {
+                    "session_id": "other-user",
+                    "tool_id": "other-tool",
+                    "instance_id": "other-instance",
+                    "endpoint": "https://other.example.com",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli_get,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="user-1",
+                    session_id="instance-1",
+                    endpoint="https://one.example.com",
+                )
+            ],
+            next_token="page-2",
+        ),
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="user-2",
+                    session_id="instance-2",
+                    endpoint="https://two.example.com",
+                )
+            ]
+        ),
+    ]
+
+    result = runner.invoke(
+        app,
+        ["get", "--session-id", "user-2", "--tool-id", "tool-1"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {
+        "session_id": "user-2",
+        "tool_id": "tool-1",
+        "instance_id": "instance-2",
+        "endpoint": "https://two.example.com",
+        "terminal_shell_id": "shell-local",
+    }
+    assert [
+        request.next_token for request in _FakeToolsClient.list_sessions_requests
+    ] == [None, "page-2"]
+    stored = json.loads(store_path.read_text(encoding="utf-8"))
+    assert "stale-user" not in stored
+    assert stored["other-user"]["tool_id"] == "other-tool"
+    assert stored["user-1"] == {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "instance-1",
+        "endpoint": "https://one.example.com",
+    }
+    assert stored["user-2"]["terminal_shell_id"] == "shell-local"
+
+
+def test_cli_get_ignores_remote_sessions_without_user_session_id(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    store_path.write_text(
+        json.dumps(
+            {
+                "user-1": {
+                    "session_id": "user-1",
+                    "tool_id": "tool-1",
+                    "instance_id": "old-instance",
+                    "endpoint": "https://old.example.com",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli_get,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="",
+                    session_id="instance-without-user-session",
+                    endpoint="https://ignored.example.com",
+                ),
+                _FakeSessionInfo(
+                    user_session_id=None,
+                    session_id="another-instance-without-user-session",
+                    endpoint="https://ignored-too.example.com",
+                ),
+                _FakeSessionInfo(
+                    user_session_id="user-1",
+                    session_id="instance-1",
+                    endpoint="https://one.example.com",
+                ),
+            ]
+        )
+    ]
+
+    result = runner.invoke(
+        app,
+        ["get", "--session-id", "user-1", "--tool-id", "tool-1"],
+    )
+
+    assert result.exit_code == 0
+    stored = json.loads(store_path.read_text(encoding="utf-8"))
+    assert list(stored) == ["user-1"]
+    assert stored["user-1"] == {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "instance-1",
+        "endpoint": "https://one.example.com",
+    }
+    assert json.loads(result.output) == stored["user-1"]
 
 
 def test_cli_get_requires_session_id() -> None:
@@ -528,9 +738,15 @@ def test_cli_get_requires_session_id() -> None:
 
 def test_cli_get_reports_missing_session(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     store_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        cli_get,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
 
     result = runner.invoke(
         app,

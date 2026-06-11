@@ -77,6 +77,41 @@ def save_session_result(result: dict[str, object]) -> None:
     )
 
 
+def replace_tool_session_results(
+    tool_id: str,
+    results: list[dict[str, object]],
+) -> None:
+    path = _get_session_store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.exists():
+        data = load_session_store(path)
+    else:
+        data = {}
+
+    old_data = data
+    data = {
+        key: value
+        for key, value in old_data.items()
+        if not (isinstance(value, dict) and value.get("tool_id") == tool_id)
+    }
+
+    for result in results:
+        session_id = result.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            continue
+        existing = old_data.get(session_id)
+        if isinstance(existing, dict):
+            data[session_id] = {**existing, **result}
+        else:
+            data[session_id] = result
+
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def update_session_result(
     session_id: str,
     updates: dict[str, object],

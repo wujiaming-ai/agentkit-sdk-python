@@ -164,6 +164,28 @@ def resolve_sandbox_tool_id(
     client: AgentkitToolsClient,
     env_var_name: str,
 ) -> str:
+    resolved_tool_id = resolve_existing_sandbox_tool_id(
+        tool_id=tool_id,
+        tool_type=tool_type,
+        default_tool_id=default_tool_id,
+        client=client,
+        env_var_name=env_var_name,
+    )
+    if resolved_tool_id:
+        return resolved_tool_id
+
+    resolved_tool_type = normalize_tool_type(tool_type)
+    return _create_tool(resolved_tool_type)
+
+
+def resolve_existing_sandbox_tool_id(
+    *,
+    tool_id: Optional[str],
+    tool_type: str | SandboxToolType | None,
+    default_tool_id: object = None,
+    client: AgentkitToolsClient,
+    env_var_name: str,
+) -> str | None:
     explicit_tool_id = (tool_id or "").strip()
     if explicit_tool_id:
         return explicit_tool_id
@@ -184,4 +206,4 @@ def resolve_sandbox_tool_id(
     if listed_tool_id:
         return listed_tool_id
 
-    return _create_tool(resolved_tool_type)
+    return None

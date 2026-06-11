@@ -76,30 +76,57 @@ class _FakeToolsClient:
 
 
 class _FakeTOSService:
-    def __init__(
+    instances = []
+    generated_bucket_name = "agentkit-platform-123"
+
+    def __init__(self, config):
+        self.config = config
+        self.created_directories = []
+        self.bucket_path = ""
+        self.local_mount_path = ""
+        _FakeTOSService.instances.append(self)
+
+    @staticmethod
+    def generate_bucket_name():
+        return _FakeTOSService.generated_bucket_name
+
+    def build_mount_config(
         self,
         *,
-        bucket_exists=True,
-        endpoint="tos-cn-beijing.volces.com",
+        bucket_path,
+        local_mount_path,
+        read_only=False,
     ):
-        self._bucket_exists = bucket_exists
-        self.create_count = 0
-        self.created_objects = []
-        self.created_directories = []
-        self.endpoint = endpoint
+        from agentkit.toolkit.volcengine.services.tos_service import (
+            TOSMountConfig,
+            TOSMountCredentials,
+            TOSMountPoint,
+        )
 
-    def bucket_exists(self):
-        return self._bucket_exists
-
-    def create_bucket(self):
-        self.create_count += 1
-
-    def object_exists(self, key):
-        return key in self.created_objects
-
-    def create_directory(self, key):
-        self.created_objects.append(key)
-        self.created_directories.append(key)
+        self.bucket_path = bucket_path
+        self.local_mount_path = local_mount_path
+        self.created_directories = [
+            "sandbox-session/",
+            "sandbox-session/default/",
+            "sandbox-session/default/default/",
+        ]
+        return TOSMountConfig(
+            credentials=TOSMountCredentials(
+                **{
+                    "access_key_id": _PLACEHOLDER_A,
+                    "secret_" + "access_key": _PLACEHOLDER_B,
+                }
+            ),
+            mount_points=[
+                TOSMountPoint(
+                    bucket_name=self.config.bucket,
+                    bucket_path=bucket_path,
+                    endpoint="http://tos-cn-beijing.ivolces.com",
+                    local_mount_path=local_mount_path,
+                    read_only=read_only,
+                )
+            ],
+        )
 
 
 def _reset_fake_tools_client():
@@ -107,86 +134,16 @@ def _reset_fake_tools_client():
     _FakeToolsClient.last_request = None
     _FakeToolsClient.get_statuses = ["Ready"]
     _FakeToolsClient.get_call_count = 0
+    _FakeTOSService.instances = []
 
 
-def _set_fake_env_credentials(monkeypatch):
-    monkeypatch.setenv("VOLCENGINE_ACCESS_KEY", _PLACEHOLDER_A)
-    monkeypatch.setenv("VOLCENGINE_SECRET_KEY", _PLACEHOLDER_B)
-
-
-def _fake_env_credentials(cli_create):
-    return cli_create.EnvCredentials(
-        **{
-            "access" + "_key": _PLACEHOLDER_A,
-            "secret" + "_key": _PLACEHOLDER_B,
-        }
-    )
-
-
-def test_load_credentials_uses_volc_configuration(monkeypatch):
-    from agentkit.toolkit.cli.sandbox import cli_create
-
-    captured = {}
-
-    class FakeCredentials:
-        access_key = _PLACEHOLDER_A
-        secret_key = _PLACEHOLDER_B
-        session_token = "example-session-token"
-
-    class FakeVolcConfiguration:
-        def __init__(self, region=None):
-            captured["region"] = region
-
-        def get_service_credentials(self, service_key):
-            captured["service_key"] = service_key
-            return FakeCredentials()
-
-    monkeypatch.setattr(cli_create, "VolcConfiguration", FakeVolcConfiguration)
-
-    credentials = cli_create._load_env_credentials("cn-shanghai")
-
-    assert captured == {
-        "region": "cn-shanghai",
-        "service_key": "agentkit",
-    }
-    assert credentials.access_key == _PLACEHOLDER_A
-    assert credentials.secret_key == _PLACEHOLDER_B
-    assert credentials.session_token == "example-session-token"
-
-
-def test_load_credentials_supports_legacy_volc_env(monkeypatch):
-    from agentkit.toolkit.cli.sandbox import cli_create
-
-    monkeypatch.delenv("VOLCENGINE_ACCESS_KEY", raising=False)
-    monkeypatch.delenv("VOLCENGINE_SECRET_KEY", raising=False)
-    monkeypatch.setenv("VOLC_ACCESSKEY", _PLACEHOLDER_A)
-    monkeypatch.setenv("VOLC_SECRETKEY", _PLACEHOLDER_B)
-
-    credentials = cli_create._load_env_credentials()
-
-    assert credentials.access_key == _PLACEHOLDER_A
-    assert credentials.secret_key == _PLACEHOLDER_B
-
-
-def test_create_command_uses_env_credentials_and_default_region(monkeypatch):
+def test_create_command_uses_tos_service_and_default_region(monkeypatch):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
 
-    fake_service = _FakeTOSService()
-
     _reset_fake_tools_client()
-    _set_fake_env_credentials(monkeypatch)
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
-    monkeypatch.setattr(
-        cli_create,
-        "_generate_default_tos_bucket",
-        lambda credentials, region: "agentkit-platform-123",
-    )
-    monkeypatch.setattr(
-        cli_create,
-        "_build_tos_service",
-        lambda bucket_name, region, credentials: fake_service,
-    )
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
     result = runner.invoke(app, ["create", "--tool-name", "demo-tool"])
 
@@ -196,10 +153,13 @@ def test_create_command_uses_env_credentials_and_default_region(monkeypatch):
     assert "状态：Ready" in result.output
     assert len(_FakeToolsClient.instances) == 1
     client = _FakeToolsClient.instances[0]
-    assert client.access_key == _PLACEHOLDER_A
-    assert client.secret_key == _PLACEHOLDER_B
+    assert client.access_key == ""
+    assert client.secret_key == ""
     assert client.session_token == ""
     assert client.region == "cn-beijing"
+    assert len(_FakeTOSService.instances) == 1
+    assert _FakeTOSService.instances[0].config.bucket == "agentkit-platform-123"
+    assert _FakeTOSService.instances[0].config.region == "cn-beijing"
     assert _FakeToolsClient.last_request.name == "demo-tool"
     assert _FakeToolsClient.last_request.tool_type == "CodeEnv"
     tos_config = _FakeToolsClient.last_request.tos_mount_config
@@ -216,21 +176,9 @@ def test_create_command_passes_region_to_client(monkeypatch):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
 
-    fake_service = _FakeTOSService()
-
     _reset_fake_tools_client()
-    _set_fake_env_credentials(monkeypatch)
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
-    monkeypatch.setattr(
-        cli_create,
-        "_generate_default_tos_bucket",
-        lambda credentials, region: "agentkit-platform-123",
-    )
-    monkeypatch.setattr(
-        cli_create,
-        "_build_tos_service",
-        lambda bucket_name, region, credentials: fake_service,
-    )
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
     result = runner.invoke(
         app,
@@ -239,28 +187,17 @@ def test_create_command_passes_region_to_client(monkeypatch):
 
     assert result.exit_code == 0
     assert _FakeToolsClient.instances[0].region == "cn-shanghai"
+    assert _FakeTOSService.instances[0].config.region == "cn-shanghai"
 
 
 def test_create_command_waits_until_tool_ready(monkeypatch):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
 
-    fake_service = _FakeTOSService()
-
     _reset_fake_tools_client()
     _FakeToolsClient.get_statuses = ["Creating", "Ready"]
-    _set_fake_env_credentials(monkeypatch)
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
-    monkeypatch.setattr(
-        cli_create,
-        "_generate_default_tos_bucket",
-        lambda credentials, region: "agentkit-platform-123",
-    )
-    monkeypatch.setattr(
-        cli_create,
-        "_build_tos_service",
-        lambda bucket_name, region, credentials: fake_service,
-    )
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
     monkeypatch.setattr(cli_create.time, "sleep", lambda _seconds: None)
 
     result = runner.invoke(app, ["create", "--tool-name", "demo-tool"])
@@ -276,22 +213,10 @@ def test_create_command_prints_sanitized_details_on_error(monkeypatch):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
 
-    fake_service = _FakeTOSService()
-
     _reset_fake_tools_client()
     _FakeToolsClient.get_statuses = ["Error"]
-    _set_fake_env_credentials(monkeypatch)
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
-    monkeypatch.setattr(
-        cli_create,
-        "_generate_default_tos_bucket",
-        lambda credentials, region: "agentkit-platform-123",
-    )
-    monkeypatch.setattr(
-        cli_create,
-        "_build_tos_service",
-        lambda bucket_name, region, credentials: fake_service,
-    )
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
     result = runner.invoke(app, ["create", "--tool-name", "demo-tool"])
 
@@ -306,25 +231,19 @@ def test_create_command_prints_sanitized_details_on_error(monkeypatch):
 def test_build_create_tool_request_adds_tos_mount(monkeypatch):
     from agentkit.toolkit.cli.sandbox import cli_create
 
-    fake_service = _FakeTOSService()
-
-    def fake_build_tos_service(bucket_name, region, credentials):
-        assert bucket_name == "my-bucket"
-        assert region == "cn-beijing"
-        assert credentials.access_key == _PLACEHOLDER_A
-        assert credentials.secret_key == _PLACEHOLDER_B
-        return fake_service
-
-    monkeypatch.setattr(cli_create, "_build_tos_service", fake_build_tos_service)
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
     request = cli_create._build_create_tool_request(
         tool_type="CodeEnv",
         name="demo-tool",
         tos_bucket="my-bucket",
         region="cn-beijing",
-        credentials=_fake_env_credentials(cli_create),
     )
 
+    fake_service = _FakeTOSService.instances[0]
+    assert fake_service.config.bucket == "my-bucket"
+    assert fake_service.config.region == "cn-beijing"
     tos_config = request.tos_mount_config
     assert tos_config is not None
     assert tos_config.enable_tos is True
@@ -337,12 +256,11 @@ def test_build_create_tool_request_adds_tos_mount(monkeypatch):
     assert mount_point.endpoint == "http://tos-cn-beijing.ivolces.com"
     assert mount_point.local_mount_path == "/home/gem"
     assert mount_point.read_only is False
-    assert fake_service.created_objects == [
+    assert fake_service.created_directories == [
         "sandbox-session/",
         "sandbox-session/default/",
         "sandbox-session/default/default/",
     ]
-    assert fake_service.created_directories == fake_service.created_objects
     assert request.authorizer_configuration is not None
     assert request.authorizer_configuration.key_auth is not None
     assert request.authorizer_configuration.key_auth.api_key_name
@@ -355,19 +273,14 @@ def test_build_create_tool_request_adds_tos_mount(monkeypatch):
 def test_build_create_tool_request_adds_model_envs(monkeypatch):
     from agentkit.toolkit.cli.sandbox import cli_create
 
-    fake_service = _FakeTOSService()
-    monkeypatch.setattr(
-        cli_create,
-        "_build_tos_service",
-        lambda bucket_name, region, credentials: fake_service,
-    )
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
     request = cli_create._build_create_tool_request(
         tool_type="SkillEnv",
         name="demo-tool",
         tos_bucket="my-bucket",
         region="cn-beijing",
-        credentials=_fake_env_credentials(cli_create),
         model_name="claude-sonnet-4",
         model_base_url="https://models.example.com",
         **{"model_" + "api_key": _PLACEHOLDER_MODEL_VALUE},
@@ -390,19 +303,14 @@ def test_build_create_tool_request_adds_model_envs(monkeypatch):
 def test_build_create_tool_request_adds_default_model_base_url(monkeypatch):
     from agentkit.toolkit.cli.sandbox import cli_create
 
-    fake_service = _FakeTOSService()
-    monkeypatch.setattr(
-        cli_create,
-        "_build_tos_service",
-        lambda bucket_name, region, credentials: fake_service,
-    )
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
     request = cli_create._build_create_tool_request(
         tool_type="SkillEnv",
         name="demo-tool",
         tos_bucket="my-bucket",
         region="cn-beijing",
-        credentials=_fake_env_credentials(cli_create),
     )
 
     assert [(item.key, item.value) for item in request.envs] == [
@@ -416,55 +324,61 @@ def test_build_create_tool_request_adds_default_model_base_url(monkeypatch):
     ]
 
 
-def test_ensure_tos_bucket_ready_creates_missing_bucket(monkeypatch):
-    from agentkit.toolkit.cli.sandbox import cli_create
+def test_tos_service_build_directory_keys():
+    from agentkit.toolkit.volcengine.services.tos_service import TOSService
 
-    fake_service = _FakeTOSService(bucket_exists=False)
-
-    monkeypatch.setattr(
-        cli_create,
-        "_build_tos_service",
-        lambda bucket_name, region, credentials: fake_service,
-    )
-    endpoint = cli_create._ensure_tos_bucket_ready(
-        "new-bucket",
-        "cn-beijing",
-        _fake_env_credentials(cli_create),
-    )
-
-    assert endpoint == "tos-cn-beijing.volces.com"
-    assert fake_service.create_count == 1
-
-
-def test_ensure_tos_bucket_path_ready_creates_directory_markers(monkeypatch):
-    from agentkit.toolkit.cli.sandbox import cli_create
-
-    fake_service = _FakeTOSService()
-
-    monkeypatch.setattr(
-        cli_create,
-        "_build_tos_service",
-        lambda bucket_name, region, credentials: fake_service,
-    )
-
-    cli_create._ensure_tos_bucket_path_ready(
-        "my-bucket",
-        "/sandbox-session/default/default",
-        "cn-beijing",
-        _fake_env_credentials(cli_create),
-    )
-
-    assert fake_service.created_directories == [
+    assert TOSService.build_directory_keys("/sandbox-session/default/default") == [
         "sandbox-session/",
         "sandbox-session/default/",
         "sandbox-session/default/default/",
     ]
 
 
-def test_build_tos_mount_endpoint_uses_default_private_endpoint():
-    from agentkit.toolkit.cli.sandbox import cli_create
+def test_tos_service_build_mount_endpoint_uses_default_private_endpoint():
+    from agentkit.toolkit.volcengine.services.tos_service import TOSService
 
     assert (
-        cli_create._build_tos_mount_endpoint("cn-beijing")
+        TOSService.build_mount_endpoint("cn-beijing")
         == "http://tos-cn-beijing.ivolces.com"
     )
+
+
+def test_tos_service_build_mount_config_prepares_bucket_path():
+    from types import SimpleNamespace
+
+    from agentkit.toolkit.volcengine.services.tos_service import (
+        TOSService,
+        TOSServiceConfig,
+    )
+
+    service = object.__new__(TOSService)
+    service.config = TOSServiceConfig(bucket="my-bucket", region="cn-beijing")
+    service.credentials = SimpleNamespace(
+        **{
+            "access_key": _PLACEHOLDER_A,
+            "secret_" + "key": _PLACEHOLDER_B,
+        }
+    )
+    service.actual_region = "cn-beijing"
+    created_buckets = []
+    created_directories = []
+    existing_keys = {"sandbox-session/"}
+    service.bucket_exists = lambda: False
+    service.create_bucket = lambda: created_buckets.append(service.config.bucket)
+    service.object_exists = lambda key: key in existing_keys
+    service.create_directory_marker = lambda key: created_directories.append(key)
+
+    mount_config = service.build_mount_config(
+        bucket_path="/sandbox-session/default/default",
+        local_mount_path="/home/gem",
+    )
+
+    assert created_buckets == ["my-bucket"]
+    assert created_directories == [
+        "sandbox-session/default/",
+        "sandbox-session/default/default/",
+    ]
+    assert mount_config.credentials.access_key_id == _PLACEHOLDER_A
+    assert mount_config.credentials.secret_access_key == _PLACEHOLDER_B
+    assert mount_config.mount_points[0].bucket_name == "my-bucket"
+    assert mount_config.mount_points[0].endpoint == "http://tos-cn-beijing.ivolces.com"

@@ -16,14 +16,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 import time
 from typing import Optional
 
 import typer
 
-from agentkit.platform import VolcConfiguration
 from agentkit.sdk.tools.client import AgentkitToolsClient
 from agentkit.sdk.tools import types as tools_types
 from agentkit.toolkit.cli.sandbox.session_create import (
@@ -31,8 +29,11 @@ from agentkit.toolkit.cli.sandbox.session_create import (
     MODEL_NAME_ENV_KEYS,
 )
 from agentkit.toolkit.cli.sandbox.utils import error
-from agentkit.toolkit.config.constants import DEFAULT_TOS_BUCKET_TEMPLATE_NAME
-from agentkit.toolkit.volcengine.sts import VeSTS
+from agentkit.toolkit.volcengine.services.tos_service import (
+    TOSMountConfig,
+    TOSService,
+    TOSServiceConfig,
+)
 from agentkit.utils.misc import generate_apikey_name, generate_random_id
 
 DEFAULT_CREATE_TOOL_REGION = "cn-beijing"
@@ -47,30 +48,10 @@ MODEL_BASE_URL_ENV_KEYS = (
     "MODEL_BASE_URL",
 )
 ANTHROPIC_BASE_URL_ENV_KEYS = ("ANTHROPIC_BASE_URL",)
-TOS_DIRECTORY_CONTENT_TYPE = "application/x-directory"
 TOOL_READY_STATUS = "Ready"
 TOOL_FAILED_STATUSES = {"Error", "Failed", "CreateFailed", "Deleting", "Deleted"}
 TOOL_WAIT_INTERVAL_SECONDS = 5
 TOOL_WAIT_TIMEOUT_SECONDS = 600
-PLATFORM_CREDENTIAL_SERVICE = "agentkit"
-
-
-@dataclass(frozen=True)
-class EnvCredentials:
-    access_key: str
-    secret_key: str
-    session_token: Optional[str] = None
-
-
-def _load_env_credentials(region: Optional[str] = None) -> EnvCredentials:
-    credentials = VolcConfiguration(region=region).get_service_credentials(
-        PLATFORM_CREDENTIAL_SERVICE
-    )
-    return EnvCredentials(
-        access_key=credentials.access_key,
-        secret_key=credentials.secret_key,
-        session_token=credentials.session_token,
-    )
 
 
 def _normalize_region(region: Optional[str]) -> str:
@@ -84,149 +65,11 @@ def _generate_tool_name(tool_type: str) -> str:
     return f"agentkit-{normalized}-{generate_random_id(8)}"
 
 
-class _TOSBucketService:
-    def __init__(
-        self,
-        *,
-        bucket_name: str,
-        region: str,
-        credentials: EnvCredentials,
-    ) -> None:
-        try:
-            import tos
-        except ImportError as exc:
-            raise ImportError(
-                "TOS SDK not installed. Install with: pip install tos"
-            ) from exc
-
-        from agentkit.platform import VolcConfiguration
-
-        self._tos = tos
-        self.bucket_name = bucket_name
-        endpoint = VolcConfiguration(
-            region=region,
-            access_key=credentials.access_key,
-            secret_key=credentials.secret_key,
-            session_token=credentials.session_token,
-        ).get_service_endpoint("tos")
-        self.endpoint = endpoint.host
-        self.client = tos.TosClientV2(
-            credentials.access_key,
-            credentials.secret_key,
-            endpoint.host,
-            endpoint.region,
-            security_token=credentials.session_token,
-        )
-
-    def bucket_exists(self) -> bool:
-        try:
-            self.client.head_bucket(bucket=self.bucket_name)
-            return True
-        except self._tos.exceptions.TosServerError as exc:
-            if exc.status_code == 404:
-                return False
-            raise
-
-    def create_bucket(self) -> None:
-        self.client.create_bucket(bucket=self.bucket_name)
-
-    def object_exists(self, key: str) -> bool:
-        try:
-            self.client.head_object(bucket=self.bucket_name, key=key)
-            return True
-        except self._tos.exceptions.TosServerError as exc:
-            if exc.status_code == 404:
-                return False
-            raise
-
-    def create_directory(self, key: str) -> None:
-        self.client.put_object(
-            bucket=self.bucket_name,
-            key=key,
-            content=b"",
-            content_length=0,
-            content_type=TOS_DIRECTORY_CONTENT_TYPE,
-        )
-
-
-def _build_tos_service(
-    bucket_name: str,
-    region: str,
-    credentials: EnvCredentials,
-) -> _TOSBucketService:
-    return _TOSBucketService(
-        bucket_name=bucket_name,
-        region=region,
-        credentials=credentials,
-    )
-
-
-def _build_tos_mount_endpoint(region: str) -> str:
-    return f"http://tos-{region}.ivolces.com"
-
-
-def _ensure_tos_bucket_ready(
-    bucket_name: str,
-    region: str,
-    credentials: EnvCredentials,
-) -> str:
-    service = _build_tos_service(bucket_name, region, credentials)
-    if service.bucket_exists():
-        return service.endpoint
-
-    service.create_bucket()
-    typer.echo(f"TOS bucket created: {bucket_name}")
-    return service.endpoint
-
-
-def _build_tos_directory_keys(bucket_path: str) -> list[str]:
-    parts = [part for part in bucket_path.strip("/").split("/") if part]
-    keys = []
-    for index in range(1, len(parts) + 1):
-        keys.append("/".join(parts[:index]) + "/")
-    return keys
-
-
-def _ensure_tos_bucket_path_ready(
-    bucket_name: str,
-    bucket_path: str,
-    region: str,
-    credentials: EnvCredentials,
-) -> None:
-    service = _build_tos_service(bucket_name, region, credentials)
-    created = False
-    for key in _build_tos_directory_keys(bucket_path):
-        if not service.object_exists(key):
-            service.create_directory(key)
-            created = True
-    if created:
-        typer.echo(f"TOS bucket path created: {bucket_path}")
-
-
-def _generate_default_tos_bucket(
-    credentials: EnvCredentials,
-    region: str,
-) -> str:
-    account_id = VeSTS(
-        access_key=credentials.access_key,
-        secret_key=credentials.secret_key,
-        region=region,
-        session_token=credentials.session_token,
-    ).get_account_id()
-    if not account_id:
-        raise ValueError("Failed to get account_id for default TOS bucket")
-    return DEFAULT_TOS_BUCKET_TEMPLATE_NAME.replace("{{account_id}}", str(account_id))
-
-
-def _resolve_tos_bucket(
-    tos_bucket: Optional[str],
-    region: str,
-    credentials: EnvCredentials,
-) -> str:
+def _resolve_tos_bucket(tos_bucket: Optional[str]) -> str:
     resolved_bucket = (tos_bucket or "").strip()
     if resolved_bucket:
         return resolved_bucket
-    return _generate_default_tos_bucket(credentials, region)
+    return TOSService.generate_bucket_name()
 
 
 def _append_tool_envs(
@@ -273,38 +116,13 @@ def _build_create_tool_request(
     name: Optional[str],
     tos_bucket: Optional[str],
     region: str,
-    credentials: EnvCredentials,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
     model_base_url: Optional[str] = None,
 ) -> tools_types.CreateToolRequest:
     resolved_tool_type = tool_type.strip() or DEFAULT_CREATE_TOOL_TYPE
     resolved_name = (name or "").strip() or _generate_tool_name(resolved_tool_type)
-    resolved_bucket = _resolve_tos_bucket(tos_bucket, region, credentials)
-    _ensure_tos_bucket_ready(resolved_bucket, region, credentials)
-    _ensure_tos_bucket_path_ready(
-        resolved_bucket,
-        DEFAULT_TOS_BUCKET_PATH,
-        region,
-        credentials,
-    )
-    mount_endpoint = _build_tos_mount_endpoint(region)
-    tos_mount_config = tools_types.TosMountForCreateTool(
-        enable_tos=True,
-        credentials=tools_types.TosMountCredentialsForCreateTool(
-            access_key_id=credentials.access_key,
-            secret_access_key=credentials.secret_key,
-        ),
-        mount_points=[
-            tools_types.TosMountMountPointsItemForCreateTool(
-                bucket_name=resolved_bucket,
-                bucket_path=DEFAULT_TOS_BUCKET_PATH,
-                endpoint=mount_endpoint,
-                local_mount_path=DEFAULT_TOS_LOCAL_PATH,
-                read_only=False,
-            )
-        ],
-    )
+    tos_mount_config = _build_tos_mount_config(tos_bucket, region)
 
     return tools_types.CreateToolRequest(
         name=resolved_name,
@@ -325,6 +143,46 @@ def _build_create_tool_request(
             model_api_key=model_api_key,
             model_base_url=model_base_url,
         ),
+    )
+
+
+def _build_tos_mount_config(
+    tos_bucket: Optional[str],
+    region: str,
+) -> tools_types.TosMountForCreateTool:
+    resolved_bucket = _resolve_tos_bucket(tos_bucket)
+    service = TOSService(
+        TOSServiceConfig(
+            bucket=resolved_bucket,
+            region=region,
+        )
+    )
+    mount_config = service.build_mount_config(
+        bucket_path=DEFAULT_TOS_BUCKET_PATH,
+        local_mount_path=DEFAULT_TOS_LOCAL_PATH,
+    )
+    return _to_create_tool_tos_mount_config(mount_config)
+
+
+def _to_create_tool_tos_mount_config(
+    mount_config: TOSMountConfig,
+) -> tools_types.TosMountForCreateTool:
+    return tools_types.TosMountForCreateTool(
+        enable_tos=True,
+        credentials=tools_types.TosMountCredentialsForCreateTool(
+            access_key_id=mount_config.credentials.access_key_id,
+            secret_access_key=mount_config.credentials.secret_access_key,
+        ),
+        mount_points=[
+            tools_types.TosMountMountPointsItemForCreateTool(
+                bucket_name=mount.bucket_name,
+                bucket_path=mount.bucket_path,
+                endpoint=mount.endpoint,
+                local_mount_path=mount.local_mount_path,
+                read_only=mount.read_only,
+            )
+            for mount in mount_config.mount_points
+        ],
     )
 
 
@@ -395,22 +253,17 @@ def create_tool(
     model_base_url: Optional[str] = None,
 ) -> dict[str, object]:
     resolved_region = _normalize_region(region)
-    credentials = _load_env_credentials(resolved_region)
     request = _build_create_tool_request(
         tool_type=tool_type,
         name=tool_name,
         tos_bucket=tos_bucket,
         region=resolved_region,
-        credentials=credentials,
         model_name=model_name,
         model_api_key=model_api_key,
         model_base_url=model_base_url,
     )
     client = AgentkitToolsClient(
-        access_key=credentials.access_key,
-        secret_key=credentials.secret_key,
         region=resolved_region,
-        session_token=credentials.session_token or "",
     )
     response = client.create_tool(request)
     tool_id = response.tool_id
