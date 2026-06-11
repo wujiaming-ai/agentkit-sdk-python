@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Optional
@@ -37,6 +38,8 @@ from agentkit.toolkit.volcengine.services.tos_service import (
 from agentkit.utils.misc import generate_apikey_name, generate_random_id
 
 DEFAULT_CREATE_TOOL_REGION = "cn-beijing"
+SANDBOX_REGION_ENV = "AGENTKIT_SANDBOX_REGION"
+SANDBOX_TOS_REGION_ENV = "AGENTKIT_SANDBOX_TOS_REGION"
 DEFAULT_CREATE_TOOL_TYPE = "CodeEnv"
 DEFAULT_TOS_BUCKET_PATH = "/sandbox-session/default/default"
 DEFAULT_TOS_LOCAL_PATH = "/home/gem"
@@ -61,8 +64,11 @@ TOOL_WAIT_INTERVAL_SECONDS = 5
 TOOL_WAIT_TIMEOUT_SECONDS = 600
 
 
-def _normalize_region(region: Optional[str]) -> str:
-    return (region or DEFAULT_CREATE_TOOL_REGION).strip() or DEFAULT_CREATE_TOOL_REGION
+def _resolve_region(env_var_name: str) -> str:
+    env_region = (os.getenv(env_var_name) or "").strip()
+    if env_region:
+        return env_region
+    return DEFAULT_CREATE_TOOL_REGION
 
 
 def _generate_tool_name(tool_type: str) -> str:
@@ -123,14 +129,14 @@ def _build_create_tool_request(
     tool_type: str,
     name: Optional[str],
     tos_bucket: Optional[str],
-    region: str,
+    tos_region: str,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
     model_base_url: Optional[str] = None,
 ) -> tools_types.CreateToolRequest:
     resolved_tool_type = tool_type.strip() or DEFAULT_CREATE_TOOL_TYPE
     resolved_name = (name or "").strip() or _generate_tool_name(resolved_tool_type)
-    tos_mount_config = _build_tos_mount_config(tos_bucket, region)
+    tos_mount_config = _build_tos_mount_config(tos_bucket, tos_region)
 
     return tools_types.CreateToolRequest(
         name=resolved_name,
@@ -255,23 +261,23 @@ def create_tool(
     tool_type: str = DEFAULT_CREATE_TOOL_TYPE,
     tool_name: Optional[str] = None,
     tos_bucket: Optional[str] = None,
-    region: str = DEFAULT_CREATE_TOOL_REGION,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
     model_base_url: Optional[str] = None,
 ) -> dict[str, object]:
-    resolved_region = _normalize_region(region)
+    region = _resolve_region(SANDBOX_REGION_ENV)
+    tos_region = _resolve_region(SANDBOX_TOS_REGION_ENV)
     request = _build_create_tool_request(
         tool_type=tool_type,
         name=tool_name,
         tos_bucket=tos_bucket,
-        region=resolved_region,
+        tos_region=tos_region,
         model_name=model_name,
         model_api_key=model_api_key,
         model_base_url=model_base_url,
     )
     client = AgentkitToolsClient(
-        region=resolved_region,
+        region=region,
     )
     response = client.create_tool(request)
     tool_id = response.tool_id
@@ -301,11 +307,6 @@ def create_command(
         None,
         "--tos-bucket",
         help="TOS bucket to mount at /home/gem.",
-    ),
-    region: str = typer.Option(
-        DEFAULT_CREATE_TOOL_REGION,
-        "--region",
-        help="Region for CreateTool and TOS bucket operations.",
     ),
     model_name: Optional[str] = typer.Option(
         None,
@@ -339,7 +340,6 @@ def create_command(
             tool_type=tool_type,
             tool_name=tool_name,
             tos_bucket=tos_bucket,
-            region=region,
             model_name=model_name,
             model_api_key=model_api_key,
             model_base_url=model_base_url,

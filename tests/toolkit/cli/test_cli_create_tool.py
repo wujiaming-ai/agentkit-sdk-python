@@ -142,6 +142,8 @@ def test_create_command_uses_tos_service_and_default_region(monkeypatch):
     from agentkit.toolkit.cli.sandbox import cli_create
 
     _reset_fake_tools_client()
+    monkeypatch.delenv("AGENTKIT_SANDBOX_REGION", raising=False)
+    monkeypatch.delenv("AGENTKIT_SANDBOX_TOS_REGION", raising=False)
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
@@ -172,7 +174,24 @@ def test_create_command_uses_tos_service_and_default_region(monkeypatch):
     assert _FakeToolsClient.get_call_count == 1
 
 
-def test_create_command_passes_region_to_client(monkeypatch):
+def test_create_command_uses_region_envs(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setenv("AGENTKIT_SANDBOX_REGION", " cn-shanghai ")
+    monkeypatch.setenv("AGENTKIT_SANDBOX_TOS_REGION", " cn-guangzhou ")
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(app, ["create", "--tool-name", "demo-tool"])
+
+    assert result.exit_code == 0
+    assert _FakeToolsClient.instances[0].region == "cn-shanghai"
+    assert _FakeTOSService.instances[0].config.region == "cn-guangzhou"
+
+
+def test_create_command_rejects_region_option(monkeypatch):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
 
@@ -185,9 +204,10 @@ def test_create_command_passes_region_to_client(monkeypatch):
         ["create", "--tool-name", "demo-tool", "--region", "cn-shanghai"],
     )
 
-    assert result.exit_code == 0
-    assert _FakeToolsClient.instances[0].region == "cn-shanghai"
-    assert _FakeTOSService.instances[0].config.region == "cn-shanghai"
+    assert result.exit_code != 0
+    assert "No such option: --region" in result.output
+    assert _FakeToolsClient.instances == []
+    assert _FakeTOSService.instances == []
 
 
 def test_create_command_waits_until_tool_ready(monkeypatch):
@@ -238,7 +258,7 @@ def test_build_create_tool_request_adds_tos_mount(monkeypatch):
         tool_type="CodeEnv",
         name="demo-tool",
         tos_bucket="my-bucket",
-        region="cn-beijing",
+        tos_region="cn-beijing",
     )
 
     fake_service = _FakeTOSService.instances[0]
@@ -280,7 +300,7 @@ def test_build_create_tool_request_adds_model_envs(monkeypatch):
         tool_type="SkillEnv",
         name="demo-tool",
         tos_bucket="my-bucket",
-        region="cn-beijing",
+        tos_region="cn-beijing",
         model_name="claude-sonnet-4",
         model_base_url="https://models.example.com",
         **{"model_" + "api_key": _PLACEHOLDER_MODEL_VALUE},
@@ -315,7 +335,7 @@ def test_build_create_tool_request_adds_default_model_base_url(monkeypatch):
         tool_type="SkillEnv",
         name="demo-tool",
         tos_bucket="my-bucket",
-        region="cn-beijing",
+        tos_region="cn-beijing",
     )
 
     assert [(item.key, item.value) for item in request.envs] == [

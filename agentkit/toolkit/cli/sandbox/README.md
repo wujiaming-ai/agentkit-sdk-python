@@ -57,8 +57,6 @@ Options:
 - `--tos-bucket`: optional. TOS bucket mounted at `/home/gem`. If omitted, the
   CLI uses `TOSService.generate_bucket_name()`, which resolves the configured
   default bucket template.
-- `--region`: optional. Region for `CreateTool` and TOS operations; defaults to
-  `cn-beijing`.
 - `--model-name`: optional. Injected into the tool as `OPENCODE_MODEL`,
   `CODEX_MODEL`, and `ANTHROPIC_MODEL`.
 - `--model-api-key`: optional. Injected into the tool as `OPENCODE_API_KEY`,
@@ -66,6 +64,10 @@ Options:
 - `--model-base-url`: optional. Injected into the tool as `OPENCODE_BASE_URL`,
   `CODEX_BASE_URL`, `MODEL_BASE_URL`, and `ANTHROPIC_BASE_URL`. If omitted,
   Volcengine Ark compatible endpoints are used.
+
+Region configuration is read from environment variables. `AGENTKIT_SANDBOX_REGION`
+configures AgentKit Tool operations, and `AGENTKIT_SANDBOX_TOS_REGION` configures
+TOS operations. Each defaults to `cn-beijing` when unset or empty.
 
 Credential resolution is delegated to the underlying SDK/service clients:
 `AgentkitToolsClient` handles `CreateTool` credentials, and `TOSService` handles
