@@ -134,6 +134,133 @@ command exits with status `1` and returns structured JSON:
 }
 ```
 
+### File
+
+Upload, download, and list files in an existing sandbox session.
+
+```bash
+agentkit sandbox file list \
+  --session-id 123456789 \
+  --workspace /home/gem
+```
+
+The file commands operate on an existing session. They sync remote sessions for
+the resolved tool and then look up the given `--session-id`; they do not create a
+new sandbox session when the ID is missing.
+
+Common options:
+
+- `--session-id`: required. Sandbox session ID to operate on.
+- `--tool-id`: optional. Defaults to `AGENTKIT_SANDBOX_TOOL_ID`. If neither is
+  set, the CLI resolves an existing tool by `--tool-type`.
+- `--tool-type`: optional. `CodeEnv` or `SkillEnv`; defaults to `CodeEnv`.
+- `--workspace`: optional absolute sandbox path used as the path resolution root.
+
+Path rules:
+
+- `--workspace` is optional. If provided, it must be an absolute sandbox path.
+- Relative sandbox paths require `--workspace` and are resolved inside it.
+- Absolute sandbox paths are accepted without `--workspace`.
+- If both `--workspace` and an absolute sandbox path are provided, that absolute
+  path must be inside `--workspace`.
+- `file list` defaults to listing `--workspace` when it is provided, otherwise
+  `/`, if `--sandbox-dir` is omitted.
+
+Upload a local directory:
+
+```bash
+agentkit sandbox file upload \
+  --session-id 123456789 \
+  --workspace /home/gem \
+  --upload-dir ./project \
+  --dst-dir uploads/project
+```
+
+Upload one or more local files:
+
+```bash
+agentkit sandbox file upload \
+  --session-id 123456789 \
+  --upload-file ./a.txt \
+  --upload-file ./b.txt \
+  --dst-dir /tmp/files
+```
+
+Upload options:
+
+- `--upload-dir`: local directory whose contents are uploaded. Use at most once.
+- `--upload-file`: local file to upload. Repeat for multiple files.
+- `--dst-dir`: required sandbox destination directory. Relative paths require
+  `--workspace`. The destination directory is created if it does not exist.
+
+`--upload-dir` and `--upload-file` are mutually exclusive. Multiple
+`--upload-file` values must not share the same base file name, because they are
+extracted into the same destination directory.
+
+Download a sandbox directory:
+
+```bash
+agentkit sandbox file download \
+  --session-id 123456789 \
+  --sandbox-dir /tmp/project \
+  --download-dir ./project-copy
+```
+
+Download one or more sandbox files:
+
+```bash
+agentkit sandbox file download \
+  --session-id 123456789 \
+  --workspace /home/gem \
+  --sandbox-file uploads/a.txt \
+  --sandbox-file uploads/b.txt \
+  --download-dir ./downloads
+```
+
+Download options:
+
+- `--sandbox-dir`: sandbox directory whose contents are downloaded.
+- `--sandbox-file`: sandbox file to download. Repeat for multiple files.
+- `--download-dir`: required local directory where downloaded contents are
+  extracted. The directory is created if it does not exist.
+- `--overwrite`: optional. Overwrite existing local files while extracting.
+
+`--sandbox-dir` and `--sandbox-file` are mutually exclusive. Multiple
+`--sandbox-file` values must not share the same base file name, because they are
+extracted into the same local directory. Download extraction rejects unsafe tar
+members, absolute paths, `..` traversal, and links.
+
+List files:
+
+```bash
+agentkit sandbox file list \
+  --session-id 123456789 \
+  --sandbox-dir /tmp/project \
+  --recursive \
+  --max-depth 2
+```
+
+List options:
+
+- `--sandbox-dir`: sandbox directory to list. Defaults to `--workspace`, or `/`
+  when `--workspace` is omitted.
+- `--recursive/--no-recursive`: list recursively; defaults to recursive.
+- `--show-hidden/--hide-hidden`: include hidden files; defaults to show hidden.
+- `--max-depth`: optional maximum recursive listing depth. Must be non-negative.
+- `--include-size/--no-include-size`: include file size metadata; defaults to
+  include size.
+- `--include-permissions`: include file permission metadata.
+- `--sort-by`: `name`, `size`, `modified`, or `type`; defaults to `name`.
+- `--sort-desc`: sort in descending order.
+
+Implementation notes:
+
+- Uploads and downloads use temporary tar archives so directories and multiple
+  files are transferred through the sandbox file API as a single payload.
+- Remote temporary archives are cleaned up after download. Cleanup is
+  best-effort: if cleanup fails, the CLI prints a warning and preserves the
+  original download or extraction result.
+
 ### Shell
 
 Execute a command in a sandbox shell.
@@ -279,7 +406,7 @@ Example:
 
 ## Module Layout
 
-- `cli.py`: registers the `create`, `get`, `exec`, and `shell` sandbox subcommands.
+- `cli.py`: registers the `create`, `get`, `exec`, `shell`, and `file` sandbox subcommands.
 - `../cli.py`: registers the `sandbox` command group.
 - `session_create.py`: shared session creation and idempotent ensure helpers.
 - `session_sync.py`: shared remote session list/sync helpers.
@@ -288,4 +415,5 @@ Example:
 - `cli_get.py`: get command implementation.
 - `cli_shell.py`: shell command implementation.
 - `cli_exec.py`: streaming exec command implementation.
+- `cli_file.py`: file upload, download, and list command implementation.
 - `utils.py`: shared store, URL, JSON, and error helpers.

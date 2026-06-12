@@ -17,12 +17,14 @@
 from agentkit.toolkit.cli.sandbox.cli import sandbox_app
 from agentkit.toolkit.cli.sandbox.cli_create import create_command
 from agentkit.toolkit.cli.sandbox.cli_exec import exec_command
+from agentkit.toolkit.cli.sandbox.cli_file import file_command
 from agentkit.toolkit.cli.sandbox.cli_get import get_command
 from agentkit.toolkit.cli.sandbox.cli_shell import shell_command
 
 __all__ = [
     "create_command",
     "exec_command",
+    "file_command",
     "get_command",
     "sandbox_app",
     "shell_command",

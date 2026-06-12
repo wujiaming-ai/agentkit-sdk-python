@@ -34,6 +34,9 @@ except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
 SANDBOX_SESSION_STORE_PATH = Path(".agentkit") / "sandbox" / "sessions.json"
 SANDBOX_EXEC_ROUTE = "/v1/shell/exec"
 SANDBOX_TERMINAL_ROUTE = "/v1/shell/ws"
+SANDBOX_FILE_UPLOAD_ROUTE = "/v1/file/upload"
+SANDBOX_FILE_DOWNLOAD_ROUTE = "/v1/file/download"
+SANDBOX_FILE_LIST_ROUTE = "/v1/file/list"
 SANDBOX_EXEC_TIMEOUT_SECONDS = 300
 TERMINAL_SHELL_ID_KEY = "terminal_shell_id"
 _SESSION_STORE_THREAD_LOCK = threading.RLock()
@@ -368,6 +371,20 @@ def build_terminal_ws_url(endpoint: object, shell_id: str | None = None) -> str:
         query = f"{query}{separator}session_id={shell_id}"
 
     return urlunsplit((scheme, parts.netloc, ws_path, query, parts.fragment))
+
+
+def build_file_url(endpoint: object, route: str) -> str:
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        error("Sandbox session endpoint is missing")
+    if not route.startswith("/"):
+        error("Sandbox file route must start with /")
+
+    parts = urlsplit(endpoint.strip())
+    path = parts.path.rstrip("/")
+    file_path = f"{path}{route}" if path else route
+    return urlunsplit(
+        (parts.scheme, parts.netloc, file_path, parts.query, parts.fragment)
+    )
 
 
 def rename_exec_session_id(payload: object) -> object:
