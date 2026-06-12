@@ -74,6 +74,8 @@ def _normalize_absolute_sandbox_path(path: str, option_name: str) -> str:
 
 def _is_path_inside(path: str, root: str) -> bool:
     normalized_root = root.rstrip("/") or "/"
+    if normalized_root == "/":
+        return path.startswith("/")
     return path == normalized_root or path.startswith(f"{normalized_root}/")
 
 

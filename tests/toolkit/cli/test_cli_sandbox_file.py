@@ -1180,6 +1180,28 @@ def test_cli_file_list_defaults_to_workspace(monkeypatch, tmp_path) -> None:
     assert captured["json"]["path"] == "/home/gem"
 
 
+def test_cli_file_workspace_root_accepts_child_paths(monkeypatch, tmp_path) -> None:
+    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+
+    assert cli_file._is_path_inside("/foo", "/")
+    assert (
+        cli_file._resolve_sandbox_path(
+            "foo",
+            workspace="/",
+            option_name="--sandbox-dir",
+        )
+        == "/foo"
+    )
+    assert (
+        cli_file._resolve_sandbox_path(
+            "/foo",
+            workspace="/",
+            option_name="--sandbox-dir",
+        )
+        == "/foo"
+    )
+
+
 @pytest.mark.parametrize(
     ("args", "message"),
     [
