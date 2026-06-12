@@ -44,6 +44,7 @@ SANDBOX_TOS_REGION_ENV = "AGENTKIT_SANDBOX_TOS_REGION"
 DEFAULT_CREATE_TOOL_TYPE = "CodeEnv"
 DEFAULT_TOS_BUCKET_PATH = "/sandbox-session/default/default"
 DEFAULT_TOS_LOCAL_PATH = "/home/gem"
+DEFAULT_MODEL_NAME = "deepseek-v4-flash-260425"
 DEFAULT_MODEL_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_ANTHROPIC_BASE_URL = "https://ark.cn-beijing.volces.com/api/compatible"
 MODEL_BASE_URL_ENV_KEYS = (
@@ -107,7 +108,8 @@ def _build_tool_model_envs(
     model_api_key: Optional[str] = None,
 ) -> list[tools_types.EnvsItemForCreateTool] | None:
     envs: list[tools_types.EnvsItemForCreateTool] = []
-    _append_tool_envs(envs, MODEL_NAME_ENV_KEYS, model_name)
+    resolved_model_name = (model_name or "").strip() or DEFAULT_MODEL_NAME
+    _append_tool_envs(envs, MODEL_NAME_ENV_KEYS, resolved_model_name)
     _append_tool_envs(envs, MODEL_API_KEY_ENV_KEYS, model_api_key)
     _append_tool_envs(
         envs,

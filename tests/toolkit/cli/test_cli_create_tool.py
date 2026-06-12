@@ -238,6 +238,15 @@ def test_create_command_rejects_region_option(monkeypatch):
     assert _FakeTOSService.instances == []
 
 
+def test_create_command_help_omits_model_base_url_option():
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(app, ["sandbox", "create", "--help"])
+
+    assert result.exit_code == 0
+    assert "--model-base-url" not in result.output
+
+
 def test_create_command_waits_until_tool_ready(monkeypatch):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
@@ -393,6 +402,9 @@ def test_build_create_tool_request_adds_default_model_base_url(monkeypatch):
     )
 
     assert [(item.key, item.value) for item in request.envs] == [
+        ("OPENCODE_MODEL", "deepseek-v4-flash-260425"),
+        ("CODEX_MODEL", "deepseek-v4-flash-260425"),
+        ("ANTHROPIC_MODEL", "deepseek-v4-flash-260425"),
         ("OPENCODE_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
         ("CODEX_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
         ("MODEL_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
