@@ -37,10 +37,10 @@ from agentkit.toolkit.cli.sandbox.session_create import (
 )
 from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
 from agentkit.toolkit.cli.sandbox.utils import (
+    add_session_terminal_shell_id,
     build_terminal_ws_url,
     error,
-    remove_session_result_key,
-    update_session_result,
+    remove_session_terminal_shell_id,
 )
 
 DETACH_SEQUENCE = b"\x1d"
@@ -304,17 +304,21 @@ def exec_command(
     ws_url = build_terminal_ws_url(session.get("endpoint"), shell_id=shell_id)
     initial_command = command
 
-    stored_shell_id = session.get("terminal_shell_id")
-    if not isinstance(stored_shell_id, str) or not stored_shell_id:
-        stored_shell_id = None
-    current_shell_id: dict[str, str | None] = {"value": None}
+    cleanup_shell_ids: list[str] = []
+    cleanup_shell_ids_lock = threading.Lock()
+
+    def remember_cleanup_shell_id(remote_shell_id: str) -> None:
+        with cleanup_shell_ids_lock:
+            if remote_shell_id not in cleanup_shell_ids:
+                cleanup_shell_ids.append(remote_shell_id)
+
+    if shell_id:
+        add_session_terminal_shell_id(session_id, shell_id)
+        remember_cleanup_shell_id(shell_id)
 
     def on_shell_id(remote_shell_id: str) -> None:
-        current_shell_id["value"] = remote_shell_id
-        update_session_result(
-            session_id,
-            {"terminal_shell_id": remote_shell_id},
-        )
+        add_session_terminal_shell_id(session_id, remote_shell_id)
+        remember_cleanup_shell_id(remote_shell_id)
         typer.echo(f"Shell ID: {remote_shell_id}", err=True)
 
     try:
@@ -324,10 +328,7 @@ def exec_command(
             on_shell_id=on_shell_id,
         )
     finally:
-        cleanup_shell_id = current_shell_id["value"] or shell_id or stored_shell_id
-        if cleanup_shell_id:
-            remove_session_result_key(
-                session_id,
-                "terminal_shell_id",
-                expected_value=cleanup_shell_id,
-            )
+        with cleanup_shell_ids_lock:
+            shell_ids_to_cleanup = list(cleanup_shell_ids)
+        for cleanup_shell_id in shell_ids_to_cleanup:
+            remove_session_terminal_shell_id(session_id, cleanup_shell_id)

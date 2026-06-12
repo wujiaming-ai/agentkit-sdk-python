@@ -16,17 +16,27 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
+import threading
 from typing import NoReturn
 from urllib.parse import urlsplit, urlunsplit
 
 import typer
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
+    fcntl = None  # type: ignore[assignment]
+
 SANDBOX_SESSION_STORE_PATH = Path(".agentkit") / "sandbox" / "sessions.json"
 SANDBOX_EXEC_ROUTE = "/v1/shell/exec"
 SANDBOX_TERMINAL_ROUTE = "/v1/shell/ws"
 SANDBOX_EXEC_TIMEOUT_SECONDS = 300
+TERMINAL_SHELL_ID_KEY = "terminal_shell_id"
+_SESSION_STORE_THREAD_LOCK = threading.RLock()
 
 
 def error(message: str) -> NoReturn:
@@ -40,6 +50,73 @@ def echo_json(payload: object) -> None:
 
 def _get_session_store_path() -> Path:
     return Path.cwd() / SANDBOX_SESSION_STORE_PATH
+
+
+@contextmanager
+def _locked_session_store(path: Path):
+    with _SESSION_STORE_THREAD_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name(f"{path.name}.lock")
+        lock_file = lock_path.open("a+", encoding="utf-8")
+        try:
+            if fcntl:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            if fcntl:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+
+
+def _terminal_shell_ids_from_value(value: object) -> list[str]:
+    if isinstance(value, str):
+        resolved = value.strip()
+        return [resolved] if resolved else []
+    if not isinstance(value, list):
+        return []
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        resolved = item.strip()
+        if not resolved or resolved in seen:
+            continue
+        result.append(resolved)
+        seen.add(resolved)
+    return result
+
+
+def _normalize_session_record(record: dict[str, object]) -> dict[str, object]:
+    result = dict(record)
+    shell_ids = _terminal_shell_ids_from_value(result.get(TERMINAL_SHELL_ID_KEY))
+    if shell_ids:
+        result[TERMINAL_SHELL_ID_KEY] = shell_ids
+    else:
+        result.pop(TERMINAL_SHELL_ID_KEY, None)
+    return result
+
+
+def _normalize_session_store(data: dict[str, object]) -> dict[str, object]:
+    return {
+        key: _normalize_session_record(value) if isinstance(value, dict) else value
+        for key, value in data.items()
+    }
+
+
+def _write_session_store(path: Path, data: dict[str, object]) -> None:
+    normalized = _normalize_session_store(data)
+    text = json.dumps(normalized, indent=2, ensure_ascii=False) + "\n"
+    tmp_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 def load_session_store(path: Path) -> dict[str, object]:
@@ -63,18 +140,19 @@ def save_session_result(result: dict[str, object]) -> None:
         error("CreateSession response missing session_id")
 
     path = _get_session_store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    with _locked_session_store(path):
+        if path.exists():
+            data = load_session_store(path)
+        else:
+            data = {}
 
-    if path.exists():
-        data = load_session_store(path)
-    else:
-        data = {}
+        existing = data.get(session_id)
+        if isinstance(existing, dict):
+            data[session_id] = {**existing, **result}
+        else:
+            data[session_id] = result
 
-    data[session_id] = result
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+        _write_session_store(path, data)
 
 
 def replace_tool_session_results(
@@ -82,34 +160,30 @@ def replace_tool_session_results(
     results: list[dict[str, object]],
 ) -> None:
     path = _get_session_store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    if path.exists():
-        data = load_session_store(path)
-    else:
-        data = {}
-
-    old_data = data
-    data = {
-        key: value
-        for key, value in old_data.items()
-        if not (isinstance(value, dict) and value.get("tool_id") == tool_id)
-    }
-
-    for result in results:
-        session_id = result.get("session_id")
-        if not isinstance(session_id, str) or not session_id:
-            continue
-        existing = old_data.get(session_id)
-        if isinstance(existing, dict):
-            data[session_id] = {**existing, **result}
+    with _locked_session_store(path):
+        if path.exists():
+            data = load_session_store(path)
         else:
-            data[session_id] = result
+            data = {}
 
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+        old_data = data
+        data = {
+            key: value
+            for key, value in old_data.items()
+            if not (isinstance(value, dict) and value.get("tool_id") == tool_id)
+        }
+
+        for result in results:
+            session_id = result.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                continue
+            existing = old_data.get(session_id)
+            if isinstance(existing, dict):
+                data[session_id] = {**existing, **result}
+            else:
+                data[session_id] = result
+
+        _write_session_store(path, data)
 
 
 def update_session_result(
@@ -117,21 +191,20 @@ def update_session_result(
     updates: dict[str, object],
 ) -> dict[str, object]:
     path = _get_session_store_path()
-    data = load_session_store(path)
+    with _locked_session_store(path):
+        data = load_session_store(path)
 
-    result = data.get(session_id)
-    if result is None:
-        error(f"Sandbox session not found: {session_id}")
-    if not isinstance(result, dict):
-        error(f"Invalid sandbox session record: {session_id}")
+        result = data.get(session_id)
+        if result is None:
+            error(f"Sandbox session not found: {session_id}")
+        if not isinstance(result, dict):
+            error(f"Invalid sandbox session record: {session_id}")
 
-    result.update(updates)
-    data[session_id] = result
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    return result
+        result.update(updates)
+        result = _normalize_session_record(result)
+        data[session_id] = result
+        _write_session_store(path, data)
+        return result
 
 
 def remove_session_result_key(
@@ -140,39 +213,102 @@ def remove_session_result_key(
     expected_value: object | None = None,
 ) -> dict[str, object]:
     path = _get_session_store_path()
-    data = load_session_store(path)
+    with _locked_session_store(path):
+        data = load_session_store(path)
 
-    result = data.get(session_id)
-    if result is None:
-        error(f"Sandbox session not found: {session_id}")
-    if not isinstance(result, dict):
-        error(f"Invalid sandbox session record: {session_id}")
+        result = data.get(session_id)
+        if result is None:
+            error(f"Sandbox session not found: {session_id}")
+        if not isinstance(result, dict):
+            error(f"Invalid sandbox session record: {session_id}")
 
-    if expected_value is not None and result.get(key) != expected_value:
+        if expected_value is not None and result.get(key) != expected_value:
+            return result
+        if key not in result:
+            return result
+
+        result.pop(key)
+        result = _normalize_session_record(result)
+        data[session_id] = result
+        _write_session_store(path, data)
         return result
-    if key not in result:
+
+
+def add_session_terminal_shell_id(
+    session_id: str,
+    shell_id: str,
+) -> dict[str, object]:
+    resolved_shell_id = shell_id.strip()
+    if not resolved_shell_id:
+        error("Sandbox terminal shell_id is missing")
+
+    path = _get_session_store_path()
+    with _locked_session_store(path):
+        data = load_session_store(path)
+        result = data.get(session_id)
+        if result is None:
+            error(f"Sandbox session not found: {session_id}")
+        if not isinstance(result, dict):
+            error(f"Invalid sandbox session record: {session_id}")
+
+        shell_ids = _terminal_shell_ids_from_value(
+            result.get(TERMINAL_SHELL_ID_KEY)
+        )
+        if resolved_shell_id not in shell_ids:
+            shell_ids.append(resolved_shell_id)
+        result[TERMINAL_SHELL_ID_KEY] = shell_ids
+        result = _normalize_session_record(result)
+        data[session_id] = result
+        _write_session_store(path, data)
         return result
 
-    result.pop(key)
-    data[session_id] = result
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    return result
+
+def remove_session_terminal_shell_id(
+    session_id: str,
+    shell_id: str,
+) -> dict[str, object]:
+    resolved_shell_id = shell_id.strip()
+    if not resolved_shell_id:
+        error("Sandbox terminal shell_id is missing")
+
+    path = _get_session_store_path()
+    with _locked_session_store(path):
+        data = load_session_store(path)
+        result = data.get(session_id)
+        if result is None:
+            error(f"Sandbox session not found: {session_id}")
+        if not isinstance(result, dict):
+            error(f"Invalid sandbox session record: {session_id}")
+
+        shell_ids = [
+            item
+            for item in _terminal_shell_ids_from_value(
+                result.get(TERMINAL_SHELL_ID_KEY)
+            )
+            if item != resolved_shell_id
+        ]
+        if shell_ids:
+            result[TERMINAL_SHELL_ID_KEY] = shell_ids
+        else:
+            result.pop(TERMINAL_SHELL_ID_KEY, None)
+        result = _normalize_session_record(result)
+        data[session_id] = result
+        _write_session_store(path, data)
+        return result
 
 
 def get_session_result(session_id: str) -> dict[str, object]:
     path = _get_session_store_path()
-    data = load_session_store(path)
+    with _locked_session_store(path):
+        data = load_session_store(path)
 
-    result = data.get(session_id)
-    if result is None:
-        error(f"Sandbox session not found: {session_id}")
-    if not isinstance(result, dict):
-        error(f"Invalid sandbox session record: {session_id}")
+        result = data.get(session_id)
+        if result is None:
+            error(f"Sandbox session not found: {session_id}")
+        if not isinstance(result, dict):
+            error(f"Invalid sandbox session record: {session_id}")
 
-    return result
+        return _normalize_session_record(result)
 
 
 def find_session_result(session_id: str) -> dict[str, object] | None:
@@ -180,14 +316,17 @@ def find_session_result(session_id: str) -> dict[str, object] | None:
     if not path.exists():
         return None
 
-    data = load_session_store(path)
-    result = data.get(session_id)
-    if result is None:
-        return None
-    if not isinstance(result, dict):
-        error(f"Invalid sandbox session record: {session_id}")
+    with _locked_session_store(path):
+        if not path.exists():
+            return None
+        data = load_session_store(path)
+        result = data.get(session_id)
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            error(f"Invalid sandbox session record: {session_id}")
 
-    return result
+        return _normalize_session_record(result)
 
 
 def build_exec_url(endpoint: object) -> str:

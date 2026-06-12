@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 
 import pytest
@@ -935,7 +936,7 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
                     "tool_id": "tool-1",
                     "instance_id": "old-instance-2",
                     "endpoint": "https://old.example.com",
-                    "terminal_shell_id": "shell-local",
+                    "terminal_shell_id": ["shell-local"],
                 },
                 "other-user": {
                     "session_id": "other-user",
@@ -985,7 +986,7 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
         "tool_id": "tool-1",
         "instance_id": "instance-2",
         "endpoint": "https://two.example.com",
-        "terminal_shell_id": "shell-local",
+        "terminal_shell_id": ["shell-local"],
     }
     assert [
         request.next_token for request in _FakeToolsClient.list_sessions_requests
@@ -999,7 +1000,7 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
         "instance_id": "instance-1",
         "endpoint": "https://one.example.com",
     }
-    assert stored["user-2"]["terminal_shell_id"] == "shell-local"
+    assert stored["user-2"]["terminal_shell_id"] == ["shell-local"]
 
 
 def test_cli_get_ignores_remote_sessions_without_user_session_id(
@@ -1521,7 +1522,7 @@ def test_cli_exec_clears_remote_shell_id_on_disconnect(
         assert on_shell_id is not None
         on_shell_id("shell-from-ws")
         stored = json.loads(store_path.read_text(encoding="utf-8"))
-        assert stored["user-1"]["terminal_shell_id"] == "shell-from-ws"
+        assert stored["user-1"]["terminal_shell_id"] == ["shell-from-ws"]
 
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
@@ -1560,7 +1561,7 @@ def test_cli_exec_does_not_clear_newer_shell_id(
         assert on_shell_id is not None
         on_shell_id("shell-from-ws")
         stored = json.loads(store_path.read_text(encoding="utf-8"))
-        stored["user-1"]["terminal_shell_id"] = "shell-from-newer-terminal"
+        stored["user-1"]["terminal_shell_id"].append("shell-from-newer-terminal")
         store_path.write_text(json.dumps(stored), encoding="utf-8")
 
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
@@ -1572,7 +1573,7 @@ def test_cli_exec_does_not_clear_newer_shell_id(
 
     assert result.exit_code == 0
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert stored["user-1"]["terminal_shell_id"] == "shell-from-newer-terminal"
+    assert stored["user-1"]["terminal_shell_id"] == ["shell-from-newer-terminal"]
 
 
 def test_cli_exec_clears_shell_id_option_on_disconnect(
@@ -1588,7 +1589,7 @@ def test_cli_exec_clears_shell_id_option_on_disconnect(
         "tool_id": "tool-1",
         "instance_id": "session-1",
         "endpoint": "https://sandbox.example.com/?token=abc",
-        "terminal_shell_id": "shell-from-cli",
+        "terminal_shell_id": ["shell-from-cli"],
     }
     store_path.write_text(
         json.dumps({"user-1": stored_session}, indent=2),
@@ -1598,6 +1599,8 @@ def test_cli_exec_clears_shell_id_option_on_disconnect(
 
     def fake_connect(_ws_url, initial_command=None, on_shell_id=None):
         assert on_shell_id is not None
+        stored = json.loads(store_path.read_text(encoding="utf-8"))
+        assert stored["user-1"]["terminal_shell_id"] == ["shell-from-cli"]
 
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
@@ -1617,7 +1620,7 @@ def test_cli_exec_clears_shell_id_option_on_disconnect(
     assert "terminal_shell_id" not in stored["user-1"]
 
 
-def test_cli_exec_clears_stored_shell_id_on_disconnect(
+def test_cli_exec_keeps_stored_shell_ids_without_current_shell_id(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1630,7 +1633,7 @@ def test_cli_exec_clears_stored_shell_id_on_disconnect(
         "tool_id": "tool-1",
         "instance_id": "session-1",
         "endpoint": "https://sandbox.example.com/?token=abc",
-        "terminal_shell_id": "shell-from-store",
+        "terminal_shell_id": ["shell-from-store"],
     }
     store_path.write_text(
         json.dumps({"user-1": stored_session}, indent=2),
@@ -1650,7 +1653,64 @@ def test_cli_exec_clears_stored_shell_id_on_disconnect(
 
     assert result.exit_code == 0
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert "terminal_shell_id" not in stored["user-1"]
+    assert stored["user-1"]["terminal_shell_id"] == ["shell-from-store"]
+
+
+def test_session_store_tracks_terminal_shell_ids_thread_safely(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.utils as sandbox_utils
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    store_path.write_text(
+        json.dumps(
+            {
+                "user-1": {
+                    "session_id": "user-1",
+                    "tool_id": "tool-1",
+                    "instance_id": "session-1",
+                    "endpoint": "https://sandbox.example.com",
+                    "terminal_shell_id": "legacy-shell",
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    shell_ids = [f"shell-{index}" for index in range(20)]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(
+            executor.map(
+                lambda shell_id: sandbox_utils.add_session_terminal_shell_id(
+                    "user-1",
+                    shell_id,
+                ),
+                shell_ids,
+            )
+        )
+
+    stored = json.loads(store_path.read_text(encoding="utf-8"))
+    assert sorted(stored["user-1"]["terminal_shell_id"]) == sorted(
+        ["legacy-shell", *shell_ids]
+    )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(
+            executor.map(
+                lambda shell_id: sandbox_utils.remove_session_terminal_shell_id(
+                    "user-1",
+                    shell_id,
+                ),
+                shell_ids[:10],
+            )
+        )
+
+    stored = json.loads(store_path.read_text(encoding="utf-8"))
+    assert sorted(stored["user-1"]["terminal_shell_id"]) == sorted(
+        ["legacy-shell", *shell_ids[10:]]
+    )
 
 
 def test_cli_exec_creates_session_when_session_id_omitted(

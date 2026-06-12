@@ -186,9 +186,10 @@ stdout, forwards local stdin as terminal input, sends terminal resize events, an
 responds to WebSocket `ping` messages with `pong`.
 
 When the remote terminal returns a shell session ID, the CLI prints it and
-stores it as `terminal_shell_id` in `.agentkit/sandbox/sessions.json` while the
-connection is active. The CLI removes the current `terminal_shell_id` from the
-store when the connection is detached or closed.
+stores it in the `terminal_shell_id` list in `.agentkit/sandbox/sessions.json`
+while the connection is active. Multiple live WebSocket connections under the
+same sandbox `session_id` are tracked in the same list. The CLI removes only the
+current shell ID from the list when that connection is detached or closed.
 
 Press `Ctrl-]`, or type `exit` / `exit()`, to detach from the local terminal.
 `Ctrl-C` is forwarded to the remote process, which is useful for interrupting
@@ -210,7 +211,8 @@ The file is a JSON object keyed by `session_id`:
     "session_id": "123456789",
     "tool_id": "t-example",
     "instance_id": "s-example",
-    "endpoint": "https://example.com/?Authorization=..."
+    "endpoint": "https://example.com/?Authorization=...",
+    "terminal_shell_id": ["shell-example"]
   }
 }
 ```
