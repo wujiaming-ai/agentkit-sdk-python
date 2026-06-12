@@ -17,6 +17,9 @@ from typing import Dict, Any, Optional, Union, Generator, Tuple
 import logging
 import requests
 import json
+import time
+import uuid
+import random
 from urllib.parse import urljoin
 from dataclasses import dataclass
 
@@ -53,6 +56,8 @@ class Runner(ABC):
         """
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.reporter = reporter or SilentReporter()
+        self._backend_detect_cache: Dict[str, Tuple[str, float]] = {}
+        self._backend_detect_cache_ttl_s: int = 120
 
     # ===== Configuration types =====
     @dataclass
@@ -387,6 +392,99 @@ class Runner(ABC):
             or err.startswith("Invocation failed: 405")
         )
 
+    def _normalize_base_endpoint(self, base_endpoint: str) -> str:
+        try:
+            return (base_endpoint or "").rstrip("/")
+        except Exception:
+            return base_endpoint
+
+    def _get_cached_backend(self, base_endpoint: str) -> Optional[str]:
+        key = self._normalize_base_endpoint(base_endpoint)
+        item = self._backend_detect_cache.get(key)
+        if not item:
+            return None
+        kind, ts = item
+        if time.monotonic() - ts > self._backend_detect_cache_ttl_s:
+            try:
+                self._backend_detect_cache.pop(key, None)
+            except Exception:
+                pass
+            return None
+        return kind
+
+    def _set_cached_backend(self, base_endpoint: str, kind: str) -> None:
+        key = self._normalize_base_endpoint(base_endpoint)
+        try:
+            self._backend_detect_cache[key] = (kind, time.monotonic())
+        except Exception:
+            pass
+
+    def _is_a2a_agent_card_response(self, data: Any) -> bool:
+        if not isinstance(data, dict):
+            return False
+        name = data.get("name")
+        if not isinstance(name, str) or not name:
+            return False
+        if isinstance(data.get("capabilities"), dict):
+            return True
+        if isinstance(data.get("skills"), list):
+            return True
+        if isinstance(data.get("endpoints"), (dict, list)):
+            return True
+        if isinstance(data.get("protocol_version"), str) or isinstance(
+            data.get("protocolVersion"), str
+        ):
+            return True
+        return False
+
+    def _detect_a2a_backend(
+        self, base_endpoint: str, headers: Dict[str, str], timeout_s: int = 2
+    ) -> bool:
+        try:
+            base = (base_endpoint.rstrip("/") + "/") if base_endpoint else ""
+            url = urljoin(base, ".well-known/agent-card.json")
+            resp = requests.get(url, headers=headers, timeout=timeout_s)
+            if resp.status_code != 200:
+                return False
+            try:
+                data = resp.json()
+            except Exception:
+                return False
+            return self._is_a2a_agent_card_response(data)
+        except Exception:
+            return False
+
+    def _build_a2a_jsonrpc_payload(
+        self, original_payload: Any, headers: Dict[str, str]
+    ) -> Dict[str, Any]:
+        if isinstance(original_payload, dict) and original_payload.get("jsonrpc"):
+            return original_payload
+
+        text = None
+        if isinstance(original_payload, dict):
+            val = original_payload.get("prompt")
+            if isinstance(val, str):
+                text = val
+        if text is None:
+            try:
+                text = json.dumps(original_payload, ensure_ascii=False)
+            except Exception:
+                text = ""
+
+        return {
+            "jsonrpc": "2.0",
+            "method": "message/stream",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "messageId": str(uuid.uuid4()),
+                    "parts": [{"kind": "text", "text": text or ""}],
+                },
+                "metadata": headers,
+            },
+            "id": random.randint(1, 999999),
+        }
+
     def _post_run_sse(
         self,
         base_endpoint: str,
@@ -435,10 +533,8 @@ class Runner(ABC):
                 timeout=policy.invoke_timeout,
             )
         else:
-            # Non-A2A: detect ADK first
-            if self._detect_adk_backend(
-                ctx.base_endpoint, ctx.headers, timeout_s=policy.detect_timeout
-            ):
+            cached = self._get_cached_backend(ctx.base_endpoint)
+            if cached == "adk":
                 app_name = self._get_adk_app_name(
                     ctx.base_endpoint,
                     ctx.headers,
@@ -465,6 +561,16 @@ class Runner(ABC):
                     adk_payload,
                     timeout_s=policy.sse_timeout,
                 )
+            elif cached == "a2a":
+                a2a_payload = self._build_a2a_jsonrpc_payload(payload, ctx.headers)
+                success, response_data = self._http_post_invoke(
+                    endpoint=self._normalize_base_endpoint(ctx.base_endpoint)
+                    or ctx.base_endpoint,
+                    payload=a2a_payload,
+                    headers=ctx.headers,
+                    stream=None,
+                    timeout=policy.invoke_timeout,
+                )
             else:
                 success, response_data = self._http_post_invoke(
                     endpoint=ctx.invoke_endpoint,
@@ -473,35 +579,58 @@ class Runner(ABC):
                     stream=None,
                     timeout=policy.invoke_timeout,
                 )
-                if not success and self._should_fallback_to_adk(str(response_data)):
-                    app_name = self._get_adk_app_name(
-                        ctx.base_endpoint,
-                        ctx.headers,
-                        preferred_name=ctx.preferred_app_name,
-                        timeout_s=policy.list_apps_timeout,
-                    )
-                    app_name = app_name or "agentkit-app"
-                    user_id = ctx.headers.get("user_id") or "agentkit_user"
-                    session_id = (
-                        ctx.headers.get("session_id") or "agentkit_sample_session"
-                    )
-                    self._ensure_adk_session(
-                        ctx.base_endpoint,
-                        ctx.headers,
-                        app_name,
-                        user_id,
-                        session_id,
-                        timeout_s=policy.session_timeout,
-                    )
-                    adk_payload = self._build_adk_run_sse_payload(
-                        app_name, ctx.headers, payload
-                    )
-                    success, response_data = self._post_run_sse(
-                        ctx.base_endpoint,
-                        ctx.headers,
-                        adk_payload,
-                        timeout_s=policy.sse_timeout,
-                    )
+                if success:
+                    self._set_cached_backend(ctx.base_endpoint, "invoke")
+                elif self._should_fallback_to_adk(str(response_data)):
+                    if self._detect_adk_backend(
+                        ctx.base_endpoint, ctx.headers, timeout_s=policy.detect_timeout
+                    ):
+                        self._set_cached_backend(ctx.base_endpoint, "adk")
+                        app_name = self._get_adk_app_name(
+                            ctx.base_endpoint,
+                            ctx.headers,
+                            preferred_name=ctx.preferred_app_name,
+                            timeout_s=policy.list_apps_timeout,
+                        )
+                        app_name = app_name or "agentkit-app"
+                        user_id = ctx.headers.get("user_id") or "agentkit_user"
+                        session_id = (
+                            ctx.headers.get("session_id") or "agentkit_sample_session"
+                        )
+                        self._ensure_adk_session(
+                            ctx.base_endpoint,
+                            ctx.headers,
+                            app_name,
+                            user_id,
+                            session_id,
+                            timeout_s=policy.session_timeout,
+                        )
+                        adk_payload = self._build_adk_run_sse_payload(
+                            app_name, ctx.headers, payload
+                        )
+                        success, response_data = self._post_run_sse(
+                            ctx.base_endpoint,
+                            ctx.headers,
+                            adk_payload,
+                            timeout_s=policy.sse_timeout,
+                        )
+                    elif self._detect_a2a_backend(
+                        ctx.base_endpoint, ctx.headers, timeout_s=policy.detect_timeout
+                    ):
+                        self._set_cached_backend(ctx.base_endpoint, "a2a")
+                        a2a_payload = self._build_a2a_jsonrpc_payload(
+                            payload, ctx.headers
+                        )
+                        success, response_data = self._http_post_invoke(
+                            endpoint=self._normalize_base_endpoint(ctx.base_endpoint)
+                            or ctx.base_endpoint,
+                            payload=a2a_payload,
+                            headers=ctx.headers,
+                            stream=None,
+                            timeout=policy.invoke_timeout,
+                        )
+                    else:
+                        self._set_cached_backend(ctx.base_endpoint, "unknown")
 
         is_streaming = hasattr(response_data, "__iter__") and not isinstance(
             response_data, (dict, str, list, bytes)
