@@ -55,6 +55,13 @@ def generate_pkce_pair() -> tuple[str, str]:
 
 def discover(issuer: str, *, timeout: float = _DISCOVERY_TIMEOUT) -> dict:
     """Fetch the issuer's OIDC discovery document."""
+    # Restrict the scheme before opening any URL — never let an issuer become
+    # file:// / ftp:// / data:// or a schemeless/relative target (local-file SSRF).
+    parsed = urllib.parse.urlsplit(issuer)
+    if parsed.scheme not in ("https", "http"):
+        raise AuthError(f"unsupported issuer URL scheme {parsed.scheme!r}; expected https:// (http only for loopback)")
+    if not parsed.netloc:
+        raise AuthError(f"issuer must be an absolute http(s) URL with a host, got {issuer!r}")
     url = issuer.rstrip("/") + "/.well-known/openid-configuration"
     try:
         raw = urllib.request.urlopen(url, timeout=timeout).read()

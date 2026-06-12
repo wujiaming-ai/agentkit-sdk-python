@@ -36,13 +36,41 @@ _HOST = "open.volcengineapi.com"
 # Services whose OpenAPI reads parameters from the query string, not a JSON body.
 _QUERY_PARAM_SERVICES = {"iam"}
 
+# Map common Volcengine error-code fragments to an actionable next step. Surfaced on
+# ApiError.hint so a raw mid-provision failure tells the operator what to fix, not just
+# the opaque code (important on a cold account where services/quotas aren't set up).
+_REMEDIATION = (
+    ("notinwhitelist", "this feature needs per-account whitelisting — request it, or use the default path (ticket mode / inline JWKS)."),
+    ("servicenotfound", "this Volcengine service may not be enabled on this account — enable it in the console, then re-run."),
+    ("invalidaction", "this service/action may be unavailable on this account — confirm the service is enabled (run `agentkit auth admin doctor`)."),
+    ("nosuchentity", "the referenced IAM/AgentKit resource is missing — if it is 'AgentKitSandboxAccess', activate AgentKit on this account first."),
+    ("policynotexist", "the referenced policy is missing — activate AgentKit on this account so its system policies exist."),
+    ("accessdenied", "the provisioning credentials lack permission for this action — use an admin AK/SK with IAM/AgentKit rights."),
+    ("nopermission", "the provisioning credentials lack permission for this action — use an admin AK/SK with IAM/AgentKit rights."),
+    ("unauthorized", "the provisioning credentials lack permission for this action — use an admin AK/SK with IAM/AgentKit rights."),
+    ("limitexceeded", "an account quota/limit was hit — request a quota increase or remove unused resources."),
+    ("quota", "an account quota/limit was hit — request a quota increase or remove unused resources."),
+    ("throttl", "the API is throttling — retry shortly."),
+)
+
+
+def remediation_for(code: str) -> str | None:
+    """Best-effort actionable hint for a Volcengine error code, or None."""
+    c = (code or "").lower()
+    for frag, hint in _REMEDIATION:
+        if frag in c:
+            return hint
+    return None
+
 
 class ApiError(AuthError):
     """A Volcengine OpenAPI call returned an error. Subclasses AuthError so the CLI's
-    ``except AuthError`` handlers surface it as a clean message, not a traceback."""
+    ``except AuthError`` handlers surface it as a clean message, not a traceback.
+
+    Carries an actionable ``hint`` derived from the error code where possible."""
 
     def __init__(self, action: str, code: str, message: str) -> None:
-        super().__init__(f"{action}: {code}: {message}")
+        super().__init__(f"{action}: {code}: {message}", hint=remediation_for(code))
         self.action = action
         self.code = code
         self.message = message

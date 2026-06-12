@@ -167,6 +167,53 @@ def _admin_app() -> typer.Typer:
         "Needs Volcengine AK/SK for the account that owns the UserPool.",
     )
 
+    @app.command("doctor")
+    def doctor(
+        account: Optional[str] = typer.Option(None, "--account", help="Expected account id (guard)."),
+        region: str = typer.Option("cn-beijing", "--region"),
+        data_plane: bool = typer.Option(
+            True, "--data-plane/--no-data-plane",
+            help="Also check credential-hosting prerequisites (APIG / VPC / VeFaaS / KMS)."),
+    ) -> None:
+        """Read-only preflight: is this account ready for sso-setup + credential-hosting?
+
+        Mutates nothing. Run it FIRST on a fresh account to see what must be enabled,
+        instead of failing mid-provision.
+        """
+        from agentkit.auth._openapi import OpenApiClient
+        from agentkit.auth.admin import preflight
+        from agentkit.auth.errors import AuthError
+
+        try:
+            api = OpenApiClient(region=region, expect_account=account)
+        except AuthError as exc:
+            _fail(str(exc).split("\n")[0], getattr(exc, "hint", None))
+
+        typer.secho(f"\nAgentKit 接入体检 · 账号 {api.account_id} · {region}\n", fg=typer.colors.CYAN, bold=True, err=True)
+        checks = preflight(api, credential_hosting=data_plane)
+        icon = {"ok": "✓", "fail": "✗", "warn": "!"}
+        color = {"ok": typer.colors.GREEN, "fail": typer.colors.RED, "warn": typer.colors.YELLOW}
+        failed = 0
+        for c in checks:
+            st = c["status"]
+            failed += st != "ok"
+            typer.secho(f"  {icon[st]} {c['name']}", fg=color[st], bold=(st != "ok"), err=True)
+            typer.secho(f"      {c['detail']}", err=True)
+            if c.get("fix"):
+                typer.secho(f"      → {c['fix']}", fg=typer.colors.YELLOW, err=True)
+        if failed:
+            typer.secho(f"\n{failed} 项未通过 —— 先修好标 → 的项,再跑 sso-setup / credential-hosting。",
+                        fg=typer.colors.RED, bold=True, err=True)
+            try:
+                from agentkit.platform import agentkit_enable_services_url
+                typer.secho(f"开通服务: {agentkit_enable_services_url(region=region)}", err=True)
+            except Exception:
+                pass
+            _echo({"checks": checks, "passed": False})
+            raise typer.Exit(1)
+        typer.secho("\n✓ 全部通过 —— 这账号可以跑 sso-setup + credential-hosting。", fg=typer.colors.GREEN, bold=True, err=True)
+        _echo({"checks": checks, "passed": True})
+
     @app.command("create-userpool")
     def create_userpool(
         name: str = typer.Option(..., "--name", help="UserPool name."),
@@ -364,6 +411,10 @@ def credential_hosting_command(
     model_path: Optional[str] = typer.Option(None, "--model-path", help="Override the API path (normally taken from --upstream)."),
     account: Optional[str] = typer.Option(None, "--account"),
     region: str = typer.Option("cn-beijing", "--region"),
+    auth_mode: str = typer.Option("ticket", "--auth-mode", help="Inbound auth: ticket (default) | jwt | both (jwt = UserPool JWT identity binding)."),
+    jwt_issuer: Optional[str] = typer.Option(None, "--jwt-issuer", help="UserPool issuer URL the gateway validates inbound JWTs against (jwt/both)."),
+    jwt_audience: Optional[list[str]] = typer.Option(None, "--jwt-audience", help="Allowed JWT audience (repeatable)."),
+    jwks_upstream_id: Optional[str] = typer.Option(None, "--jwks-upstream-id", help="Pre-created Domain upstream id the gateway fetches the JWKS from (jwt/both)."),
 ) -> None:
     """Host one or more API-key credentials so the real key never enters the sandbox.
 
@@ -435,15 +486,20 @@ def credential_hosting_command(
         typer.secho("  创建中…", err=True)
 
     try:
-        hosted = host_credentials(credentials=creds, gateway_id=gw, region=region, account_id=acct, api=api)
+        hosted = host_credentials(credentials=creds, gateway_id=gw, region=region, account_id=acct, api=api,
+                                  auth_mode=auth_mode, jwt_issuer=jwt_issuer,
+                                  jwt_audiences=jwt_audience, jwt_jwks_upstream_id=jwks_upstream_id)
     except AuthError as exc:
         _fail(str(exc).split("\n")[0], getattr(exc, "hint", None))
 
-    typer.secho(f"\n✓ 已托管 {len(hosted)} 个凭据 · 沙箱里用下面的 API_KEY(门票,非真 key):\n", fg=typer.colors.GREEN, bold=True, err=True)
+    typer.secho(f"\n✓ 已托管 {len(hosted)} 个凭据:\n", fg=typer.colors.GREEN, bold=True, err=True)
     for h in hosted:
         typer.secho(f"  {h.provider_name}", fg=typer.colors.CYAN, bold=True, err=True)
         typer.secho(f"    API_BASE = {h.model_base_url}", err=True)
-        typer.secho(f"    API_KEY  = {h.ticket}", err=True)
+        if h.ticket:
+            typer.secho(f"    API_KEY  = {h.ticket}   （门票,非真 key）", err=True)
+        else:
+            typer.secho("    （JWT 模式:沙箱携带 UserPool JWT,无门票)", err=True)
     typer.secho("", err=True)
 
     # 绑定:把"地址+门票"写进沙箱工具的环境变量,之后从它建的沙箱自动带托管凭据
@@ -459,10 +515,15 @@ def credential_hosting_command(
                 h = hosted[int(sel) - 1]
         tid = typer.prompt("  沙箱工具 tool-id").strip()
         base_env = typer.prompt("    地址写进哪个环境变量", default="CODEX_BASE_URL").strip()
-        key_env = typer.prompt("    门票写进哪个环境变量", default="ARK_API_KEY").strip()
+        env = {base_env: h.model_base_url}
+        if h.ticket:
+            key_env = typer.prompt("    门票写进哪个环境变量", default="ARK_API_KEY").strip()
+            env[key_env] = h.ticket
+        else:
+            typer.secho("    JWT 模式(实验特性):不写门票;沙箱需经 shim 携带 UserPool JWT。", err=True)
         try:
-            set_tool_env(api, tid, {base_env: h.model_base_url, key_env: h.ticket})
-            typer.secho(f"  ✓ 已写入工具 {tid}:{base_env} + {key_env}(工具重新部署约 1-2 分钟)。", fg=typer.colors.GREEN, err=True)
+            set_tool_env(api, tid, env)
+            typer.secho(f"  ✓ 已写入工具 {tid}(工具重新部署约 1-2 分钟)。", fg=typer.colors.GREEN, err=True)
             typer.secho("    部署完成后,从该工具建的沙箱自动用托管凭据;end-user 零操作。", err=True)
         except AuthError as exc:
             typer.secho(f"  · 写入失败:{str(exc).split(chr(10))[0]}", fg=typer.colors.YELLOW, err=True)

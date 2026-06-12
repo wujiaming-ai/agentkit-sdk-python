@@ -200,8 +200,19 @@ def _ensure_role(
                  "Description": "sandbox session control-plane actions for the CLI role"})
     api.call_ok("iam", "AttachRolePolicy", "2018-01-01",
                 {"RoleName": role_name, "PolicyName": policy_name, "PolicyType": "Custom"})
-    api.call_ok("iam", "AttachRolePolicy", "2018-01-01",
-                {"RoleName": role_name, "PolicyName": SANDBOX_ACCESS_POLICY, "PolicyType": "System"})
+    try:
+        api.call_ok("iam", "AttachRolePolicy", "2018-01-01",
+                    {"RoleName": role_name, "PolicyName": SANDBOX_ACCESS_POLICY, "PolicyType": "System"})
+    except ApiError as exc:
+        # On a never-activated account the AgentKit system policy doesn't exist; give a
+        # clear remediation instead of a raw NoSuchEntity (sso-setup is idempotent to re-run).
+        if any(k in exc.code for k in ("NoSuchEntity", "NotExist", "NotFound", "InvalidParameter")):
+            raise AuthError(
+                f"AgentKit system policy '{SANDBOX_ACCESS_POLICY}' not found — activate AgentKit "
+                "on this account first, then re-run sso-setup.",
+                hint="run `agentkit auth admin doctor` to check account readiness.",
+            ) from exc
+        raise
 
 
 def provision_cli_access(
@@ -372,8 +383,13 @@ def publish_discovery(
     client = tos.TosClientV2(ak, sk, endpoint, coords.region)
     try:
         client.create_bucket(bucket, acl=tos.ACLType.ACL_Public_Read)
-    except Exception:
-        pass  # already exists
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        if not any(k in msg for k in ("Exist", "exist", "Owned", "owned", "Conflict", "conflict")):
+            raise AuthError(
+                f"could not create the TOS bucket for the discovery doc: {msg[:120]}",
+                hint="enable TOS on this account and allow public-read buckets, or pass an existing bucket.",
+            ) from exc
     client.put_object(
         bucket, WELL_KNOWN_KEY, content=json.dumps(coords.discovery_doc()).encode(),
         acl=tos.ACLType.ACL_Public_Read, content_type="application/json",
@@ -382,4 +398,103 @@ def publish_discovery(
         with __import__("contextlib").suppress(Exception):
             client.put_bucket_custom_domain(bucket, domain=custom_domain)  # best-effort bind
         return f"https://{custom_domain}"
-    return f"https://{bucket}.{endpoint}"
+    url = f"https://{bucket}.{endpoint}"
+    _verify_public_discovery(url)  # fail loudly if the doc isn't anonymously readable
+    return url
+
+
+def _verify_public_discovery(base_url: str) -> None:
+    """Assert the just-published discovery doc is ANONYMOUSLY fetchable (200 + JSON).
+
+    Catches the 'block public access' trap where the public-read ACL is silently
+    overridden and every end-user ``agentkit login`` would then 403.
+    """
+    import urllib.error
+    import urllib.request
+
+    from agentkit.auth.ssl_trust import harden_default_ssl_context
+
+    harden_default_ssl_context()
+    doc_url = base_url.rstrip("/") + "/" + WELL_KNOWN_KEY
+    try:
+        with urllib.request.urlopen(doc_url, timeout=15) as resp:
+            json.loads(resp.read())  # must be valid JSON
+    except urllib.error.HTTPError as exc:
+        raise AuthError(
+            f"the discovery doc is not publicly readable (HTTP {exc.code}) — end users' "
+            "`agentkit login` would fail.",
+            hint="disable 'block public access' on the account/bucket so the public-read ACL takes effect, then re-run.",
+        ) from exc
+    except (urllib.error.URLError, ValueError) as exc:
+        raise AuthError(f"could not verify the published discovery doc at {doc_url}: {exc}") from exc
+
+
+def preflight(api: OpenApiClient, *, credential_hosting: bool = True) -> list[dict]:
+    """Read-only readiness checks for ``sso-setup`` (and the data plane if
+    ``credential_hosting``). Returns ``[{name, status, detail, fix}]`` where status is
+    ``ok`` | ``fail`` | ``warn``. Mutates nothing — meant to run BEFORE provisioning so a
+    cold account learns what is missing up front instead of failing mid-mutation.
+    """
+    checks: list[dict] = []
+
+    def probe(name: str, fn, fix: str) -> None:
+        try:
+            checks.append({"name": name, "status": "ok", "detail": fn() or "", "fix": ""})
+        except ApiError as exc:
+            checks.append({"name": name, "status": "fail",
+                           "detail": f"{exc.code}: {exc.message[:70]}",
+                           "fix": getattr(exc, "hint", None) or fix})
+        except AuthError as exc:
+            checks.append({"name": name, "status": "fail", "detail": str(exc).split(chr(10))[0][:80], "fix": fix})
+        except Exception as exc:  # noqa: BLE001 — the doctor reports, never crashes
+            checks.append({"name": name, "status": "warn", "detail": str(exc)[:80], "fix": fix})
+
+    probe("caller identity (STS)", lambda: f"account {api.account_id}",
+          "export a valid admin VOLCENGINE_ACCESS_KEY / _SECRET_KEY")
+    def _pools():
+        r = api.call("id", "ListUserPools", "2025-10-30", {"PageNumber": 1, "PageSize": 1})
+        return f"reachable ({r.get('TotalCount') or r.get('Total') or len(r.get('Items') or r.get('Data') or [])}+ pools)"
+    probe("Identity / UserPool service", _pools, "enable AgentKit Identity in the console")
+    probe("IAM",
+          lambda: f"reachable ({len(api.call('iam', 'ListOIDCProviders', '2018-01-01', {'Limit': 1}).get('OIDCProviders') or [])} oidc providers)",
+          "use admin credentials with IAM permissions")
+
+    def _syspol():
+        api.call("iam", "GetPolicy", "2018-01-01", {"PolicyName": SANDBOX_ACCESS_POLICY, "PolicyType": "System"})
+        return f"system policy '{SANDBOX_ACCESS_POLICY}' present"
+    probe(f"AgentKit system policy ({SANDBOX_ACCESS_POLICY})", _syspol,
+          "activate AgentKit on this account first — else sso-setup's system-policy attach fails")
+
+    if credential_hosting:
+        probe("API gateway (APIG)",
+              lambda: f"{len([g for g in (api.call('apig', 'ListGateways', '2021-03-03', {'PageSize': 100, 'PageNumber': 1}).get('Items') or []) if str(g.get('Status')) in ('', 'Running')])} running gateway(s)",
+              "enable the API Gateway service in the console")
+
+        def _vpc():
+            vlist = api.call_get("vpc", "DescribeVpcs", "2020-04-01", {"PageNumber": 1, "PageSize": 50}).get("Vpcs") or []
+            vpc = next((v for v in vlist if v.get("IsDefault")), None) or (vlist[0] if vlist else None)
+            if not vpc:
+                raise AuthError("no VPC in this account (a gateway needs one)")
+            subs = api.call_get("vpc", "DescribeSubnets", "2020-04-01",
+                                {"VpcId": vpc.get("VpcId"), "PageNumber": 1, "PageSize": 50}).get("Subnets") or []
+            if not [s for s in subs if s.get("Status") in ("Available", "")]:
+                raise AuthError(f"VPC {vpc.get('VpcId')} has no available subnet")
+            return f"VPC {vpc.get('VpcId')} + {len(subs)} subnet(s)"
+        probe("default VPC + subnet", _vpc, "create a VPC with a subnet in this region")
+
+        probe("VeFaaS",
+              lambda: f"reachable (Total={api.call('vefaas', 'ListFunctions', '2021-03-03', {'PageNumber': 1, 'PageSize': 1}).get('Total', '?')})",
+              "enable the VeFaaS service in the console")
+
+        def _kms():
+            try:
+                api.call("id", "GetWorkloadPool", "2025-10-30", {"WorkloadPoolName": "default"})
+                return "default workload pool present"
+            except ApiError as exc:
+                if "NotFound" in exc.code or "not found" in exc.message.lower():
+                    return "Identity reachable (default pool will be created on first host)"
+                raise
+        probe("credential provider backend (Identity/KMS)", _kms,
+              "enable AgentKit Identity/KMS in the console")
+
+    return checks

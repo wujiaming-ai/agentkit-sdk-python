@@ -57,8 +57,13 @@ class AuthProfile:
         missing = [k for k in ("name", "issuer", "client_id", "role_trn") if not getattr(self, k)]
         if missing:
             raise AuthError(f"profile is missing required fields: {', '.join(missing)}")
-        if not self.issuer.startswith("https://"):
-            raise AuthError(f"profile issuer must be https://, got {self.issuer!r}")
+        # https only, except loopback may use http (matches resolve._normalize).
+        loopback = re.match(r"^http://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:/|$)", self.issuer)
+        if not (self.issuer.startswith("https://") or loopback):
+            raise AuthError(
+                f"profile issuer must be https://, or http:// only for loopback "
+                f"(localhost/127.0.0.1/[::1]); got {self.issuer!r}"
+            )
         return self
 
     def to_dict(self) -> dict:

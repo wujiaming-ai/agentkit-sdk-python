@@ -75,12 +75,17 @@ def harden_default_ssl_context() -> str | None:
         pass
 
     # 2. macOS keychain certificates (where MDM-pushed corporate CAs live).
+    # Best-effort: only the system keychains by default — the user's login keychain can
+    # hold non-CA/leaf certs, so merging it would widen the trust surface beyond what the
+    # OS trusts. Opt in with AGENTKIT_SSL_INCLUDE_LOGIN_KEYCHAIN=1.
     if sys.platform == "darwin":
-        for keychain in (
-            "/Library/Keychains/System.keychain",
+        keychains = [
             "/System/Library/Keychains/SystemRootCertificates.keychain",
-            os.path.expanduser("~/Library/Keychains/login.keychain-db"),
-        ):
+            "/Library/Keychains/System.keychain",
+        ]
+        if os.getenv("AGENTKIT_SSL_INCLUDE_LOGIN_KEYCHAIN") == "1":
+            keychains.append(os.path.expanduser("~/Library/Keychains/login.keychain-db"))
+        for keychain in keychains:
             try:
                 out = subprocess.run(
                     ["security", "find-certificate", "-a", "-p", keychain],

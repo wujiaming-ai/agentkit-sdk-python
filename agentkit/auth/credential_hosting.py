@@ -87,14 +87,17 @@ class HostedCredential:
 
     provider_name: str
     gateway_url: str
-    ticket: str
+    ticket: str | None   # the key-auth ticket; None in pure-JWT mode (sandbox carries a JWT)
     model_base_url: str   # what the sandbox points the model client at
     region: str
     service_id: str
     relay_function_id: str
 
     def sandbox_env(self) -> dict[str, str]:
-        return {"MODEL_API_BASE": self.model_base_url, "MODEL_API_KEY": self.ticket}
+        env = {"MODEL_API_BASE": self.model_base_url}
+        if self.ticket:
+            env["MODEL_API_KEY"] = self.ticket
+        return env
 
 
 def split_base_url(url: str) -> tuple[str, str]:
@@ -126,11 +129,12 @@ def set_tool_env(api: OpenApiClient, tool_id: str, updates: dict) -> None:
 
 
 def list_gateways(api: OpenApiClient) -> list[dict]:
-    """List running API gateways in the caller's account (id + name)."""
-    try:
-        res = api.call("apig", "ListGateways", "2021-03-03", {"PageSize": 100, "PageNumber": 1})
-    except ApiError:
-        return []
+    """List running API gateways in the caller's account (id + name).
+
+    Lets an ApiError propagate (e.g. APIG not enabled on the account) so the operator
+    sees an actionable failure rather than a misleading empty list.
+    """
+    res = api.call("apig", "ListGateways", "2021-03-03", {"PageSize": 100, "PageNumber": 1})
     out = []
     for g in (res.get("Items") or res.get("Gateways") or []):
         if str(g.get("Status")) in ("", "Running"):
@@ -142,11 +146,13 @@ def ensure_account_ready(api: OpenApiClient, *, pool: str = "default") -> None:
     """Ensure the Agent Identity workload pool exists (created only if missing)."""
     try:
         api.call("id", "GetWorkloadPool", "2025-10-30", {"WorkloadPoolName": pool})
+        return  # pool already exists
     except ApiError as exc:
         if "NotFound" not in exc.code and "not found" not in exc.message.lower():
-            return  # tolerate probe quirks; provider resolution is what matters
-        api.call_ok("id", "CreateWorkloadPool", "2025-10-30",
-                    {"WorkloadPoolName": pool, "Description": "default credential pool"})
+            raise  # surface real failures (Identity not enabled / access denied) with their hint
+    # pool not found -> create it
+    api.call_ok("id", "CreateWorkloadPool", "2025-10-30",
+                {"WorkloadPoolName": pool, "Description": "default credential pool"})
 
 
 def ensure_gateway(api: OpenApiClient, *, name: str, region: str = "cn-beijing") -> str:
@@ -273,19 +279,103 @@ def _bind_plugin(api: OpenApiClient, route_id: str, plugin_name: str, config: di
             raise
 
 
+def ensure_jwks_upstream(api: OpenApiClient, gateway_id: str, issuer: str, *, name: str | None = None) -> str:
+    """Find-or-create an HTTPS Domain upstream the gateway uses to fetch the UserPool
+    JWKS for ``wasm-jwt-auth``; return its id.
+
+    NOTE: creating a Domain-type upstream may require the account to be enabled for it
+    (``CreateUpstream`` can return ``OperationDenied.AccountNotInWhitelist``). If so,
+    pre-create the upstream in the console and pass its id as ``jwt_jwks_upstream_id``
+    to :func:`build_gateway_line` to skip this, or use the inline-JWKS path instead.
+    """
+    import urllib.parse
+
+    host = urllib.parse.urlsplit(issuer if "://" in issuer else "https://" + issuer).netloc
+    name = name or f"jwks-{(host.split('.')[0] or 'pool')}-up"
+    try:
+        up = api.call("apig", "CreateUpstream", "2021-03-03", {
+            "GatewayId": gateway_id, "Name": name, "SourceType": "Domain",
+            "UpstreamSpec": {"Domain": {"DomainList": [{"Domain": host, "Port": 443, "Protocol": "HTTPS"}]}},
+        })
+    except ApiError as exc:
+        if not _already_exists(exc):
+            raise
+        res = api.call("apig", "ListUpstreams", "2021-03-03",
+                       {"GatewayId": gateway_id, "PageNumber": 1, "PageSize": 100})
+        up = next((u for u in (res.get("Items") or []) if u.get("Name") == name), {})
+    return str(up.get("Id") or "")
+
+
+def _fetch_jwks(issuer: str) -> str:
+    """Fetch the UserPool JWKS document (raw JSON) from ``{issuer}/keys``."""
+    import urllib.request
+
+    from agentkit.auth.ssl_trust import harden_default_ssl_context
+
+    harden_default_ssl_context()
+    return urllib.request.urlopen(issuer.rstrip("/") + "/keys", timeout=15).read().decode()
+
+
+def _bind_jwt_auth(api: OpenApiClient, gateway_id: str, route_id: str, *,
+                   issuer: str, audiences: list[str] | None,
+                   jwks: str | None = None, jwks_upstream_id: str | None = None) -> None:
+    """Bind ``wasm-jwt-auth`` to a route to validate the inbound UserPool JWT (RS256) by
+    issuer + audience.
+
+    Default path is **inline LocalJwks** — the JWKS document is embedded in the plugin
+    config, so it needs no JWKS upstream. Pass ``jwks`` to supply the document, otherwise
+    it is fetched from ``{issuer}/keys``. Supply ``jwks_upstream_id`` only to use the
+    RemoteJwks path instead (which needs a Domain upstream).
+    """
+    _ensure_plugin(api, gateway_id, "wasm-jwt-auth")
+    cfg: dict = {"Issuer": issuer, "AllowedAudiences": list(audiences or []), "FailureModeAllow": False}
+    if jwks_upstream_id and not jwks:
+        cfg["RemoteJwks"] = {"UpstreamId": jwks_upstream_id, "Url": issuer.rstrip("/") + "/keys"}
+    else:
+        cfg["LocalJwks"] = jwks if jwks is not None else _fetch_jwks(issuer)
+    _bind_plugin(api, route_id, "wasm-jwt-auth", cfg)
+
+
 def build_gateway_line(
     api: OpenApiClient, gateway_id: str, *, provider_name: str, relay_function_id: str,
     service_name: str, region: str = "cn-beijing",
+    auth_mode: str = "ticket",
+    jwt_issuer: str | None = None,
+    jwt_audiences: list[str] | None = None,
+    jwt_jwks: str | None = None,
+    jwt_jwks_upstream_id: str | None = None,
+    allow_unenforced_jwt: bool = False,
 ) -> dict:
     """Create the upstream/service/route and bind the gateway plugins; return a ticket.
 
     Idempotent for the infrastructure: every resource uses a deterministic name and
     falls back to a list-and-match on an 'already exists' error, so a retry after a
-    partial failure converges instead of erroring. The ticket, however, is a write-only
-    key-auth secret: it is issued only for a newly created consumer credential. If the
-    line already carries one, this raises so the caller can revoke and re-issue rather
-    than return a ticket that was never registered.
+    partial failure converges instead of erroring.
+
+    ``auth_mode`` controls inbound authorization (the outbound ``wasm-upstream-identity``
+    key injection is unchanged in every mode):
+
+    - ``"ticket"`` (default): ``wasm-key-auth`` + a revocable ``ck-`` ticket. The ticket
+      is a write-only key-auth secret, issued only for a newly created consumer
+      credential; if the line already carries one, this raises so the caller can revoke
+      and re-issue rather than return a ticket that was never registered.
+    - ``"jwt"``: ``wasm-jwt-auth`` validates an inbound UserPool JWT (issuer/audience);
+      no ticket is issued (``ticket`` is ``None``). Requires ``jwt_issuer``.
+    - ``"both"``: bind both for transition. The combined-enforcement semantics of two
+      inbound auth plugins on one route are not yet validated, so this stays experimental.
     """
+    if auth_mode not in ("ticket", "jwt", "both"):
+        raise AuthError(f"unknown auth_mode {auth_mode!r} (expected ticket|jwt|both)")
+    if auth_mode in ("jwt", "both") and not jwt_issuer:
+        raise AuthError("auth_mode jwt/both requires jwt_issuer")
+    if auth_mode in ("jwt", "both") and not allow_unenforced_jwt:
+        raise AuthError(
+            "auth_mode 'jwt'/'both' is experimental and disabled by default: inbound JWT "
+            "identity binding is not yet validated end-to-end for this gateway line, so the "
+            "supported path is the default ticket mode.",
+            hint="pass allow_unenforced_jwt=True only in a controlled test, never in production.",
+        )
+
     def _find(action: str, version: str, params: dict, name_field: str, want: str) -> dict:
         res = api.call("apig", action, version, {**params, "PageNumber": 1, "PageSize": 100})
         for it in (res.get("Items") or []):
@@ -310,7 +400,7 @@ def build_gateway_line(
 
     try:
         svc = api.call("apig", "CreateGatewayService", "2021-03-03", {
-            "GatewayId": gateway_id, "ServiceName": service_name, "Protocol": ["HTTP"],
+            "GatewayId": gateway_id, "ServiceName": service_name, "Protocol": ["HTTP", "HTTPS"],
             "DomainType": "DefaultDomain", "AuthSpec": {"Enable": False},
             "ServiceNetworkSpec": {"EnablePublicNetwork": True, "EnablePrivateNetwork": False},
         })
@@ -336,32 +426,40 @@ def build_gateway_line(
     _bind_plugin(api, rid, "wasm-upstream-identity",
                  {"ProviderType": "ApiKey", "ProviderName": provider_name, "FailureModeAllow": False})
 
-    try:
-        consumer = api.call("apig", "CreateConsumer", "2021-03-03", {"Name": service_name, "GatewayId": gateway_id})
-    except ApiError as exc:
-        if not _already_exists(exc):
-            raise
-        consumer = _find("ListConsumers", "2021-03-03", {"GatewayId": gateway_id}, "Name", service_name)
-    cid = str(consumer.get("Id") or consumer.get("ConsumerId") or "")
+    ticket: str | None = None
+    if auth_mode in ("ticket", "both"):
+        try:
+            consumer = api.call("apig", "CreateConsumer", "2021-03-03", {"Name": service_name, "GatewayId": gateway_id})
+        except ApiError as exc:
+            if not _already_exists(exc):
+                raise
+            consumer = _find("ListConsumers", "2021-03-03", {"GatewayId": gateway_id}, "Name", service_name)
+        cid = str(consumer.get("Id") or consumer.get("ConsumerId") or "")
 
-    ticket = "ck-" + secrets.token_hex(20)
-    try:
-        api.call("apig", "CreateConsumerCredential", "2021-03-03", {
-            "ConsumerId": cid, "CredentialType": "key-auth", "KeyAuthCredential": {"APIKey": ticket},
-        })
-    except ApiError as exc:
-        if not _already_exists(exc):
-            raise
-        raise AuthError(
-            f"credential line for '{service_name}' already carries a ticket; revoke it "
-            "(or use a different provider name) to issue a new one."
-        )
+        ticket = "ck-" + secrets.token_hex(20)
+        try:
+            api.call("apig", "CreateConsumerCredential", "2021-03-03", {
+                "ConsumerId": cid, "CredentialType": "key-auth", "KeyAuthCredential": {"APIKey": ticket},
+            })
+        except ApiError as exc:
+            if not _already_exists(exc):
+                raise
+            raise AuthError(
+                f"credential line for '{service_name}' already carries a ticket; revoke it "
+                "(or use a different provider name) to issue a new one."
+            )
 
-    _bind_plugin(api, rid, "wasm-key-auth",
-                 {"KeySources": [{"Header": "authorization"}], "AllowedConsumers": [service_name]})
+        _bind_plugin(api, rid, "wasm-key-auth",
+                     {"KeySources": [{"Header": "authorization"}], "AllowedConsumers": [service_name]})
+
+    if auth_mode in ("jwt", "both"):
+        _bind_jwt_auth(api, gateway_id, rid, issuer=jwt_issuer, audiences=jwt_audiences,
+                       jwks=jwt_jwks, jwks_upstream_id=jwt_jwks_upstream_id)
 
     return {"service_id": sid, "route_id": rid, "ticket": ticket,
-            "gateway_url": f"http://{sid}.apigateway-{region}.volceapi.com"}
+            # https so the ticket travels over TLS — the default gateway domain serves HTTPS
+            # because the service is created with HTTPS in its Protocol list (see above).
+            "gateway_url": f"https://{sid}.apigateway-{region}.volceapi.com"}
 
 
 def host_credentials(
@@ -372,6 +470,12 @@ def host_credentials(
     region: str = "cn-beijing",
     account_id: str | None = None,
     api: OpenApiClient | None = None,
+    auth_mode: str = "ticket",
+    jwt_issuer: str | None = None,
+    jwt_audiences: list[str] | None = None,
+    jwt_jwks: str | None = None,
+    jwt_jwks_upstream_id: str | None = None,
+    allow_unenforced_jwt: bool = False,
 ) -> list[HostedCredential]:
     """Host one or more credentials behind a single shared gateway.
 
@@ -391,7 +495,11 @@ def host_credentials(
         vault_api_key(api, provider, c["key"])
         relay = deploy_relay(api, f"{provider}-relay", upstream)
         line = build_gateway_line(api, gateway_id, provider_name=provider,
-                                  relay_function_id=relay, service_name=provider, region=region)
+                                  relay_function_id=relay, service_name=provider, region=region,
+                                  auth_mode=auth_mode, jwt_issuer=jwt_issuer,
+                                  jwt_audiences=jwt_audiences, jwt_jwks=jwt_jwks,
+                                  jwt_jwks_upstream_id=jwt_jwks_upstream_id,
+                                  allow_unenforced_jwt=allow_unenforced_jwt)
         out.append(HostedCredential(
             provider_name=provider, gateway_url=line["gateway_url"], ticket=line["ticket"],
             model_base_url=line["gateway_url"] + path, region=region,

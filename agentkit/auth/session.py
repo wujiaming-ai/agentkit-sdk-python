@@ -193,9 +193,12 @@ class AuthSession:
         harden_default_ssl_context()
         client = OAuthClient(self.profile.issuer, self.profile.client_id, scope=self.profile.scope)
         token = client.refresh(self._refresh_token)
-        id_token = str(token.get("id_token") or token.get("access_token") or "")
+        id_token = str(token.get("id_token") or "")  # OIDC: AssumeRoleWithOIDC needs the ID Token, not an access token
         if not id_token:
-            raise AuthError("refresh did not return an id_token; re-login required.")
+            raise AuthError(
+                "refresh did not return an id_token; re-login required.",
+                hint="ensure the OAuth scope includes 'openid' (OIDC requires an ID Token).",
+            )
         # A rotated refresh token, if returned, must replace the old one.
         if token.get("refresh_token"):
             self._refresh_token = str(token["refresh_token"])

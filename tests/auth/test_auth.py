@@ -341,3 +341,108 @@ def test_derive_region_handles_numbered_regions():
     assert _derive_region("x.ap-southeast-1.volces.com") == "ap-southeast-1"
     assert _derive_region("x.us-east-1.example.com") == "us-east-1"
     assert _derive_region("no-region-here") is None
+
+
+class _FakeApigApi:
+    """Records api.call invocations; returns an Id for Create*, {} otherwise."""
+
+    def __init__(self):
+        self.calls = []
+
+    def call(self, service, action, version, body):
+        self.calls.append((action, body))
+        return {"Id": "id-" + action} if action.startswith("Create") else {}
+
+    def call_ok(self, service, action, version, body, **kw):
+        self.calls.append((action, body))
+        return {}
+
+
+def _binds(api):
+    import json
+    return {b["PluginName"]: json.loads(b["PluginConfig"]) if b.get("PluginConfig") else {}
+            for a, b in api.calls if a == "CreatePluginBinding"}
+
+
+def test_build_gateway_line_ticket_default_unchanged():
+    from agentkit.auth import credential_hosting as ch
+    api = _FakeApigApi()
+    out = ch.build_gateway_line(api, "gw-1", provider_name="p", relay_function_id="fn", service_name="p")
+    binds = _binds(api)
+    assert "wasm-key-auth" in binds and "wasm-upstream-identity" in binds
+    assert "wasm-jwt-auth" not in binds
+    assert out["ticket"].startswith("ck-")
+
+
+def test_build_gateway_line_jwt_mode():
+    from agentkit.auth import credential_hosting as ch
+    api = _FakeApigApi()
+    out = ch.build_gateway_line(api, "gw-1", provider_name="p", relay_function_id="fn", service_name="p",
+                                auth_mode="jwt", allow_unenforced_jwt=True, jwt_issuer="https://userpool-x.example.com",
+                                jwt_audiences=["aud-1"], jwt_jwks_upstream_id="jwks-up")
+    actions = [a for a, _ in api.calls]
+    binds = _binds(api)
+    assert "wasm-jwt-auth" in binds and "wasm-upstream-identity" in binds
+    assert "wasm-key-auth" not in binds
+    assert "CreateConsumer" not in actions and "CreateConsumerCredential" not in actions
+    assert out["ticket"] is None
+    cfg = binds["wasm-jwt-auth"]
+    assert cfg["Issuer"] == "https://userpool-x.example.com"
+    assert cfg["RemoteJwks"]["UpstreamId"] == "jwks-up"
+    assert cfg["RemoteJwks"]["Url"].endswith("/keys")
+    assert cfg["AllowedAudiences"] == ["aud-1"]
+    assert cfg["FailureModeAllow"] is False
+
+
+def test_build_gateway_line_both_mode():
+    from agentkit.auth import credential_hosting as ch
+    api = _FakeApigApi()
+    out = ch.build_gateway_line(api, "gw-1", provider_name="p", relay_function_id="fn", service_name="p",
+                                auth_mode="both", allow_unenforced_jwt=True, jwt_issuer="https://userpool-x.example.com",
+                                jwt_jwks_upstream_id="jwks-up")
+    binds = _binds(api)
+    assert {"wasm-key-auth", "wasm-jwt-auth", "wasm-upstream-identity"} <= set(binds)
+    assert out["ticket"].startswith("ck-")
+
+
+def test_build_gateway_line_jwt_requires_issuer():
+    import pytest
+    from agentkit.auth import credential_hosting as ch
+    from agentkit.auth.errors import AuthError
+    with pytest.raises(AuthError):
+        ch.build_gateway_line(_FakeApigApi(), "gw-1", provider_name="p", relay_function_id="fn",
+                              service_name="p", auth_mode="jwt")
+
+
+def test_build_gateway_line_jwt_localjwks_inline():
+    from agentkit.auth import credential_hosting as ch
+    api = _FakeApigApi()
+    out = ch.build_gateway_line(api, "gw-1", provider_name="p", relay_function_id="fn", service_name="p",
+                                auth_mode="jwt", allow_unenforced_jwt=True, jwt_issuer="https://userpool-x.example.com",
+                                jwt_audiences=["aud-1"], jwt_jwks='{"keys":[{"kid":"k1"}]}')
+    cfg = _binds(api)["wasm-jwt-auth"]
+    assert cfg["LocalJwks"] == '{"keys":[{"kid":"k1"}]}'   # inline, no JWKS upstream / whitelist
+    assert "RemoteJwks" not in cfg
+    assert cfg["Issuer"] == "https://userpool-x.example.com"
+    assert cfg["FailureModeAllow"] is False
+    assert out["ticket"] is None
+
+
+def test_build_gateway_line_jwt_disabled_by_default():
+    # jwt/both is experimental and must refuse without allow_unenforced_jwt so an admin
+    # can't accidentally enable an unvalidated inbound-auth path in production.
+    import pytest
+    from agentkit.auth import credential_hosting as ch
+    from agentkit.auth.errors import AuthError
+    with pytest.raises(AuthError):
+        ch.build_gateway_line(_FakeApigApi(), "gw-1", provider_name="p", relay_function_id="fn",
+                              service_name="p", auth_mode="jwt",
+                              jwt_issuer="https://userpool-x.example.com", jwt_jwks='{"keys":[]}')
+
+
+def test_apierror_carries_remediation_hint():
+    from agentkit.auth._openapi import ApiError, remediation_for
+    assert "whitelist" in (remediation_for("OperationDenied.AccountNotInWhitelist") or "")
+    assert remediation_for("InvalidParameter") is None
+    e = ApiError("CreateUpstream", "OperationDenied.AccountNotInWhitelist", "nope")
+    assert e.hint and "whitelist" in e.hint
