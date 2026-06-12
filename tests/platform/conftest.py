@@ -14,7 +14,6 @@
 
 import os
 import pytest
-from unittest.mock import MagicMock
 
 
 @pytest.fixture
@@ -74,9 +73,17 @@ def mock_global_config(mocker):
 @pytest.fixture
 def mock_vefaas_file(mocker):
     """Mock VeFaaS credential file."""
+
+    class _Stat:
+        st_mtime_ns = 1
+
     mock_open = mocker.mock_open(
-        read_data='{"access_key_id": "vefaas_ak", "secret_access_key": "vefaas_sk", "session_token": "vefaas_token"}'
+        read_data='{"access_key_id": "vefaas_ak", "secret_access_key": "vefaas_sk", "session_token": "vefaas_token", "expired_time": "2999-01-01T00:00:00+00:00"}'
     )
     mocker.patch("builtins.open", mock_open)
     mocker.patch("pathlib.Path.exists", return_value=True)
+    mocker.patch(
+        "pathlib.Path.stat",
+        return_value=_Stat(),
+    )
     return mock_open

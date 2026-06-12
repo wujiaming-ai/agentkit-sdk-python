@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from volcengine.ApiInfo import ApiInfo
 from volcengine.base.Service import Service
-from volcengine.Credentials import Credentials
+from volcengine.Credentials import Credentials as VolcCredentials
 from volcengine.ServiceInfo import ServiceInfo
 
 from agentkit.platform import (
@@ -31,9 +31,22 @@ from agentkit.platform import (
     resolve_credentials,
     resolve_endpoint,
 )
+from agentkit.platform.configuration import Credentials as PlatformCredentials
+from agentkit.platform.provider import CloudProvider
 from agentkit.utils.ve_sign import ensure_x_custom_source_header
 
 T = TypeVar("T")
+_CREDENTIAL_ERROR_TOKENS = frozenset(
+    {
+        "invalidaccesskeyid",
+        "invalidaccesskey",
+        "signaturedoesnotmatch",
+        "expiredtoken",
+        "invalidsecuritytoken",
+        "invalidtoken",
+        "requestexpired",
+    }
+)
 
 
 @dataclass
@@ -94,6 +107,9 @@ class BaseServiceClient(Service):
         """
         if platform_config is None:
             platform_config = VolcConfiguration()
+        self._platform_config = platform_config
+        self._explicit_credentials = bool(access_key and secret_key)
+        self._credential_source: Optional[str] = None
 
         creds = resolve_credentials(
             service=service,
@@ -101,6 +117,7 @@ class BaseServiceClient(Service):
             explicit_secret_key=secret_key or None,
             platform_config=platform_config,
         )
+        self._credential_source = getattr(creds, "source", None)
 
         ep = resolve_endpoint(
             service=service,
@@ -132,7 +149,7 @@ class BaseServiceClient(Service):
         self.service_info = ServiceInfo(
             host=self.host,
             header=effective_header,
-            credentials=Credentials(
+            credentials=VolcCredentials(
                 ak=self.access_key,
                 sk=self.secret_key,
                 service=self.service,
@@ -152,6 +169,57 @@ class BaseServiceClient(Service):
         # need setting ak/sk after initializing Service to avoid volcengine SDK bugs
         self.set_ak(self.access_key)
         self.set_sk(self.secret_key)
+        if self.session_token:
+            self.set_session_token(self.session_token)
+
+    def _should_auto_refresh_vefaas_credentials(self) -> bool:
+        if self._explicit_credentials:
+            return False
+        if self._platform_config.provider != CloudProvider.VOLCENGINE:
+            return False
+        return self._credential_source == "vefaas"
+
+    def _apply_credentials(self, creds: PlatformCredentials) -> bool:
+        new_token = creds.session_token or ""
+        old_token = self.session_token or ""
+        if (
+            creds.access_key == self.access_key
+            and creds.secret_key == self.secret_key
+            and new_token == old_token
+        ):
+            return False
+
+        self.access_key = creds.access_key
+        self.secret_key = creds.secret_key
+        self.session_token = creds.session_token
+
+        self.service_info.credentials = VolcCredentials(
+            ak=self.access_key,
+            sk=self.secret_key,
+            service=self.service,
+            region=self.region,
+            session_token=self.session_token or "",
+        )
+        self.set_ak(self.access_key)
+        self.set_sk(self.secret_key)
+        self.set_session_token(self.session_token or "")
+        return True
+
+    def _refresh_credentials_if_needed(self, *, force: bool = False) -> bool:
+        if not self._should_auto_refresh_vefaas_credentials():
+            return False
+        creds = self._platform_config.get_vefaas_iam_credentials(force=force)
+        if not creds:
+            return False
+        return self._apply_credentials(creds)
+
+    def _is_probable_credential_error_code(self, code: str) -> bool:
+        c = (code or "").lower()
+        return c in _CREDENTIAL_ERROR_TOKENS
+
+    def _is_probable_credential_error_text(self, text: str) -> bool:
+        t = (text or "").lower()
+        return any(token in t for token in _CREDENTIAL_ERROR_TOKENS)
 
     def _build_api_info(self) -> Dict[str, ApiInfo]:
         """
@@ -213,27 +281,47 @@ class BaseServiceClient(Service):
         Raises:
             Exception: If API call fails or returns an error
         """
-        # Make API call
-        try:
-            res = self.json(
-                api=api_action,
-                params=params or {},
-                body=json.dumps(request.model_dump(by_alias=True, exclude_none=True)),
-            )
-        except Exception as e:
-            raise Exception(f"Failed to {api_action}: {str(e)}")
+        self._refresh_credentials_if_needed()
+        last_error: Optional[BaseException] = None
 
-        if not res:
-            raise Exception(f"Empty response from {api_action} request.")
+        for attempt in (0, 1):
+            if attempt == 1:
+                self._refresh_credentials_if_needed(force=True)
 
-        # Parse response
-        response_data = json.loads(res)
+            try:
+                res = self.json(
+                    api=api_action,
+                    params=params or {},
+                    body=json.dumps(
+                        request.model_dump(by_alias=True, exclude_none=True)
+                    ),
+                )
+            except Exception as e:
+                last_error = e
+                if attempt == 0 and self._is_probable_credential_error_text(str(e)):
+                    continue
+                raise Exception(f"Failed to {api_action}: {str(e)}") from e
 
-        # Check for errors
-        metadata = response_data.get("ResponseMetadata", {})
-        if metadata.get("Error"):
-            error_msg = metadata.get("Error", {}).get("Message", "Unknown error")
-            raise Exception(f"Failed to {api_action}: {error_msg}")
+            if not res:
+                raise Exception(f"Empty response from {api_action} request.")
 
-        # Return typed response
-        return response_type(**response_data.get("Result", {}))
+            response_data = json.loads(res)
+            metadata = response_data.get("ResponseMetadata", {})
+            if metadata.get("Error"):
+                err = metadata.get("Error", {}) or {}
+                error_code = str(err.get("Code") or "")
+                error_msg = str(err.get("Message") or "Unknown error")
+                if attempt == 0 and (
+                    self._is_probable_credential_error_code(error_code)
+                    or self._is_probable_credential_error_text(error_msg)
+                ):
+                    continue
+                raise Exception(f"Failed to {api_action}: {error_msg}")
+
+            return response_type(**response_data.get("Result", {}))
+
+        if last_error is not None:
+            raise Exception(
+                f"Failed to {api_action}: {str(last_error)}"
+            ) from last_error
+        raise Exception(f"Failed to {api_action}: Unknown error")

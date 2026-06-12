@@ -92,6 +92,37 @@ class TestConfigurationCredentials:
         assert creds.secret_key == "vefaas_sk"
         assert creds.session_token == "vefaas_token"
 
+    def test_creds_vefaas_no_expired_time_cache_ttl(
+        self, clean_env, mock_global_config, mocker
+    ):
+        mocker.patch("pathlib.Path.exists", return_value=True)
+        mocker.patch(
+            "pathlib.Path.stat",
+            return_value=type("_Stat", (), {"st_mtime_ns": 1})(),
+        )
+
+        mock_open = mocker.mock_open(
+            read_data='{"access_key_id": "ak1", "secret_access_key": "sk1", "session_token": "t1"}'
+        )
+        mocker.patch("builtins.open", mock_open)
+
+        monotonic = mocker.patch("agentkit.platform.configuration.time.monotonic")
+        monotonic.side_effect = [0.0, 0.0, 61.0, 61.0]
+
+        config = VolcConfiguration()
+        creds1 = config.get_vefaas_iam_credentials()
+        assert creds1 is not None
+        assert creds1.access_key == "ak1"
+
+        creds2 = config.get_vefaas_iam_credentials()
+        assert creds2 is not None
+        assert creds2.access_key == "ak1"
+
+        mock_open.return_value.read.return_value = '{"access_key_id": "ak2", "secret_access_key": "sk2", "session_token": "t2"}'
+        creds3 = config.get_vefaas_iam_credentials()
+        assert creds3 is not None
+        assert creds3.access_key == "ak2"
+
     def test_creds_dotenv_fallback_from_cwd(
         self, clean_env, mock_global_config, monkeypatch, tmp_path, mocker
     ):
