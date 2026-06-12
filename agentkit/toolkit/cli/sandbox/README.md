@@ -61,9 +61,9 @@ Options:
   `CODEX_MODEL`, and `ANTHROPIC_MODEL`.
 - `--model-api-key`: optional. Injected into the tool as `OPENCODE_API_KEY`,
   `CODEX_API_KEY`, and `ANTHROPIC_AUTH_TOKEN`.
-- `--model-base-url`: optional. Injected into the tool as `OPENCODE_BASE_URL`,
-  `CODEX_BASE_URL`, `MODEL_BASE_URL`, and `ANTHROPIC_BASE_URL`. If omitted,
-  Volcengine Ark compatible endpoints are used.
+
+The create flow always injects the default Volcengine Ark compatible base URL
+environment variables. Custom `--model-base-url` is intentionally not exposed.
 
 Credential resolution is delegated to the underlying SDK/service clients:
 `AgentkitToolsClient` handles `CreateTool` credentials, and `TOSService` handles

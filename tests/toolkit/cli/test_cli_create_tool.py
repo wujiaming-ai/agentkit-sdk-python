@@ -330,7 +330,6 @@ def test_build_create_tool_request_adds_model_envs(monkeypatch):
         tos_bucket="my-bucket",
         tos_region="cn-beijing",
         model_name="claude-sonnet-4",
-        model_base_url="https://models.example.com",
         **{"model_" + "api_key": _PLACEHOLDER_MODEL_VALUE},
     )
 
@@ -341,16 +340,43 @@ def test_build_create_tool_request_adds_model_envs(monkeypatch):
         ("OPENCODE_API_KEY", _PLACEHOLDER_MODEL_VALUE),
         ("CODEX_API_KEY", _PLACEHOLDER_MODEL_VALUE),
         ("ANTHROPIC_AUTH_TOKEN", _PLACEHOLDER_MODEL_VALUE),
-        ("OPENCODE_BASE_URL", "https://models.example.com"),
-        ("CODEX_BASE_URL", "https://models.example.com"),
-        ("MODEL_BASE_URL", "https://models.example.com"),
-        ("ANTHROPIC_BASE_URL", "https://models.example.com"),
+        ("OPENCODE_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+        ("CODEX_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+        ("MODEL_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3"),
+        (
+            "ANTHROPIC_BASE_URL",
+            "https://ark.cn-beijing.volces.com/api/compatible",
+        ),
         ("DISABLE_JUPYTER", "true"),
         ("DISABLE_CODE_SERVER", "true"),
         ("DISABLE_BROWSER", "true"),
         ("DISABLE_VNC", "true"),
         ("DISABLE_NODEJS_REPL", "true"),
     ]
+
+
+def test_create_command_rejects_model_base_url_option(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--model-base-url",
+            "https://models.example.com",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "No such option: --model-base-url" in result.output
+    assert _FakeToolsClient.instances == []
+    assert _FakeTOSService.instances == []
 
 
 def test_build_create_tool_request_adds_default_model_base_url(monkeypatch):

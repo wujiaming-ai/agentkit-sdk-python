@@ -105,21 +105,19 @@ def _build_tool_model_envs(
     *,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
-    model_base_url: Optional[str] = None,
 ) -> list[tools_types.EnvsItemForCreateTool] | None:
     envs: list[tools_types.EnvsItemForCreateTool] = []
     _append_tool_envs(envs, MODEL_NAME_ENV_KEYS, model_name)
     _append_tool_envs(envs, MODEL_API_KEY_ENV_KEYS, model_api_key)
-    resolved_model_base_url = (model_base_url or "").strip()
     _append_tool_envs(
         envs,
         MODEL_BASE_URL_ENV_KEYS,
-        resolved_model_base_url or DEFAULT_MODEL_BASE_URL,
+        DEFAULT_MODEL_BASE_URL,
     )
     _append_tool_envs(
         envs,
         ANTHROPIC_BASE_URL_ENV_KEYS,
-        resolved_model_base_url or DEFAULT_ANTHROPIC_BASE_URL,
+        DEFAULT_ANTHROPIC_BASE_URL,
     )
     _append_tool_envs(envs, DISABLED_SERVICE_ENV_KEYS, "true")
     return envs or None
@@ -133,7 +131,6 @@ def _build_create_tool_request(
     tos_region: str,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
-    model_base_url: Optional[str] = None,
 ) -> tools_types.CreateToolRequest:
     resolved_tool_type = tool_type.strip() or DEFAULT_CREATE_TOOL_TYPE
     resolved_name = (name or "").strip() or _generate_tool_name(resolved_tool_type)
@@ -156,7 +153,6 @@ def _build_create_tool_request(
         envs=_build_tool_model_envs(
             model_name=model_name,
             model_api_key=model_api_key,
-            model_base_url=model_base_url,
         ),
     )
 
@@ -264,7 +260,6 @@ def create_tool(
     tos_bucket: Optional[str] = None,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
-    model_base_url: Optional[str] = None,
 ) -> dict[str, object]:
     region = _resolve_region(SANDBOX_REGION_ENV)
     tos_region = _resolve_region(SANDBOX_TOS_REGION_ENV)
@@ -275,7 +270,6 @@ def create_tool(
         tos_region=tos_region,
         model_name=model_name,
         model_api_key=model_api_key,
-        model_base_url=model_base_url,
     )
     client = AgentkitToolsClient(
         region=region,
@@ -325,15 +319,6 @@ def create_command(
             "and ANTHROPIC_AUTH_TOKEN when creating a tool."
         ),
     ),
-    model_base_url: Optional[str] = typer.Option(
-        None,
-        "--model-base-url",
-        help=(
-            "Model base URL to inject into OPENCODE_BASE_URL, CODEX_BASE_URL, "
-            "ANTHROPIC_BASE_URL, and MODEL_BASE_URL when creating a tool. "
-            "Defaults to Volcengine Ark compatible endpoints."
-        ),
-    ),
 ) -> None:
     """Create an AgentKit Tool with optional TOS mount."""
     try:
@@ -343,7 +328,6 @@ def create_command(
             tos_bucket=tos_bucket,
             model_name=model_name,
             model_api_key=model_api_key,
-            model_base_url=model_base_url,
         )
         save_tool_result(str(result["tool_type"]), result)
     except (typer.Abort, typer.Exit):
