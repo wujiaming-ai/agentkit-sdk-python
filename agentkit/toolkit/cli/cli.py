@@ -36,6 +36,7 @@ from agentkit.toolkit.cli.cli_knowledge import knowledge_app
 from agentkit.toolkit.cli.cli_tools import tools_app
 from agentkit.toolkit.cli.cli_runtime import runtime_app
 from agentkit.toolkit.cli.cli_skills import skills_app
+from agentkit.toolkit.cli.sandbox.cli import sandbox_app
 from agentkit.toolkit.cli.cli_auth import (
     auth_app,
     credential_hosting_command,
@@ -43,10 +44,6 @@ from agentkit.toolkit.cli.cli_auth import (
     logout_command,
     whoami_command,
 )
-from agentkit.toolkit.cli.sandbox.cli_create import create_command
-from agentkit.toolkit.cli.sandbox.cli_exec import exec_command
-from agentkit.toolkit.cli.sandbox.cli_get import get_command
-from agentkit.toolkit.cli.sandbox.cli_shell import shell_command
 
 # Note: Avoid importing heavy packages at the top to keep CLI startup fast
 
@@ -110,10 +107,6 @@ app.command(name="deploy")(deploy_command)
 app.command(name="launch")(launch_command)
 app.command(name="status")(status_command)
 app.command(name="destroy")(destroy_command)
-app.command(name="create")(create_command)
-app.command(name="get")(get_command)
-app.command(name="exec")(exec_command)
-app.command(name="shell")(shell_command)
 
 # Auth: top-level convenience commands + an `auth` group for profiles.
 app.command(name="login")(login_command)
@@ -128,6 +121,7 @@ app.add_typer(knowledge_app, name="knowledge")
 app.add_typer(tools_app, name="tools")
 app.add_typer(runtime_app, name="runtime")
 app.add_typer(skills_app, name="skills")
+app.add_typer(sandbox_app, name="sandbox")
 
 
 if __name__ == "__main__":

@@ -686,20 +686,32 @@ def test_create_command_requires_env_credentials(monkeypatch) -> None:
 
     monkeypatch.setattr(cli_create, "TOSService", MissingCredentialsTOSService)
 
-    result = runner.invoke(app, ["create", "--tos-bucket", "my-bucket"])
+    result = runner.invoke(app, ["sandbox", "create", "--tos-bucket", "my-bucket"])
 
     assert result.exit_code == 1
     assert "Volcengine credentials not found (Service: tos)." in result.output
     assert "agentkit config --global --set volcengine.access_key" in result.output
 
 
-def test_sandbox_command_group_is_removed() -> None:
+def test_sandbox_command_group_is_registered() -> None:
     from agentkit.toolkit.cli.cli import app
 
-    result = runner.invoke(app, ["sandbox"])
+    result = runner.invoke(app, ["sandbox", "--help"])
 
-    assert result.exit_code != 0
-    assert "No such command" in result.output
+    assert result.exit_code == 0
+    assert "create" in result.output
+    assert "exec" in result.output
+    assert "get" in result.output
+    assert "shell" in result.output
+
+
+def test_sandbox_commands_are_not_registered_at_top_level() -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    for command in ("create", "exec", "get", "shell"):
+        result = runner.invoke(app, [command])
+        assert result.exit_code != 0
+        assert "No such command" in result.output
 
 
 def test_ensure_sandbox_session_reuses_existing_remote_session(
@@ -904,7 +916,7 @@ def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
 
     result = runner.invoke(
         app,
-        ["get", "--session-id", "user-1"],
+        ["sandbox", "get", "--session-id", "user-1"],
     )
 
     assert result.exit_code == 0
@@ -977,7 +989,7 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
 
     result = runner.invoke(
         app,
-        ["get", "--session-id", "user-2", "--tool-id", "tool-1"],
+        ["sandbox", "get", "--session-id", "user-2", "--tool-id", "tool-1"],
     )
 
     assert result.exit_code == 0
@@ -1053,7 +1065,7 @@ def test_cli_get_ignores_remote_sessions_without_user_session_id(
 
     result = runner.invoke(
         app,
-        ["get", "--session-id", "user-1", "--tool-id", "tool-1"],
+        ["sandbox", "get", "--session-id", "user-1", "--tool-id", "tool-1"],
     )
 
     assert result.exit_code == 0
@@ -1071,7 +1083,7 @@ def test_cli_get_ignores_remote_sessions_without_user_session_id(
 def test_cli_get_requires_session_id() -> None:
     from agentkit.toolkit.cli.cli import app
 
-    result = runner.invoke(app, ["get"])
+    result = runner.invoke(app, ["sandbox", "get"])
 
     assert result.exit_code != 0
     assert "--session-id" in result.output
@@ -1091,7 +1103,7 @@ def test_cli_get_reports_missing_session(monkeypatch, tmp_path) -> None:
 
     result = runner.invoke(
         app,
-        ["get", "--session-id", "missing-user"],
+        ["sandbox", "get", "--session-id", "missing-user"],
     )
 
     assert result.exit_code == 1
@@ -1151,6 +1163,7 @@ def test_cli_shell_posts_to_session_endpoint(monkeypatch, tmp_path) -> None:
     result = runner.invoke(
         app,
         [
+            "sandbox",
             "shell",
             "--session-id",
             "user-1",
@@ -1184,7 +1197,7 @@ def test_cli_shell_requires_command() -> None:
 
     result = runner.invoke(
         app,
-        ["shell", "--session-id", "user-1"],
+        ["sandbox", "shell", "--session-id", "user-1"],
     )
 
     assert result.exit_code != 0
@@ -1235,6 +1248,7 @@ def test_cli_shell_creates_session_when_session_id_omitted(
     result = runner.invoke(
         app,
         [
+            "sandbox",
             "shell",
             "--tool-id",
             "tool-cli",
@@ -1283,7 +1297,7 @@ def test_cli_exec_connects_to_ws_endpoint(monkeypatch, tmp_path) -> None:
 
     result = runner.invoke(
         app,
-        ["exec", "--session-id", "user-1"],
+        ["sandbox", "exec", "--session-id", "user-1"],
     )
 
     assert result.exit_code == 0
@@ -1319,6 +1333,7 @@ def test_cli_exec_runs_command_option(monkeypatch, tmp_path) -> None:
     result = runner.invoke(
         app,
         [
+            "sandbox",
             "exec",
             "--session-id",
             "user-1",
@@ -1367,6 +1382,7 @@ def test_cli_exec_passes_model_options_to_session_create(
     result = runner.invoke(
         app,
         [
+            "sandbox",
             "exec",
             "--session-id",
             "user-1",
@@ -1398,6 +1414,7 @@ def test_cli_exec_rejects_model_base_url_option() -> None:
     result = runner.invoke(
         app,
         [
+            "sandbox",
             "exec",
             "--model-base-url",
             "https://models.example.com",
@@ -1438,6 +1455,7 @@ def test_cli_exec_supports_shell_id_and_empty_command(
     result = runner.invoke(
         app,
         [
+            "sandbox",
             "exec",
             "--session-id",
             "user-1",
@@ -1486,6 +1504,7 @@ def test_cli_exec_does_not_restart_codex_for_shell_id(
     result = runner.invoke(
         app,
         [
+            "sandbox",
             "exec",
             "--session-id",
             "user-1",
@@ -1528,7 +1547,7 @@ def test_cli_exec_clears_remote_shell_id_on_disconnect(
 
     result = runner.invoke(
         app,
-        ["exec", "--session-id", "user-1"],
+        ["sandbox", "exec", "--session-id", "user-1"],
     )
 
     assert result.exit_code == 0
@@ -1568,7 +1587,7 @@ def test_cli_exec_does_not_clear_newer_shell_id(
 
     result = runner.invoke(
         app,
-        ["exec", "--session-id", "user-1"],
+        ["sandbox", "exec", "--session-id", "user-1"],
     )
 
     assert result.exit_code == 0
@@ -1607,6 +1626,7 @@ def test_cli_exec_clears_shell_id_option_on_disconnect(
     result = runner.invoke(
         app,
         [
+            "sandbox",
             "exec",
             "--session-id",
             "user-1",
@@ -1648,7 +1668,7 @@ def test_cli_exec_keeps_stored_shell_ids_without_current_shell_id(
 
     result = runner.invoke(
         app,
-        ["exec", "--session-id", "user-1"],
+        ["sandbox", "exec", "--session-id", "user-1"],
     )
 
     assert result.exit_code == 0
@@ -1738,7 +1758,7 @@ def test_cli_exec_creates_session_when_session_id_omitted(
 
     result = runner.invoke(
         app,
-        ["exec", "--tool-id", "tool-cli"],
+        ["sandbox", "exec", "--tool-id", "tool-cli"],
     )
 
     assert result.exit_code == 0
@@ -1788,7 +1808,7 @@ def test_cli_exec_creates_tool_when_tool_resolution_is_empty(
     monkeypatch.setattr(cli_create, "create_tool", fake_create_tool)
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
-    result = runner.invoke(app, ["exec"])
+    result = runner.invoke(app, ["sandbox", "exec"])
 
     assert result.exit_code == 0
     assert _FakeToolsClient.last_request.tool_id == "tool-from-create"

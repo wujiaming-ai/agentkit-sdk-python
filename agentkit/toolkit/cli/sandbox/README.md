@@ -1,7 +1,7 @@
 # AgentKit Sandbox Commands
 
-The AgentKit CLI provides top-level helper commands for creating and reusing
-AgentKit tool sandbox sessions.
+The AgentKit CLI provides `agentkit sandbox` helper commands for creating and
+reusing AgentKit tool sandbox sessions.
 
 ## Install From Current Branch
 
@@ -43,7 +43,7 @@ TOS bucket/path, builds a `CreateTool` request, waits until the tool reaches
 `Ready`, and prints the created tool ID.
 
 ```bash
-agentkit create \
+agentkit sandbox create \
   --tool-type CodeEnv \
   --tool-name demo-sandbox-tool \
   --tos-bucket agentkit-platform-example
@@ -79,16 +79,18 @@ LocalMountPath: /home/gem
 Endpoint: http://tos-<region>.ivolces.com
 ```
 
-When `exec` or `shell` later creates a session from this tool, the session flow
-calls `GetTool`, reads this mount configuration, and mounts a per-session path:
+When `sandbox exec` or `sandbox shell` later creates a session from this tool,
+the session flow calls `GetTool`, reads this mount configuration, and mounts a
+per-session path:
 
 ```text
 /sandbox-session/tool-<tool-id>/session-<session-id>/
 ```
 
-After the tool reaches `Ready`, `agentkit create` writes the tool information to
-`.agentkit/sandbox/tools.json`. Only one tool record is stored per `ToolType`;
-creating or resolving another tool of the same type replaces that type's record.
+After the tool reaches `Ready`, `agentkit sandbox create` writes the tool
+information to `.agentkit/sandbox/tools.json`. Only one tool record is stored
+per `ToolType`; creating or resolving another tool of the same type replaces
+that type's record.
 
 ### Get
 
@@ -96,7 +98,7 @@ Sync sessions for the current tool, then read a sandbox session from the local
 session store.
 
 ```bash
-agentkit get --session-id 123456789
+agentkit sandbox get --session-id 123456789
 ```
 
 Options:
@@ -119,7 +121,7 @@ they were not created through this CLI's session flow.
 Execute a command in a sandbox shell.
 
 ```bash
-agentkit shell \
+agentkit sandbox shell \
   --session-id 123456789 \
   --command 'echo $TEST_VAR' \
   --shell-id shell-example
@@ -129,7 +131,7 @@ Options:
 
 - `--session-id`: optional. Sandbox session ID used as the local session key.
   If omitted, a UUID is generated and the command creates a sandbox session
-  through the same idempotent session ensure flow as `exec`.
+  through the same idempotent session ensure flow as `sandbox exec`.
 - `--tool-id`: optional. Defaults to `AGENTKIT_SANDBOX_TOOL_ID`. If neither is
   set, the CLI resolves a tool by `--tool-type`.
 - `--tool-type`: optional. `CodeEnv` or `SkillEnv`; defaults to `CodeEnv`.
@@ -158,7 +160,7 @@ Open a streaming WebSocket exec session to the sandbox. By default, this connect
 without running an initial command.
 
 ```bash
-agentkit exec --session-id 123456789
+agentkit sandbox exec --session-id 123456789
 ```
 
 Options:
@@ -197,7 +199,7 @@ Codex or shell commands without closing the local WebSocket client.
 
 ## Local Store
 
-`agentkit exec` writes session results to:
+`agentkit sandbox exec` writes session results to:
 
 ```text
 .agentkit/sandbox/sessions.json
@@ -221,12 +223,12 @@ Repeated exec opens with the same `session_id` refresh the previous
 entry when the remote session is reachable, or overwrite it after recreating the
 remote session.
 
-When `--tool-id` and `AGENTKIT_SANDBOX_TOOL_ID` are both omitted, `exec` and
-`shell` resolve one tool per type through:
+When `--tool-id` and `AGENTKIT_SANDBOX_TOOL_ID` are both omitted,
+`sandbox exec` and `sandbox shell` resolve one tool per type through:
 
 1. `.agentkit/sandbox/tools.json`
 2. `ListTools` filtered by `ToolType`
-3. automatic `agentkit create --tool-type <type>`-equivalent creation
+3. automatic `agentkit sandbox create --tool-type <type>`-equivalent creation
 
 Resolved tool records are stored in:
 
@@ -255,7 +257,8 @@ Example:
 
 ## Module Layout
 
-- `../cli.py`: registers `create`, `get`, `exec`, and `shell` as top-level commands.
+- `cli.py`: registers the `create`, `get`, `exec`, and `shell` sandbox subcommands.
+- `../cli.py`: registers the `sandbox` command group.
 - `session_create.py`: shared session creation and idempotent ensure helpers.
 - `session_sync.py`: shared remote session list/sync helpers.
 - `tool_resolve.py`: shared sandbox tool resolution and local tool cache helpers.

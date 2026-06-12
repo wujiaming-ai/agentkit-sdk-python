@@ -167,7 +167,7 @@ def test_create_command_uses_tos_service_and_default_region(
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
-    result = runner.invoke(app, ["create", "--tool-name", "demo-tool"])
+    result = runner.invoke(app, ["sandbox", "create", "--tool-name", "demo-tool"])
 
     assert result.exit_code == 0
     assert "工具创建成功" in result.output
@@ -212,7 +212,7 @@ def test_create_command_uses_region_envs(monkeypatch):
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
-    result = runner.invoke(app, ["create", "--tool-name", "demo-tool"])
+    result = runner.invoke(app, ["sandbox", "create", "--tool-name", "demo-tool"])
 
     assert result.exit_code == 0
     assert _FakeToolsClient.instances[0].region == "cn-shanghai"
@@ -229,7 +229,7 @@ def test_create_command_rejects_region_option(monkeypatch):
 
     result = runner.invoke(
         app,
-        ["create", "--tool-name", "demo-tool", "--region", "cn-shanghai"],
+        ["sandbox", "create", "--tool-name", "demo-tool", "--region", "cn-shanghai"],
     )
 
     assert result.exit_code != 0
@@ -248,7 +248,7 @@ def test_create_command_waits_until_tool_ready(monkeypatch):
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
     monkeypatch.setattr(cli_create.time, "sleep", lambda _seconds: None)
 
-    result = runner.invoke(app, ["create", "--tool-name", "demo-tool"])
+    result = runner.invoke(app, ["sandbox", "create", "--tool-name", "demo-tool"])
 
     assert result.exit_code == 0
     assert "工具状态：Creating" in result.output
@@ -266,7 +266,7 @@ def test_create_command_prints_sanitized_details_on_error(monkeypatch):
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
-    result = runner.invoke(app, ["create", "--tool-name", "demo-tool"])
+    result = runner.invoke(app, ["sandbox", "create", "--tool-name", "demo-tool"])
 
     assert result.exit_code == 1
     assert "entered terminal status: Error" in result.output
