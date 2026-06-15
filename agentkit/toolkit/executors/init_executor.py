@@ -121,7 +121,55 @@ TEMPLATES = {
         "description": "A2A Application Based on the VeADK-Go Framework",
         "type": "A2A App",
     },
+    "harness": {
+        "name": "Harness",
+        "language": "Python",
+        "language_version": "3.12",
+        "description": "Empty harness directory scaffold",
+        "type": "Harness",
+    },
 }
+
+
+# `.env.example` written into a harness directory. Carries only the Volcengine
+# deploy credentials; copy to `.env` and fill in the AK/SK before deploying.
+_HARNESS_ENV_EXAMPLE = """\
+# Volcengine credentials for harness deploy. Copy this file to `.env` and fill in.
+VOLCENGINE_ACCESS_KEY=
+VOLCENGINE_SECRET_KEY=
+# VOLCENGINE_REGION=cn-beijing
+"""
+
+# Container image for the harness server. The base image's apt mirror is an
+# unreachable internal host, so apt is repointed at aliyun; the source branch is
+# cloned via the ghfast proxy with a github fallback; uv installs from aliyun.
+_HARNESS_DOCKERFILE = """\
+FROM agentkit-cn-beijing.cr.volces.com/base/py-simple:python3.12-bookworm-slim-latest
+ENV PYTHONUNBUFFERED=1
+RUN set -eux; \\
+    rm -f /etc/apt/sources.list.d/*; \\
+    printf 'deb http://mirrors.aliyun.com/debian bookworm main contrib non-free non-free-firmware\\n\\
+deb http://mirrors.aliyun.com/debian bookworm-updates main contrib non-free non-free-firmware\\n\\
+deb http://mirrors.aliyun.com/debian-security bookworm-security main contrib non-free non-free-firmware\\n' \\
+        > /etc/apt/sources.list; \\
+    apt-get update; \\
+    apt-get install -y --no-install-recommends git ca-certificates; \\
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+RUN set -eux; \\
+    for url in \\
+        https://ghfast.top/https://github.com/volcengine/veadk-python.git \\
+        https://github.com/volcengine/veadk-python.git ; do \\
+      for i in 1 2 3; do \\
+        git clone --depth 1 -b main "$url" src && break 2 || sleep 8; \\
+      done; \\
+    done; \\
+    test -d src/veadk
+RUN uv pip install --system --index-url https://mirrors.aliyun.com/pypi/simple/ \\
+        ./src fastapi "uvicorn[standard]"
+EXPOSE 8000
+CMD ["python", "-m", "uvicorn", "veadk.cloud.harness_app.app:app", "--host", "0.0.0.0", "--port", "8000"]
+"""
 
 
 class InitExecutor(BaseExecutor):
@@ -311,6 +359,67 @@ class InitExecutor(BaseExecutor):
                 error=error_info["error"],
                 error_code=error_info["error_code"],
             )
+
+    def init_harness(self, project_name: str, directory: str = ".") -> InitResult:
+        """Initialize a harness project by creating an empty directory.
+
+        Creates a directory named ``project_name`` under ``directory`` (default:
+        current dir). No files are generated.
+
+        Args:
+            project_name: Name of the harness directory to create.
+            directory: Parent directory in which to create it.
+
+        Returns:
+            InitResult: Initialization operation result.
+        """
+        self.created_files = []
+
+        if not re.match(r"^[a-zA-Z0-9_-]+$", project_name):
+            return InitResult(
+                success=False,
+                error=f"Project name '{project_name}' contains invalid characters. "
+                f"Only letters, numbers, hyphens, and underscores are allowed.",
+                error_code="INVALID_CONFIG",
+            )
+
+        target_dir = Path(directory).resolve() / project_name
+        if target_dir.exists() and not target_dir.is_dir():
+            return InitResult(
+                success=False,
+                error=f"'{target_dir}' exists but is not a directory",
+                error_code="INVALID_CONFIG",
+            )
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.info(f"Created harness directory: {target_dir}")
+
+        env_example_path = target_dir / ".env.example"
+        if env_example_path.exists():
+            self.logger.info("File .env.example already exists, skipping")
+        else:
+            env_example_path.write_text(_HARNESS_ENV_EXAMPLE, encoding="utf-8")
+            self.created_files.append(".env.example")
+
+        dockerfile_path = target_dir / "Dockerfile"
+        if dockerfile_path.exists():
+            self.logger.info("File Dockerfile already exists, skipping")
+        else:
+            dockerfile_path.write_text(_HARNESS_DOCKERFILE, encoding="utf-8")
+            self.created_files.append("Dockerfile")
+
+        return InitResult(
+            success=True,
+            project_name=project_name,
+            template="harness",
+            project_path=str(target_dir),
+            created_files=self.created_files,
+            metadata={
+                "language": "Python",
+                "language_version": "3.12",
+                "template_name": "Harness",
+            },
+        )
 
     def _build_render_context(
         self,

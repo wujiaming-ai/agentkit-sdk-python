@@ -15,6 +15,8 @@
 """AgentKit CLI - Deploy command implementation."""
 
 from pathlib import Path
+from typing import Optional
+
 import typer
 from rich.console import Console
 
@@ -25,11 +27,47 @@ console = Console()
 
 def deploy_command(
     config_file: Path = typer.Option("agentkit.yaml", help="Configuration file"),
+    harness: Optional[str] = typer.Option(
+        None,
+        "--harness",
+        help="Deploy a harness spec <name>.harness.json (cloud build+deploy) "
+        "from the current directory instead of agentkit.yaml.",
+    ),
+    region: Optional[str] = typer.Option(
+        None, "--region", help="AgentKit region (harness deploy)."
+    ),
+    volcengine_access_key: Optional[str] = typer.Option(
+        None, "--volcengine-access-key", help="Volcengine access key (harness deploy)."
+    ),
+    volcengine_secret_key: Optional[str] = typer.Option(
+        None, "--volcengine-secret-key", help="Volcengine secret key (harness deploy)."
+    ),
+    discovery_url: Optional[str] = typer.Option(
+        None,
+        "--discovery-url",
+        help="OIDC discovery URL; enables OAuth2/JWT auth (harness deploy).",
+    ),
+    allowed_id: Optional[str] = typer.Option(
+        None,
+        "--allowed-id",
+        help="Comma-separated allowed client IDs for OAuth2/JWT auth (harness deploy).",
+    ),
 ):
     """Deploy the Agent to target environment."""
     from agentkit.toolkit.executors import DeployExecutor
     from agentkit.toolkit.cli.console_reporter import ConsoleReporter
     from agentkit.toolkit.context import ExecutionContext
+
+    if harness is not None:
+        _deploy_harness(
+            name=harness,
+            region=region,
+            access_key=volcengine_access_key,
+            secret_key=volcengine_secret_key,
+            discovery_url=discovery_url,
+            allowed_id=allowed_id,
+        )
+        return
 
     console.print(f"[green]Deploying with {config_file}[/green]")
 
@@ -60,3 +98,52 @@ def deploy_command(
                 if log.strip():
                     console.print(f"[red]{log}[/red]")
         raise typer.Exit(1)
+
+
+def _deploy_harness(
+    name: str,
+    region,
+    access_key,
+    secret_key,
+    discovery_url,
+    allowed_id,
+):
+    """Deploy a harness spec <name>.harness.json from the current directory."""
+    from agentkit.toolkit.sdk import deploy_harness
+    from agentkit.toolkit.cli.console_reporter import ConsoleReporter
+    from agentkit.toolkit.context import ExecutionContext
+
+    console.print(f"[green]Deploying harness '{name}' from current directory[/green]")
+
+    reporter = ConsoleReporter()
+    ExecutionContext.set_reporter(reporter)
+
+    result = deploy_harness(
+        name=name,
+        region=region,
+        access_key=access_key,
+        secret_key=secret_key,
+        discovery_url=discovery_url,
+        allowed_id=allowed_id,
+        reporter=reporter,
+    )
+
+    if not result.success:
+        console.print(f"[red]❌ Harness deploy failed: {result.error}[/red]")
+        raise typer.Exit(1)
+
+    deploy_result = result.deploy_result
+    meta = deploy_result.metadata if (deploy_result and deploy_result.metadata) else {}
+    endpoint = deploy_result.endpoint_url if deploy_result else None
+
+    console.print("[green]✅ Harness runtime deployed[/green]")
+    console.print(f"[green]Name: {name}[/green]")
+    if meta.get("runtime_id"):
+        console.print(f"[green]Runtime id: {meta['runtime_id']}[/green]")
+    console.print(f"[green]Endpoint: {endpoint or '(see AgentKit console)'}[/green]")
+    if meta.get("runtime_apikey"):
+        console.print(f"[green]API key: {meta['runtime_apikey']}[/green]")
+    if endpoint:
+        console.print(
+            f"[green]Recorded in {(Path.cwd() / 'harness.json')}[/green]"
+        )
