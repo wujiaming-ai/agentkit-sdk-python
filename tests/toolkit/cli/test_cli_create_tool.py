@@ -358,8 +358,6 @@ def test_build_create_tool_request_adds_model_envs(monkeypatch):
         ),
         ("DISABLE_JUPYTER", "true"),
         ("DISABLE_CODE_SERVER", "true"),
-        ("DISABLE_BROWSER", "true"),
-        ("DISABLE_VNC", "true"),
         ("DISABLE_NODEJS_REPL", "true"),
     ]
 
@@ -464,8 +462,6 @@ def test_build_create_tool_request_adds_default_model_base_url(monkeypatch):
         ),
         ("DISABLE_JUPYTER", "true"),
         ("DISABLE_CODE_SERVER", "true"),
-        ("DISABLE_BROWSER", "true"),
-        ("DISABLE_VNC", "true"),
         ("DISABLE_NODEJS_REPL", "true"),
     ]
 
