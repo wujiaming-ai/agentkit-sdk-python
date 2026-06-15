@@ -321,8 +321,9 @@ def ensure_sandbox_session(
     resolved_session_id = session_id or str(uuid.uuid4())
     existing = find_session_result(resolved_session_id) if session_id else None
     client = AgentkitToolsClient()
+    synced_tool_id = None
     if session_id and not existing:
-        sync_remote_sessions(
+        synced_tool_id = sync_remote_sessions(
             session_id=resolved_session_id,
             tool_id=tool_id,
             tool_type=tool_type,
@@ -331,13 +332,15 @@ def ensure_sandbox_session(
         )
         existing = find_session_result(resolved_session_id)
 
-    resolved_tool_id = resolve_sandbox_tool_id(
-        tool_id=tool_id,
-        tool_type=tool_type,
-        default_tool_id=existing.get("tool_id") if existing else None,
-        client=client,
-        env_var_name=SANDBOX_TOOL_ID_ENV,
-    )
+    resolved_tool_id = synced_tool_id
+    if not resolved_tool_id:
+        resolved_tool_id = resolve_sandbox_tool_id(
+            tool_id=tool_id,
+            tool_type=tool_type,
+            default_tool_id=existing.get("tool_id") if existing else None,
+            client=client,
+            env_var_name=SANDBOX_TOOL_ID_ENV,
+        )
 
     if existing:
         result = _get_existing_remote_session(

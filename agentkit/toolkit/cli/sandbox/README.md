@@ -432,6 +432,11 @@ When `--tool-id` and `AGENTKIT_SANDBOX_TOOL_ID` are both omitted,
 
 Cached and listed tools are reused only when their status is `Ready`; tools in
 states such as `Creating`, `Error`, `Deleting`, or `Deleted` are ignored.
+When a tool ID is provided explicitly, read from `AGENTKIT_SANDBOX_TOOL_ID`,
+reused from an existing session record, or loaded from
+`.agentkit/sandbox/tools.json`, the CLI calls `GetTool` before using it. If the
+tool does not exist or its current status is not `Ready`, the command exits
+with that error instead of creating a session against an unusable tool.
 
 Resolved tool records are stored in:
 

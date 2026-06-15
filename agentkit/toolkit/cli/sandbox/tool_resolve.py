@@ -30,6 +30,7 @@ SANDBOX_TOOL_STORE_PATH = Path(".agentkit") / "sandbox" / "tools.json"
 DEFAULT_SANDBOX_TOOL_TYPE = "CodeEnv"
 VALID_SANDBOX_TOOL_TYPES = ("CodeEnv", "SkillEnv")
 READY_TOOL_STATUS = "Ready"
+TOOL_NOT_FOUND_ERROR_CODE = "InvalidResource.NotFound"
 
 
 class SandboxToolType(str, Enum):
@@ -67,16 +68,41 @@ def _load_tool_store(path: Path) -> dict[str, object]:
     return data
 
 
+def _get_field_value(source: object, *keys: str) -> object:
+    for key in keys:
+        if isinstance(source, dict):
+            value = source.get(key)
+        else:
+            value = getattr(source, key, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _get_string_field(source: object, *keys: str) -> str | None:
+    value = _get_field_value(source, *keys)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _get_tool_payload(response: object) -> object:
+    if isinstance(response, dict) and isinstance(response.get("Result"), dict):
+        return response["Result"]
+    return response
+
+
 def _build_tool_record(tool: object, tool_type: str) -> dict[str, object] | None:
-    tool_id = getattr(tool, "tool_id", None)
+    payload = _get_tool_payload(tool)
+    tool_id = _get_string_field(payload, "ToolId", "tool_id")
     if not isinstance(tool_id, str) or not tool_id.strip():
         return None
 
     return {
         "ToolId": tool_id.strip(),
-        "ToolType": getattr(tool, "tool_type", None) or tool_type,
-        "Name": getattr(tool, "name", None),
-        "Status": getattr(tool, "status", None),
+        "ToolType": _get_field_value(payload, "ToolType", "tool_type") or tool_type,
+        "Name": _get_field_value(payload, "Name", "name"),
+        "Status": _get_field_value(payload, "Status", "status"),
     }
 
 
@@ -90,6 +116,82 @@ def _get_string_value(result: dict[str, object], *keys: str) -> str | None:
 
 def _is_ready_tool_record(result: dict[str, object]) -> bool:
     return _get_string_value(result, "Status", "status") == READY_TOOL_STATUS
+
+
+def _get_response_error(response: object) -> tuple[str, str] | None:
+    metadata = _get_field_value(response, "ResponseMetadata", "response_metadata")
+    if not isinstance(metadata, dict):
+        return None
+
+    api_error = metadata.get("Error")
+    if not isinstance(api_error, dict):
+        return None
+
+    code = str(api_error.get("Code") or "")
+    message = str(api_error.get("Message") or "Unknown error")
+    return code, message
+
+
+def _is_tool_not_found_error(exc: Exception) -> bool:
+    message = str(exc)
+    return (
+        TOOL_NOT_FOUND_ERROR_CODE in message
+        or "specified resource does not exist" in message.lower()
+        or "not found" in message.lower()
+        or "not exist" in message.lower()
+        or "不存在" in message
+    )
+
+
+def _tool_not_found(tool_id: str, detail: object = None) -> None:
+    message = f"Sandbox tool not found: {tool_id}"
+    if detail:
+        message = f"{message}. {detail}"
+    error(message)
+
+
+def _tool_unavailable(tool_id: str, status: str | None) -> None:
+    error(
+        f"Sandbox tool is not available: {tool_id}. "
+        f"Status: {status or 'Unknown'}. Expected: {READY_TOOL_STATUS}"
+    )
+
+
+def _validate_existing_tool_id(
+    client: AgentkitToolsClient,
+    tool_id: str,
+    *,
+    tool_type: str | SandboxToolType | None,
+    save_result: bool = False,
+) -> str:
+    try:
+        response = client.get_tool(tools_types.GetToolRequest(tool_id=tool_id))
+    except Exception as exc:
+        if _is_tool_not_found_error(exc):
+            _tool_not_found(tool_id, exc)
+        error(f"Failed to get sandbox tool {tool_id}: {exc}")
+
+    response_error = _get_response_error(response)
+    if response_error:
+        code, message = response_error
+        if code == TOOL_NOT_FOUND_ERROR_CODE:
+            _tool_not_found(tool_id, message)
+        error(f"Failed to get sandbox tool {tool_id}: {message}")
+
+    resolved_tool_type = normalize_tool_type(tool_type)
+    record = _build_tool_record(response, resolved_tool_type)
+    if not record:
+        error(f"GetTool response missing ToolId: {tool_id}")
+    if record["ToolId"] != tool_id:
+        error(f"GetTool response ToolId mismatch: {tool_id}")
+
+    status = _get_string_value(record, "Status", "status")
+    if status != READY_TOOL_STATUS:
+        _tool_unavailable(tool_id, status)
+
+    if save_result:
+        save_tool_result(resolved_tool_type, record)
+    return tool_id
 
 
 def _normalize_tool_record(
@@ -216,19 +318,36 @@ def resolve_existing_sandbox_tool_id(
 ) -> str | None:
     explicit_tool_id = (tool_id or "").strip()
     if explicit_tool_id:
-        return explicit_tool_id
+        return _validate_existing_tool_id(
+            client,
+            explicit_tool_id,
+            tool_type=tool_type,
+        )
 
     env_tool_id = (os.getenv(env_var_name) or "").strip()
     if env_tool_id:
-        return env_tool_id
+        return _validate_existing_tool_id(
+            client,
+            env_tool_id,
+            tool_type=tool_type,
+        )
 
     if isinstance(default_tool_id, str) and default_tool_id.strip():
-        return default_tool_id.strip()
+        return _validate_existing_tool_id(
+            client,
+            default_tool_id.strip(),
+            tool_type=tool_type,
+        )
 
     resolved_tool_type = normalize_tool_type(tool_type)
     cached_tool_id = _get_cached_tool_id(resolved_tool_type)
     if cached_tool_id:
-        return cached_tool_id
+        return _validate_existing_tool_id(
+            client,
+            cached_tool_id,
+            tool_type=resolved_tool_type,
+            save_result=True,
+        )
 
     listed_tool_id = _list_first_tool(client, resolved_tool_type)
     if listed_tool_id:

@@ -53,7 +53,18 @@ class _FakeToolTosMountConfig:
 
 
 class _FakeGetToolResponse:
-    def __init__(self, tos_mount_config=None):
+    def __init__(
+        self,
+        tool_id=None,
+        tool_type=None,
+        name="fake-tool",
+        status="Ready",
+        tos_mount_config=None,
+    ):
+        self.tool_id = tool_id
+        self.tool_type = tool_type
+        self.name = name
+        self.status = status
         self.tos_mount_config = tos_mount_config
 
 
@@ -110,6 +121,7 @@ class _FakeToolsClient:
     list_sessions_responses = [_FakeListSessionsResponse()]
     create_error = None
     get_error = None
+    get_tool_error = None
     create_call_count = 0
     get_call_count = 0
     get_tool_call_count = 0
@@ -133,6 +145,12 @@ class _FakeToolsClient:
     def get_tool(self, request):
         _FakeToolsClient.last_get_tool_request = request
         _FakeToolsClient.get_tool_call_count += 1
+        if _FakeToolsClient.get_tool_error:
+            raise _FakeToolsClient.get_tool_error
+        if isinstance(_FakeToolsClient.get_tool_response, dict):
+            return _FakeToolsClient.get_tool_response
+        if _FakeToolsClient.get_tool_response.tool_id is None:
+            _FakeToolsClient.get_tool_response.tool_id = request.tool_id
         return _FakeToolsClient.get_tool_response
 
     def list_tools(self, request):
@@ -166,6 +184,7 @@ def _reset_fake_client():
     _FakeToolsClient.list_sessions_responses = [_FakeListSessionsResponse()]
     _FakeToolsClient.create_error = None
     _FakeToolsClient.get_error = None
+    _FakeToolsClient.get_tool_error = None
     _FakeToolsClient.create_call_count = 0
     _FakeToolsClient.get_call_count = 0
     _FakeToolsClient.get_tool_call_count = 0
@@ -283,6 +302,116 @@ def test_ensure_sandbox_session_uses_cached_tool_by_type(
 
     assert _FakeToolsClient.list_call_count == 0
     assert _FakeToolsClient.last_request.tool_id == "tool-from-cache"
+    assert _FakeToolsClient.get_tool_call_count == 2
+    assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-from-cache"
+
+
+def test_ensure_sandbox_session_rejects_unavailable_cached_tool(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    monkeypatch.delenv("AGENTKIT_SANDBOX_TOOL_ID", raising=False)
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _patch_store_path(monkeypatch, tmp_path)
+    tool_store_path = _patch_tool_store_path(monkeypatch, tmp_path)
+    tool_store_path.parent.mkdir(parents=True, exist_ok=True)
+    tool_store_path.write_text(
+        json.dumps(
+            {
+                "CodeEnv": {
+                    "ToolId": "tool-from-cache",
+                    "ToolType": "CodeEnv",
+                    "Name": "cached-tool",
+                    "Status": "Ready",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
+        tool_id="tool-from-cache",
+        tool_type="CodeEnv",
+        status="Deleting",
+    )
+
+    result = runner.invoke(
+        app,
+        ["sandbox", "shell", "--command", "echo 123"],
+    )
+
+    assert result.exit_code == 1
+    assert "Sandbox tool is not available: tool-from-cache" in result.output
+    assert "Status: Deleting" in result.output
+    assert _FakeToolsClient.create_call_count == 0
+    assert _FakeToolsClient.list_call_count == 0
+
+
+def test_cli_exec_reports_missing_explicit_tool_id(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _patch_store_path(monkeypatch, tmp_path)
+    _FakeToolsClient.get_tool_error = Exception(
+        "Failed to GetTool: The specified resource does not exist."
+    )
+
+    result = runner.invoke(
+        app,
+        ["sandbox", "exec", "--tool-id", "tool-missing"],
+    )
+
+    assert result.exit_code == 1
+    assert "Sandbox tool not found: tool-missing" in result.output
+    assert "The specified resource does not exist." in result.output
+    assert _FakeToolsClient.create_call_count == 0
+
+
+def test_cli_shell_reports_raw_get_tool_not_found_response(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _patch_store_path(monkeypatch, tmp_path)
+    _FakeToolsClient.get_tool_response = {
+        "ResponseMetadata": {
+            "Error": {
+                "Code": "InvalidResource.NotFound",
+                "Message": "The specified resource does not exist.",
+            }
+        }
+    }
+
+    result = runner.invoke(
+        app,
+        ["sandbox", "shell", "--tool-id", "tool-missing", "--command", "pwd"],
+    )
+
+    assert result.exit_code == 1
+    assert "Sandbox tool not found: tool-missing" in result.output
+    assert "The specified resource does not exist." in result.output
+    assert _FakeToolsClient.create_call_count == 0
 
 
 def test_ensure_sandbox_session_ignores_non_ready_cached_tool(
@@ -617,7 +746,7 @@ def test_ensure_sandbox_session_skips_tos_mount_when_tool_has_none(
         tool_id="tool-cli",
     )
 
-    assert _FakeToolsClient.get_tool_call_count == 1
+    assert _FakeToolsClient.get_tool_call_count == 2
     assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-cli"
     assert _FakeToolsClient.last_request.tos_mount_points is None
 
@@ -651,7 +780,7 @@ def test_ensure_sandbox_session_mounts_tool_tos_by_tool_and_session(
         tool_id="tool-cli",
     )
 
-    assert _FakeToolsClient.get_tool_call_count == 1
+    assert _FakeToolsClient.get_tool_call_count == 2
     assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-cli"
     mount_points = _FakeToolsClient.last_request.tos_mount_points
     assert len(mount_points) == 1
@@ -934,7 +1063,7 @@ def test_ensure_sandbox_session_reuses_existing_remote_session(
 
     assert _FakeToolsClient.create_call_count == 0
     assert _FakeToolsClient.get_call_count == 1
-    assert _FakeToolsClient.get_tool_call_count == 0
+    assert _FakeToolsClient.get_tool_call_count == 1
     assert _FakeToolsClient.last_get_request.tool_id == "tool-stored"
     assert _FakeToolsClient.last_get_request.session_id == "session-existing"
     assert result == {
@@ -986,7 +1115,7 @@ def test_ensure_sandbox_session_syncs_missing_local_session_before_create(
     assert _FakeToolsClient.list_sessions_call_count == 1
     assert _FakeToolsClient.create_call_count == 0
     assert _FakeToolsClient.get_call_count == 1
-    assert _FakeToolsClient.get_tool_call_count == 0
+    assert _FakeToolsClient.get_tool_call_count == 1
     assert _FakeToolsClient.last_list_sessions_request.tool_id == "tool-cli"
     assert _FakeToolsClient.last_get_request.tool_id == "tool-cli"
     assert _FakeToolsClient.last_get_request.session_id == "remote-instance"
@@ -1040,7 +1169,7 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
     )
 
     assert _FakeToolsClient.get_call_count == 1
-    assert _FakeToolsClient.get_tool_call_count == 1
+    assert _FakeToolsClient.get_tool_call_count == 2
     assert _FakeToolsClient.create_call_count == 1
     assert _FakeToolsClient.last_get_request.tool_id == "tool-new"
     assert _FakeToolsClient.last_get_request.session_id == "session-old"
