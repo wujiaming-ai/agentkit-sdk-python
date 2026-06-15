@@ -314,13 +314,18 @@ def _strings_or_empty(values: Optional[list[str]]) -> list[str]:
 
 def _validate_upload_inputs(
     upload_dir: Optional[list[Path]],
+    upload_file: bool,
     upload_files: Optional[list[Path]],
 ) -> tuple[Path | None, list[Path]]:
     dirs = _paths_or_empty(upload_dir)
     files = _paths_or_empty(upload_files)
-    if dirs and files:
+    if files and not upload_file:
+        error("File arguments require --upload-file")
+    if dirs and upload_file:
         error("Use either --upload-dir or --upload-file, not both")
-    if not dirs and not files:
+    if upload_file and not files:
+        error("Provide one or more files after --upload-file")
+    if not dirs and not upload_file:
         error("Provide --upload-dir or --upload-file")
     if len(dirs) > 1:
         error("--upload-dir accepts one directory")
@@ -392,15 +397,20 @@ def _build_remote_extract_command(
 
 def _validate_download_inputs(
     sandbox_dir: Optional[str],
+    sandbox_file: bool,
     sandbox_files: Optional[list[str]],
     *,
     workspace: str | None,
 ) -> tuple[str, list[str]]:
     files = _strings_or_empty(sandbox_files)
     has_dir = bool((sandbox_dir or "").strip())
-    if has_dir and files:
+    if files and not sandbox_file:
+        error("File arguments require --sandbox-file")
+    if has_dir and sandbox_file:
         error("Use either --sandbox-dir or --sandbox-file, not both")
-    if not has_dir and not files:
+    if sandbox_file and not files:
+        error("Provide one or more files after --sandbox-file")
+    if not has_dir and not sandbox_file:
         error("Provide --sandbox-dir or --sandbox-file")
 
     if has_dir:
@@ -550,10 +560,15 @@ def file_upload_command(
             "Use --upload-file for single or multiple files."
         ),
     ),
-    upload_files: Optional[list[Path]] = typer.Option(
-        None,
+    upload_file: bool = typer.Option(
+        False,
         "--upload-file",
-        help="Local file to upload. Repeat for multiple files.",
+        help="Upload one or more local files listed as FILE... arguments.",
+    ),
+    files: Optional[list[Path]] = typer.Argument(
+        None,
+        metavar="FILE...",
+        help="Local files used with --upload-file.",
     ),
     dst_dir: str = typer.Option(
         ...,
@@ -584,7 +599,8 @@ def file_upload_command(
         )
         resolved_upload_dir, resolved_upload_files = _validate_upload_inputs(
             upload_dir,
-            upload_files,
+            upload_file,
+            files,
         )
         session = _resolve_existing_session(
             session_id=session_id,
@@ -652,10 +668,15 @@ def file_download_command(
         "--sandbox-dir",
         help="Sandbox directory whose contents are downloaded.",
     ),
-    sandbox_files: Optional[list[str]] = typer.Option(
-        None,
+    sandbox_file: bool = typer.Option(
+        False,
         "--sandbox-file",
-        help="Sandbox file to download. Repeat for multiple files.",
+        help="Download one or more sandbox files listed as FILE... arguments.",
+    ),
+    files: Optional[list[str]] = typer.Argument(
+        None,
+        metavar="FILE...",
+        help="Sandbox files used with --sandbox-file.",
     ),
     download_dir: Path = typer.Option(
         ...,
@@ -684,7 +705,8 @@ def file_download_command(
         resolved_workspace = _normalize_workspace(workspace)
         source_mode, sources = _validate_download_inputs(
             sandbox_dir,
-            sandbox_files,
+            sandbox_file,
+            files,
             workspace=resolved_workspace,
         )
         resolved_download_dir = _validate_local_download_dir(download_dir)

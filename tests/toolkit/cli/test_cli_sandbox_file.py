@@ -210,7 +210,6 @@ def test_cli_file_upload_multiple_files_without_workspace(
             "user-1",
             "--upload-file",
             str(first),
-            "--upload-file",
             str(second),
             "--dst-dir",
             "/tmp/files",
@@ -228,6 +227,14 @@ def test_cli_file_upload_multiple_files_without_workspace(
         (
             ["--workspace", "/home/gem", "--dst-dir", "out"],
             "Provide --upload-dir or --upload-file",
+        ),
+        (
+            ["--upload-file", "--dst-dir", "/tmp/out"],
+            "Provide one or more files after --upload-file",
+        ),
+        (
+            ["orphan.txt", "--dst-dir", "/tmp/out"],
+            "File arguments require --upload-file",
         ),
         (
             ["--upload-dir", "missing", "--dst-dir", "/tmp/out"],
@@ -339,7 +346,6 @@ def test_cli_file_upload_rejects_duplicate_file_names(monkeypatch, tmp_path) -> 
             "user-1",
             "--upload-file",
             str(first),
-            "--upload-file",
             str(second),
             "--dst-dir",
             "/tmp/out",
@@ -543,7 +549,6 @@ def test_cli_file_download_multiple_files_without_workspace(
             "user-1",
             "--sandbox-file",
             "/tmp/one.txt",
-            "--sandbox-file",
             "/var/log/two.txt",
             "--download-dir",
             str(download_dir),
@@ -569,6 +574,14 @@ def test_cli_file_download_multiple_files_without_workspace(
             "Provide --sandbox-dir or --sandbox-file",
         ),
         (
+            ["--sandbox-file"],
+            "Provide one or more files after --sandbox-file",
+        ),
+        (
+            ["/tmp/orphan.txt"],
+            "File arguments require --sandbox-file",
+        ),
+        (
             ["--sandbox-file", "relative.txt"],
             "--sandbox-file must be absolute when --workspace is omitted",
         ),
@@ -576,7 +589,6 @@ def test_cli_file_download_multiple_files_without_workspace(
             [
                 "--sandbox-file",
                 "/tmp/one.txt",
-                "--sandbox-file",
                 "/var/one.txt",
             ],
             "Duplicate sandbox file name: one.txt",

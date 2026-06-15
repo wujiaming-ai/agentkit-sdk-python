@@ -181,15 +181,14 @@ Upload one or more local files:
 ```bash
 agentkit sandbox file upload \
   --session-id 123456789 \
-  --upload-file ./a.txt \
-  --upload-file ./b.txt \
+  --upload-file ./a.txt ./b.txt \
   --dst-dir /tmp/files
 ```
 
 Upload options:
 
 - `--upload-dir`: local directory whose contents are uploaded. Use at most once.
-- `--upload-file`: local file to upload. Repeat for multiple files.
+- `--upload-file FILE...`: one or more local files to upload.
 - `--dst-dir`: required sandbox destination directory. Relative paths require
   `--workspace`. The destination directory is created if it does not exist.
 
@@ -212,15 +211,14 @@ Download one or more sandbox files:
 agentkit sandbox file download \
   --session-id 123456789 \
   --workspace /home/gem \
-  --sandbox-file uploads/a.txt \
-  --sandbox-file uploads/b.txt \
+  --sandbox-file uploads/a.txt uploads/b.txt \
   --download-dir ./downloads
 ```
 
 Download options:
 
 - `--sandbox-dir`: sandbox directory whose contents are downloaded.
-- `--sandbox-file`: sandbox file to download. Repeat for multiple files.
+- `--sandbox-file FILE...`: one or more sandbox files to download.
 - `--download-dir`: required local directory where downloaded contents are
   extracted. The directory is created if it does not exist.
 - `--overwrite`: optional. Overwrite existing local files while extracting.
