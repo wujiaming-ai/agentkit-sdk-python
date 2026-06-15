@@ -362,6 +362,56 @@ def test_build_create_tool_request_adds_model_envs(monkeypatch):
     ]
 
 
+def test_build_create_tool_request_adds_code_env_config_envs(monkeypatch):
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    request = cli_create._build_create_tool_request(
+        tool_type="CodeEnv",
+        name="demo-tool",
+        tos_bucket="my-bucket",
+        tos_region="cn-beijing",
+        model_name="claude-sonnet-4",
+    )
+
+    envs = {item.key: item.value for item in request.envs}
+    assert envs["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    assert envs["HOME"] == "/home/gem"
+    assert envs["CODEX_HOME"] == "/home/gem/.codex"
+    config_toml = envs["CODEX_CONFIG_TOML"]
+    assert 'model = "claude-sonnet-4"' in config_toml
+    assert 'review_model = "claude-sonnet-4"' in config_toml
+    assert 'model = "deepseek-v4-flash-260425"' not in config_toml
+    assert (
+        'model_catalog_json = "/home/gem/.codex/model-catalog.json"'
+        in config_toml
+    )
+    assert "model_availability_nux" not in config_toml
+    assert "gpt-5.5" not in config_toml
+    assert 'web_search = "disabled"' in config_toml
+    assert "model_context_window = 128000" in config_toml
+    assert "model_auto_compact_token_limit = 96000" in config_toml
+    assert "model_supports_reasoning_summaries = false" in config_toml
+    assert 'model_reasoning_summary = "none"' in config_toml
+    assert "[tui]" in config_toml
+    assert "show_tooltips = false" in config_toml
+    assert '[projects."/home/gem"]' in config_toml
+    assert 'trust_level = "trusted"' in config_toml
+    assert "check_for_update_on_startup = false" in config_toml
+
+    catalog_json = envs["CODEX_MODEL_CATALOG_JSON"]
+    assert "\n  " in catalog_json
+    catalog = json.loads(catalog_json)
+    models = catalog["models"]
+    assert models[0]["slug"] == "claude-sonnet-4"
+    assert models[0]["display_name"] == "claude-sonnet-4"
+    assert "deepseek-v4-flash-260425" in [model["slug"] for model in models]
+    assert "doubao-seed-2-0-pro-260215" in [model["slug"] for model in models]
+    assert models[0]["truncation_policy"] == {"mode": "tokens", "limit": 10000}
+
+
 def test_build_create_tool_request_uses_model_api_key_env(monkeypatch):
     from agentkit.toolkit.cli.sandbox import cli_create
 

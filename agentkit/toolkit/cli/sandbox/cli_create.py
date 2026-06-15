@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -45,7 +46,21 @@ SANDBOX_TOS_REGION_ENV = "AGENTKIT_SANDBOX_TOS_REGION"
 DEFAULT_CREATE_TOOL_TYPE = "CodeEnv"
 DEFAULT_TOS_BUCKET_PATH = "/sandbox-session/default/default"
 DEFAULT_TOS_LOCAL_PATH = "/home/gem"
+CODE_ENV_HOME = "/home/gem"
+CODE_ENV_CODEX_HOME = "/home/gem/.codex"
+CODEX_MODEL_CATALOG_PATH = f"{CODE_ENV_CODEX_HOME}/model-catalog.json"
 DEFAULT_MODEL_NAME = "deepseek-v4-flash-260425"
+DEFAULT_MODEL_NAME_LIST = (
+    DEFAULT_MODEL_NAME,
+    "deepseek-v4-pro-260425",
+    "doubao-seed-2-0-pro-260215",
+)
+DEFAULT_MODEL_CONTEXT_WINDOW = 1000000
+MODEL_CONTEXT_WINDOW_OVERRIDES = {
+    "doubao-seed-2-0-pro-260215": 256000,
+}
+CODEX_CONFIG_MODEL_CONTEXT_WINDOW = 128000
+CODEX_CONFIG_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 96000
 DEFAULT_MODEL_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_ANTHROPIC_BASE_URL = "https://ark.cn-beijing.volces.com/api/compatible"
 MODEL_BASE_URL_ENV_KEYS = (
@@ -96,13 +111,141 @@ def _append_tool_envs(
         return
 
     envs.extend(
-        tools_types.EnvsItemForCreateTool(key=key, value=resolved)
+        tools_types.EnvsItemForCreateTool(Key=key, Value=resolved)
         for key in keys
+    )
+
+
+def _toml_quote(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _build_codex_config_toml(model_name: str) -> str:
+    quoted_model = _toml_quote(model_name)
+    return "\n".join(
+        [
+            'model_provider = "codex"',
+            f"model = {quoted_model}",
+            f"review_model = {quoted_model}",
+            'approval_policy = "never"',
+            'sandbox_mode = "danger-full-access"',
+            'model_reasoning_effort = "medium"',
+            'personality = "pragmatic"',
+            "check_for_update_on_startup = false",
+            'web_search = "disabled"',
+            f"model_context_window = {CODEX_CONFIG_MODEL_CONTEXT_WINDOW}",
+            (
+                "model_auto_compact_token_limit = "
+                f"{CODEX_CONFIG_MODEL_AUTO_COMPACT_TOKEN_LIMIT}"
+            ),
+            "model_supports_reasoning_summaries = false",
+            'model_reasoning_summary = "none"',
+            f"model_catalog_json = {_toml_quote(CODEX_MODEL_CATALOG_PATH)}",
+            "",
+            "[model_providers.codex]",
+            'name = "codex"',
+            f"base_url = {_toml_quote(DEFAULT_MODEL_BASE_URL)}",
+            'wire_api = "responses"',
+            'env_key = "CODEX_API_KEY"',
+            "",
+            "[tui]",
+            "show_tooltips = false",
+            "",
+            '[projects."/home/gem"]',
+            'trust_level = "trusted"',
+            "",
+        ]
+    )
+
+
+def _build_model_catalog_item(model_name: str, max_context_window: int) -> dict:
+    return {
+        "slug": model_name,
+        "display_name": model_name,
+        "supported_reasoning_levels": [
+            {
+                "effort": "low",
+                "description": "Fast responses with lighter reasoning",
+            },
+            {
+                "effort": "medium",
+                "description": "Balances speed and reasoning depth",
+            },
+            {
+                "effort": "high",
+                "description": "Greater reasoning depth",
+            },
+        ],
+        "max_context_window": max_context_window,
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": True,
+        "priority": 100,
+        "base_instructions": "",
+        "supports_reasoning_summaries": True,
+        "support_verbosity": False,
+        "truncation_policy": {"mode": "tokens", "limit": 10000},
+        "supports_parallel_tool_calls": False,
+        "experimental_supported_tools": [],
+    }
+
+
+def _model_catalog_context_window(model_name: str) -> int:
+    return MODEL_CONTEXT_WINDOW_OVERRIDES.get(
+        model_name,
+        DEFAULT_MODEL_CONTEXT_WINDOW,
+    )
+
+
+def _build_codex_model_catalog_json(model_name: str) -> str:
+    deduped_model_names = list(
+        dict.fromkeys((model_name, *DEFAULT_MODEL_NAME_LIST))
+    )
+    payload = {
+        "models": [
+            _build_model_catalog_item(
+                name,
+                _model_catalog_context_window(name),
+            )
+            for name in deduped_model_names
+        ]
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _append_code_env_tool_envs(
+    envs: list[tools_types.EnvsItemForCreateTool],
+    model_name: str,
+) -> None:
+    envs.extend(
+        [
+            tools_types.EnvsItemForCreateTool(
+                Key="OPENCODE_DISABLE_AUTOUPDATE",
+                Value="1",
+            ),
+            tools_types.EnvsItemForCreateTool(
+                Key="HOME",
+                Value=CODE_ENV_HOME,
+            ),
+            tools_types.EnvsItemForCreateTool(
+                Key="CODEX_HOME",
+                Value=CODE_ENV_CODEX_HOME,
+            ),
+            tools_types.EnvsItemForCreateTool(
+                Key="CODEX_CONFIG_TOML",
+                Value=_build_codex_config_toml(model_name),
+            ),
+            tools_types.EnvsItemForCreateTool(
+                Key="CODEX_MODEL_CATALOG_JSON",
+                Value=_build_codex_model_catalog_json(model_name),
+            ),
+        ]
     )
 
 
 def _build_tool_model_envs(
     *,
+    tool_type: str,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
 ) -> list[tools_types.EnvsItemForCreateTool] | None:
@@ -122,6 +265,8 @@ def _build_tool_model_envs(
         DEFAULT_ANTHROPIC_BASE_URL,
     )
     _append_tool_envs(envs, DISABLED_SERVICE_ENV_KEYS, "true")
+    if tool_type.strip() == DEFAULT_CREATE_TOOL_TYPE:
+        _append_code_env_tool_envs(envs, resolved_model_name)
     return envs or None
 
 
@@ -139,20 +284,21 @@ def _build_create_tool_request(
     tos_mount_config = _build_tos_mount_config(tos_bucket, tos_region)
 
     return tools_types.CreateToolRequest(
-        name=resolved_name,
-        tool_type=resolved_tool_type,
-        authorizer_configuration=tools_types.AuthorizerForCreateTool(
-            key_auth=tools_types.AuthorizerKeyAuthForCreateTool(
-                api_key_name=generate_apikey_name(),
-                api_key_location="Header",
+        Name=resolved_name,
+        ToolType=resolved_tool_type,
+        AuthorizerConfiguration=tools_types.AuthorizerForCreateTool(
+            KeyAuth=tools_types.AuthorizerKeyAuthForCreateTool(
+                ApiKeyName=generate_apikey_name(),
+                ApiKeyLocation="Header",
             )
         ),
-        network_configuration=tools_types.NetworkForCreateTool(
-            enable_public_network=True,
-            enable_private_network=False,
+        NetworkConfiguration=tools_types.NetworkForCreateTool(
+            EnablePublicNetwork=True,
+            EnablePrivateNetwork=False,
         ),
-        tos_mount_config=tos_mount_config,
-        envs=_build_tool_model_envs(
+        TosMountConfig=tos_mount_config,
+        Envs=_build_tool_model_envs(
+            tool_type=resolved_tool_type,
             model_name=model_name,
             model_api_key=model_api_key,
         ),
@@ -181,18 +327,18 @@ def _to_create_tool_tos_mount_config(
     mount_config: TOSMountConfig,
 ) -> tools_types.TosMountForCreateTool:
     return tools_types.TosMountForCreateTool(
-        enable_tos=True,
-        credentials=tools_types.TosMountCredentialsForCreateTool(
-            access_key_id=mount_config.credentials.access_key_id,
-            secret_access_key=mount_config.credentials.secret_access_key,
+        EnableTos=True,
+        Credentials=tools_types.TosMountCredentialsForCreateTool(
+            AccessKeyId=mount_config.credentials.access_key_id,
+            SecretAccessKey=mount_config.credentials.secret_access_key,
         ),
-        mount_points=[
+        MountPoints=[
             tools_types.TosMountMountPointsItemForCreateTool(
-                bucket_name=mount.bucket_name,
-                bucket_path=mount.bucket_path,
-                endpoint=mount.endpoint,
-                local_mount_path=mount.local_mount_path,
-                read_only=mount.read_only,
+                BucketName=mount.bucket_name,
+                BucketPath=mount.bucket_path,
+                Endpoint=mount.endpoint,
+                LocalMountPath=mount.local_mount_path,
+                ReadOnly=mount.read_only,
             )
             for mount in mount_config.mount_points
         ],
@@ -236,7 +382,7 @@ def _wait_for_tool_ready(
     last_status = None
 
     while True:
-        response = client.get_tool(tools_types.GetToolRequest(tool_id=tool_id))
+        response = client.get_tool(tools_types.GetToolRequest(ToolId=tool_id))
         status = response.status or ""
         if status != last_status:
             typer.echo(f"工具状态：{status or 'Unknown'}")
