@@ -20,6 +20,7 @@ from agentkit.toolkit.cli.sandbox.cli_exec import exec_command
 from agentkit.toolkit.cli.sandbox.cli_file import file_command
 from agentkit.toolkit.cli.sandbox.cli_get import get_command
 from agentkit.toolkit.cli.sandbox.cli_shell import shell_command
+from agentkit.toolkit.cli.sandbox.cli_web import web_command
 
 __all__ = [
     "create_command",
@@ -28,4 +29,5 @@ __all__ = [
     "get_command",
     "sandbox_app",
     "shell_command",
+    "web_command",
 ]

@@ -883,12 +883,13 @@ def test_sandbox_command_group_is_registered() -> None:
     assert "exec" in result.output
     assert "get" in result.output
     assert "shell" in result.output
+    assert "web" in result.output
 
 
 def test_sandbox_commands_are_not_registered_at_top_level() -> None:
     from agentkit.toolkit.cli.cli import app
 
-    for command in ("create", "exec", "get", "shell"):
+    for command in ("create", "exec", "get", "shell", "web"):
         result = runner.invoke(app, [command])
         assert result.exit_code != 0
         assert "No such command" in result.output
@@ -1407,6 +1408,268 @@ def test_cli_get_missing_session_includes_resolved_tool_id(
         "session_id": "missing-user",
         "error_msg": "Sandbox session not found: missing-user",
     }
+
+
+def test_cli_web_returns_session_browser_url(monkeypatch, tmp_path) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_web as cli_web
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    store_path.write_text(
+        json.dumps(
+            {
+                "user-1": {
+                    "session_id": "user-1",
+                    "tool_id": "tool-1",
+                    "instance_id": "old-instance",
+                    "endpoint": "https://old.example.com",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli_web,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="user-1",
+                    session_id="instance-1",
+                    endpoint=(
+                        "https://sandbox.example.com/base?"
+                        "faasInstanceName=vefaas-test-sandbox&"
+                        "Authorization=auth-token&resize=none"
+                    ),
+                )
+            ]
+        )
+    ]
+    opened_urls = []
+    monkeypatch.setattr(
+        cli_web.webbrowser,
+        "open",
+        lambda url: opened_urls.append(url) or True,
+    )
+
+    result = runner.invoke(
+        app,
+        ["sandbox", "web", "--session-id", "user-1", "--tool-id", "tool-1"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {
+        "url": (
+            "https://sandbox.example.com/base/vnc/index.html?"
+            "autoconnect=true&resize=scale&reconnect=1&"
+            "faasInstanceName=vefaas-test-sandbox&Authorization=auth-token&"
+            "path=websockify%3FfaasInstanceName%3Dvefaas-test-sandbox"
+            "%26Authorization%3Dauth-token"
+        ),
+        "tool_id": "tool-1",
+        "session_id": "user-1",
+    }
+    assert opened_urls == [json.loads(result.output)["url"]]
+
+
+def test_cli_web_uses_stored_tool_id_when_tool_id_omitted(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_web as cli_web
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    store_path.write_text(
+        json.dumps(
+            {
+                "user-1": {
+                    "session_id": "user-1",
+                    "tool_id": "tool-stored",
+                    "instance_id": "old-instance",
+                    "endpoint": "https://old.example.com",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli_web,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="user-1",
+                    session_id="instance-1",
+                    endpoint="https://sandbox.example.com",
+                )
+            ]
+        )
+    ]
+    opened_urls = []
+    monkeypatch.setattr(
+        cli_web.webbrowser,
+        "open",
+        lambda url: opened_urls.append(url) or True,
+    )
+
+    result = runner.invoke(app, ["sandbox", "web", "--session-id", "user-1"])
+
+    assert result.exit_code == 0
+    assert _FakeToolsClient.last_list_sessions_request.tool_id == "tool-stored"
+    assert json.loads(result.output) == {
+        "url": (
+            "https://sandbox.example.com/vnc/index.html?"
+            "autoconnect=true&resize=scale&reconnect=1"
+        ),
+        "tool_id": "tool-stored",
+        "session_id": "user-1",
+    }
+    assert opened_urls == [json.loads(result.output)["url"]]
+
+
+def test_cli_web_accepts_tool_id_underscore_alias(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_web as cli_web
+
+    _patch_store_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli_web,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="user-1",
+                    session_id="instance-1",
+                    endpoint="https://sandbox.example.com",
+                )
+            ]
+        )
+    ]
+    monkeypatch.setattr(cli_web.webbrowser, "open", lambda _url: True)
+
+    result = runner.invoke(
+        app,
+        ["sandbox", "web", "--session-id", "user-1", "--tool_id", "tool-1"],
+    )
+
+    assert result.exit_code == 0
+    assert _FakeToolsClient.last_list_sessions_request.tool_id == "tool-1"
+    assert json.loads(result.output)["tool_id"] == "tool-1"
+
+
+def test_cli_web_opens_default_browser(monkeypatch, tmp_path) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_web as cli_web
+
+    _patch_store_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli_web,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="user-1",
+                    session_id="instance-1",
+                    endpoint="https://sandbox.example.com?token=abc",
+                )
+            ]
+        )
+    ]
+    opened_urls = []
+    monkeypatch.setattr(
+        cli_web.webbrowser,
+        "open",
+        lambda url: opened_urls.append(url) or True,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "web",
+            "--session-id",
+            "user-1",
+            "--tool-id",
+            "tool-1",
+        ],
+    )
+
+    expected_url = (
+        "https://sandbox.example.com/vnc/index.html?"
+        "autoconnect=true&resize=scale&reconnect=1&token=abc"
+    )
+    assert result.exit_code == 0
+    assert opened_urls == [expected_url]
+    assert json.loads(result.output) == {
+        "url": expected_url,
+        "tool_id": "tool-1",
+        "session_id": "user-1",
+    }
+
+
+def test_cli_web_open_reports_browser_failure(monkeypatch, tmp_path) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_web as cli_web
+
+    _patch_store_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli_web,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="user-1",
+                    session_id="instance-1",
+                    endpoint="https://sandbox.example.com",
+                )
+            ]
+        )
+    ]
+    monkeypatch.setattr(cli_web.webbrowser, "open", lambda _url: False)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "web",
+            "--session-id",
+            "user-1",
+            "--tool-id",
+            "tool-1",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Failed to open browser" in result.output
+
+
+def test_cli_web_requires_session_id() -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(app, ["sandbox", "web"])
+
+    assert result.exit_code != 0
+    assert "Missing option" in result.output
+    assert "--session-id" in result.output
 
 
 def test_cli_shell_posts_to_session_endpoint(monkeypatch, tmp_path) -> None:

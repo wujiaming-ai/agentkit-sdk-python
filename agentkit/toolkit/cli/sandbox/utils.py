@@ -22,7 +22,7 @@ import os
 from pathlib import Path
 import threading
 from typing import NoReturn
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import typer
 
@@ -37,6 +37,13 @@ SANDBOX_TERMINAL_ROUTE = "/v1/shell/ws"
 SANDBOX_FILE_UPLOAD_ROUTE = "/v1/file/upload"
 SANDBOX_FILE_DOWNLOAD_ROUTE = "/v1/file/download"
 SANDBOX_FILE_LIST_ROUTE = "/v1/file/list"
+SANDBOX_WEB_ROUTE = "/vnc/index.html"
+SANDBOX_WEB_QUERY_PARAMS = (
+    ("autoconnect", "true"),
+    ("resize", "scale"),
+    ("reconnect", "1"),
+)
+SANDBOX_WEB_PATH_QUERY_KEYS = ("faasInstanceName", "Authorization")
 SANDBOX_EXEC_TIMEOUT_SECONDS = 300
 TERMINAL_SHELL_ID_KEY = "terminal_shell_id"
 _SESSION_STORE_THREAD_LOCK = threading.RLock()
@@ -384,6 +391,37 @@ def build_file_url(endpoint: object, route: str) -> str:
     file_path = f"{path}{route}" if path else route
     return urlunsplit(
         (parts.scheme, parts.netloc, file_path, parts.query, parts.fragment)
+    )
+
+
+def build_web_url(endpoint: object) -> str:
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        error("Sandbox session endpoint is missing")
+
+    parts = urlsplit(endpoint.strip())
+    path = parts.path.rstrip("/")
+    web_path = f"{path}{SANDBOX_WEB_ROUTE}" if path else SANDBOX_WEB_ROUTE
+    original_query_items = parse_qsl(parts.query, keep_blank_values=True)
+    web_query_keys = {key for key, _value in SANDBOX_WEB_QUERY_PARAMS}
+    web_query_keys.add("path")
+    query_items = [
+        (key, value)
+        for key, value in original_query_items
+        if key not in web_query_keys
+    ]
+    websockify_items = [
+        (expected_key, value)
+        for expected_key in SANDBOX_WEB_PATH_QUERY_KEYS
+        for key, value in original_query_items
+        if key == expected_key
+    ]
+    path_items = []
+    if websockify_items:
+        path_items = [("path", f"websockify?{urlencode(websockify_items)}")]
+
+    query = urlencode([*SANDBOX_WEB_QUERY_PARAMS, *query_items, *path_items])
+    return urlunsplit(
+        (parts.scheme, parts.netloc, web_path, query, parts.fragment)
     )
 
 

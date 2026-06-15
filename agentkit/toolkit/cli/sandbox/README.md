@@ -289,6 +289,37 @@ The command posts to `<endpoint>/v1/shell/exec` with:
 The response is returned as JSON. If the service returns `data.session_id`, the
 CLI renames it to `data.shell_id`.
 
+### Web
+
+Return a browser URL for a sandbox session.
+
+```bash
+agentkit sandbox web --session-id 123456789
+agentkit sandbox web --session-id 123456789 --tool-id t-example
+```
+
+Options:
+
+- `--session-id`: required. Sandbox session ID to open in a browser.
+- `--tool-id`: optional. Defaults to `AGENTKIT_SANDBOX_TOOL_ID`. The
+  underscore alias `--tool_id` is also accepted.
+
+The command resolves the tool using the same existing-tool resolution flow as
+the other session-scoped sandbox commands, syncs remote sessions for that tool,
+then reads the session endpoint and appends `/vnc/index.html` with fixed
+browser parameters: `autoconnect=true`, `resize=scale`, and `reconnect=1`.
+When the endpoint includes `faasInstanceName` and `Authorization`, the command
+also derives the VNC `path` query parameter from those values. The URL is opened
+with the system default browser, and the response is JSON:
+
+```json
+{
+  "url": "https://example.com/vnc/index.html?autoconnect=true&resize=scale&reconnect=1&faasInstanceName=vefaas-example&Authorization=...&path=websockify%3FfaasInstanceName%3Dvefaas-example%26Authorization%3D...",
+  "tool_id": "t-example",
+  "session_id": "123456789"
+}
+```
+
 ### Exec
 
 Open a streaming WebSocket exec session to the sandbox. By default, this connects
