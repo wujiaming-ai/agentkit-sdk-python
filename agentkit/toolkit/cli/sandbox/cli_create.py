@@ -59,8 +59,6 @@ DEFAULT_MODEL_CONTEXT_WINDOW = 1000000
 MODEL_CONTEXT_WINDOW_OVERRIDES = {
     "doubao-seed-2-0-pro-260215": 256000,
 }
-CODEX_CONFIG_MODEL_CONTEXT_WINDOW = 128000
-CODEX_CONFIG_MODEL_AUTO_COMPACT_TOKEN_LIMIT = 96000
 DEFAULT_MODEL_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 DEFAULT_ANTHROPIC_BASE_URL = "https://ark.cn-beijing.volces.com/api/compatible"
 MODEL_BASE_URL_ENV_KEYS = (
@@ -133,13 +131,6 @@ def _build_codex_config_toml(model_name: str) -> str:
             'personality = "pragmatic"',
             "check_for_update_on_startup = false",
             'web_search = "disabled"',
-            f"model_context_window = {CODEX_CONFIG_MODEL_CONTEXT_WINDOW}",
-            (
-                "model_auto_compact_token_limit = "
-                f"{CODEX_CONFIG_MODEL_AUTO_COMPACT_TOKEN_LIMIT}"
-            ),
-            "model_supports_reasoning_summaries = false",
-            'model_reasoning_summary = "none"',
             f"model_catalog_json = {_toml_quote(CODEX_MODEL_CATALOG_PATH)}",
             "",
             "[model_providers.codex]",

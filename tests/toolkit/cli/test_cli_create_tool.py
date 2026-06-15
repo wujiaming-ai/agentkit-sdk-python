@@ -391,10 +391,10 @@ def test_build_create_tool_request_adds_code_env_config_envs(monkeypatch):
     assert "model_availability_nux" not in config_toml
     assert "gpt-5.5" not in config_toml
     assert 'web_search = "disabled"' in config_toml
-    assert "model_context_window = 128000" in config_toml
-    assert "model_auto_compact_token_limit = 96000" in config_toml
-    assert "model_supports_reasoning_summaries = false" in config_toml
-    assert 'model_reasoning_summary = "none"' in config_toml
+    assert "model_context_window" not in config_toml
+    assert "model_auto_compact_token_limit" not in config_toml
+    assert "model_supports_reasoning_summaries" not in config_toml
+    assert "model_reasoning_summary" not in config_toml
     assert "[tui]" in config_toml
     assert "show_tooltips = false" in config_toml
     assert '[projects."/home/gem"]' in config_toml
