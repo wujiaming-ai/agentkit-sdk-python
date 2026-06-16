@@ -46,6 +46,33 @@ class TOSServiceConfig(AutoSerializableMixin):
     prefix: str = field(default="", metadata={"description": "Object key prefix"})
 
 
+@dataclass(frozen=True)
+class TOSMountCredentials:
+    """Credentials used by AgentKit tool TOS mount configuration."""
+
+    access_key_id: str
+    secret_access_key: str
+
+
+@dataclass(frozen=True)
+class TOSMountPoint:
+    """A single AgentKit tool TOS mount point."""
+
+    bucket_name: str
+    bucket_path: str
+    endpoint: str
+    local_mount_path: str
+    read_only: bool = False
+
+
+@dataclass(frozen=True)
+class TOSMountConfig:
+    """Reusable TOS mount data independent from a specific SDK model."""
+
+    credentials: TOSMountCredentials
+    mount_points: List[TOSMountPoint]
+
+
 class TOSService:
     """Wrapper for Volcano Engine TOS (Object Storage) service."""
 
@@ -64,6 +91,7 @@ class TOSService:
         self.config = config
         self.provider = provider
         self.client = None
+        self.credentials = None
         self._init_client()
 
     def _init_client(self) -> None:
@@ -82,7 +110,9 @@ class TOSService:
                 creds.secret_key,
                 ep.host,
                 ep.region,
+                security_token=getattr(creds, "session_token", None) or "",
             )
+            self.credentials = creds
             # Expose the actual region resolved by VolcConfiguration
             self.actual_region = ep.region
             self.config.endpoint = ep.host
@@ -209,6 +239,83 @@ class TOSService:
         except Exception as e:
             logger.error(f"Failed to check file existence: {str(e)}")
             return False
+
+    def object_exists(self, object_key: str) -> bool:
+        """Check if an object exists, raising unexpected TOS errors."""
+        try:
+            self.client.head_object(bucket=self.config.bucket, key=object_key)
+            return True
+        except tos.exceptions.TosServerError as e:
+            if e.status_code == 404:
+                return False
+            logger.error(f"Failed to check object existence: {e.code} - {e.message}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to check object existence: {str(e)}")
+            raise
+
+    def create_directory_marker(self, object_key: str) -> None:
+        """Create an empty TOS object as a directory marker."""
+        self.client.put_object(
+            bucket=self.config.bucket,
+            key=object_key,
+            content=b"",
+            content_length=0,
+            content_type="application/x-directory",
+        )
+
+    @staticmethod
+    def build_directory_keys(bucket_path: str) -> List[str]:
+        """Build directory marker keys for a bucket path."""
+        parts = [part for part in bucket_path.strip("/").split("/") if part]
+        return ["/".join(parts[:index]) + "/" for index in range(1, len(parts) + 1)]
+
+    @staticmethod
+    def build_mount_endpoint(region: str) -> str:
+        """Build the AgentKit TOS mount endpoint for a region."""
+        return f"http://tos-{region}.ivolces.com"
+
+    def ensure_bucket_ready(self) -> str:
+        """Ensure the configured bucket exists and return its endpoint."""
+        if not self.bucket_exists():
+            self.create_bucket()
+        return self.config.endpoint
+
+    def ensure_bucket_path_ready(self, bucket_path: str) -> None:
+        """Ensure directory marker objects exist for a bucket path."""
+        for key in self.build_directory_keys(bucket_path):
+            if not self.object_exists(key):
+                self.create_directory_marker(key)
+
+    def build_mount_config(
+        self,
+        *,
+        bucket_path: str,
+        local_mount_path: str,
+        read_only: bool = False,
+    ) -> TOSMountConfig:
+        """Prepare the bucket/path and return reusable mount configuration."""
+        self.ensure_bucket_ready()
+        self.ensure_bucket_path_ready(bucket_path)
+
+        if self.credentials is None:
+            raise RuntimeError("TOS credentials are not initialized")
+
+        return TOSMountConfig(
+            credentials=TOSMountCredentials(
+                access_key_id=self.credentials.access_key,
+                secret_access_key=self.credentials.secret_key,
+            ),
+            mount_points=[
+                TOSMountPoint(
+                    bucket_name=self.config.bucket,
+                    bucket_path=bucket_path,
+                    endpoint=self.build_mount_endpoint(self.actual_region),
+                    local_mount_path=local_mount_path,
+                    read_only=read_only,
+                )
+            ],
+        )
 
     def list_files(self, prefix: str = "") -> list:
         """List files in TOS with optional prefix filter.

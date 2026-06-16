@@ -236,11 +236,18 @@ class VolcConfiguration:
         if creds := self._get_global_env_credentials():
             return creds
 
-        # 4. Global Config File
+        # 4. SSO session (STS credentials from `agentkit login`).
+        # Placed above the config file so an *active* login takes precedence over a
+        # *passive* saved key; an AK/SK exported in this shell (steps 2-3) still wins,
+        # and `agentkit logout` removes the session to fall back to the config file.
+        if creds := self._get_sso_credentials():
+            return creds
+
+        # 5. Global Config File
         if creds := self._get_config_file_credentials():
             return creds
 
-        # 5. VeFaaS IAM (Runtime)
+        # 6. VeFaaS IAM (Runtime)
         if creds := self._get_credential_from_vefaas_iam():
             return creds
 
@@ -266,6 +273,33 @@ class VolcConfiguration:
                     "  export VOLCENGINE_SECRET_KEY=YOUR_SECRET_KEY",
                 ]
             )
+        )
+
+    def _get_sso_credentials(self) -> Optional[Credentials]:
+        """Resolve STS credentials from a stored SSO session (`agentkit login`).
+
+        Decoupled by design: :mod:`agentkit.auth` is imported lazily so the SDK
+        keeps working even if the auth library is absent, and BytePlus (which has
+        no SSO path here) is skipped.
+        """
+        if self._provider == CloudProvider.BYTEPLUS:
+            return None
+        try:
+            from agentkit.auth.providers import SsoStsCredentialProvider
+        except Exception:
+            return None
+        try:
+            profile = os.getenv("AGENTKIT_AUTH_PROFILE") or None
+            resolved = SsoStsCredentialProvider(profile).resolve()
+        except Exception:
+            return None
+        if resolved is None:
+            return None
+        return Credentials(
+            access_key=resolved.access_key,
+            secret_key=resolved.secret_key,
+            session_token=resolved.session_token,
+            source="sso-sts",
         )
 
     def _get_dotenv_credentials(self, service_key: str) -> Optional[Credentials]:
@@ -303,28 +337,42 @@ class VolcConfiguration:
         if self._provider == CloudProvider.BYTEPLUS:
             ak = _get(f"BYTEPLUS_{svc_upper}_ACCESS_KEY")
             sk = _get(f"BYTEPLUS_{svc_upper}_SECRET_KEY")
+            token = _get(f"BYTEPLUS_{svc_upper}_SESSION_TOKEN")
         else:
             # Service-specific keys (align with environment variable behavior)
             ak = _get(f"VOLCENGINE_{svc_upper}_ACCESS_KEY")
             sk = _get(f"VOLCENGINE_{svc_upper}_SECRET_KEY")
+            token = _get(f"VOLCENGINE_{svc_upper}_SESSION_TOKEN")
             if not ak or not sk:
                 # Legacy support
                 ak = ak or _get(f"VOLC_{svc_upper}_ACCESSKEY")
                 sk = sk or _get(f"VOLC_{svc_upper}_SECRETKEY")
 
         if ak and sk:
-            return Credentials(access_key=ak, secret_key=sk, source="dotenv")
+            return Credentials(
+                access_key=ak,
+                secret_key=sk,
+                session_token=token or None,
+                source="dotenv",
+            )
 
         # Global keys
         if self._provider == CloudProvider.BYTEPLUS:
             ak = _get("BYTEPLUS_ACCESS_KEY")
             sk = _get("BYTEPLUS_SECRET_KEY")
+            token = _get("BYTEPLUS_SESSION_TOKEN")
         else:
             ak = _get("VOLCENGINE_ACCESS_KEY") or _get("VOLC_ACCESSKEY")
             sk = _get("VOLCENGINE_SECRET_KEY") or _get("VOLC_SECRETKEY")
+            token = _get("VOLCENGINE_SESSION_TOKEN") or _get("VOLC_SESSIONTOKEN")
 
         if ak and sk:
-            return Credentials(access_key=ak, secret_key=sk, source="dotenv")
+            return Credentials(
+                access_key=ak,
+                secret_key=sk,
+                session_token=token or None,
+                source="dotenv",
+            )
 
         return None
 
@@ -333,9 +381,11 @@ class VolcConfiguration:
         if self._provider == CloudProvider.BYTEPLUS:
             ak = os.getenv(f"BYTEPLUS_{svc_upper}_ACCESS_KEY")
             sk = os.getenv(f"BYTEPLUS_{svc_upper}_SECRET_KEY")
+            token = os.getenv(f"BYTEPLUS_{svc_upper}_SESSION_TOKEN")
         else:
             ak = os.getenv(f"VOLCENGINE_{svc_upper}_ACCESS_KEY")
             sk = os.getenv(f"VOLCENGINE_{svc_upper}_SECRET_KEY")
+            token = os.getenv(f"VOLCENGINE_{svc_upper}_SESSION_TOKEN")
 
             if not ak or not sk:
                 # Legacy support
@@ -343,19 +393,31 @@ class VolcConfiguration:
                 sk = sk or os.getenv(f"VOLC_{svc_upper}_SECRETKEY")
 
         if ak and sk:
-            return Credentials(access_key=ak, secret_key=sk, source="service_env")
+            return Credentials(
+                access_key=ak,
+                secret_key=sk,
+                session_token=token or None,
+                source="service_env",
+            )
         return None
 
     def _get_global_env_credentials(self) -> Optional[Credentials]:
         if self._provider == CloudProvider.BYTEPLUS:
             ak = os.getenv("BYTEPLUS_ACCESS_KEY")
             sk = os.getenv("BYTEPLUS_SECRET_KEY")
+            token = os.getenv("BYTEPLUS_SESSION_TOKEN")
         else:
             ak = os.getenv("VOLCENGINE_ACCESS_KEY") or os.getenv("VOLC_ACCESSKEY")
             sk = os.getenv("VOLCENGINE_SECRET_KEY") or os.getenv("VOLC_SECRETKEY")
+            token = os.getenv("VOLCENGINE_SESSION_TOKEN") or os.getenv("VOLC_SESSIONTOKEN")
 
         if ak and sk:
-            return Credentials(access_key=ak, secret_key=sk, source="global_env")
+            return Credentials(
+                access_key=ak,
+                secret_key=sk,
+                session_token=token or None,
+                source="global_env",
+            )
         return None
 
     def _get_config_file_credentials(self) -> Optional[Credentials]:

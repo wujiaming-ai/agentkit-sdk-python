@@ -60,11 +60,12 @@ def test_tos_service_uses_explicit_provider_over_env(monkeypatch) -> None:
     monkeypatch.setenv("BYTEPLUS_SECRET_KEY", "BP_SK")
 
     class _FakeTosClientV2:
-        def __init__(self, access_key, secret_key, endpoint, region):
+        def __init__(self, access_key, secret_key, endpoint, region, **kwargs):
             self.access_key = access_key
             self.secret_key = secret_key
             self.endpoint = endpoint
             self.region = region
+            self.session_token = kwargs.get("security_token", "")
 
     fake_tos = types.SimpleNamespace(
         TosClientV2=_FakeTosClientV2,

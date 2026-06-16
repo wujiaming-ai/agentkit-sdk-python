@@ -127,7 +127,9 @@ class BaseServiceClient(Service):
 
         self.access_key = creds.access_key
         self.secret_key = creds.secret_key
-        self.session_token = creds.session_token
+        # An explicitly passed session_token must win: resolve_credentials only
+        # resolves ak/sk, so STS callers would otherwise lose their token here.
+        self.session_token = session_token or creds.session_token
 
         self.host = ep.host
         self.region = ep.region

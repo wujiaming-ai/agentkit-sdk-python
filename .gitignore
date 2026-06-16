@@ -170,6 +170,7 @@ uv.lock
 docs/node_modules/
 
 # local test files
+.agentkit/
 test-agents/*
 tos_doc_example
 agentkit*.yaml
@@ -195,4 +196,3 @@ openspec/
 .sisyphus/*
 skills/
 third-party/
-

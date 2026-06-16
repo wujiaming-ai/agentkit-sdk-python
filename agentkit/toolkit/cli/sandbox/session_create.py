@@ -1,0 +1,361 @@
+# Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd. and/or its affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Session creation helpers for sandbox CLI."""
+
+from __future__ import annotations
+
+import os
+import time
+import uuid
+from typing import Optional
+
+from agentkit.sdk.tools.client import AgentkitToolsClient
+from agentkit.sdk.tools import types as tools_types
+from agentkit.toolkit.cli.sandbox.session_sync import (
+    session_info_to_result,
+    sync_remote_sessions,
+)
+from agentkit.toolkit.cli.sandbox.tool_resolve import (
+    DEFAULT_SANDBOX_TOOL_TYPE,
+    resolve_sandbox_tool_id,
+)
+from agentkit.toolkit.cli.sandbox.utils import (
+    error,
+    find_session_result,
+    save_session_result,
+)
+
+DEFAULT_SANDBOX_TTL = 28800
+SANDBOX_TOOL_ID_ENV = "AGENTKIT_SANDBOX_TOOL_ID"
+SANDBOX_TTL_ENV = "AGENTKIT_SANDBOX_TTL"
+MODEL_NAME_ENV_KEYS = ("OPENCODE_MODEL", "CODEX_MODEL", "ANTHROPIC_MODEL")
+MODEL_API_KEY_ENV_KEYS = (
+    "OPENCODE_API_KEY",
+    "CODEX_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+)
+MODEL_API_KEY_ENV = "MODEL_API_KEY"
+CREATE_SESSION_START_FAIL_CODE = "ErrCreateSessionFail"
+CREATE_SESSION_CONFIRM_ATTEMPTS = 6
+CREATE_SESSION_CONFIRM_INTERVAL_SECONDS = 5
+CREATE_SESSION_READY_STATUS = "ready"
+
+
+def _append_envs(
+    envs: list[tools_types.EnvsItemForCreateSession],
+    keys: tuple[str, ...],
+    value: Optional[str],
+) -> None:
+    resolved = (value or "").strip()
+    if not resolved:
+        return
+
+    envs.extend(
+        tools_types.EnvsItemForCreateSession(key=key, value=resolved)
+        for key in keys
+    )
+
+
+def build_model_envs(
+    *,
+    model_name: Optional[str] = None,
+    model_api_key: Optional[str] = None,
+) -> list[tools_types.EnvsItemForCreateSession] | None:
+    envs: list[tools_types.EnvsItemForCreateSession] = []
+    resolved_model_api_key = model_api_key or os.getenv(MODEL_API_KEY_ENV)
+    _append_envs(envs, MODEL_NAME_ENV_KEYS, model_name)
+    _append_envs(envs, MODEL_API_KEY_ENV_KEYS, resolved_model_api_key)
+    return envs or None
+
+
+def _resolve_ttl(ttl: Optional[int]) -> int:
+    if ttl is not None:
+        return ttl
+
+    raw = (os.getenv(SANDBOX_TTL_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_SANDBOX_TTL
+
+    try:
+        return int(raw)
+    except ValueError:
+        error(f"{SANDBOX_TTL_ENV} must be an integer")
+
+
+def _is_session_missing_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in (
+            "not found",
+            "not exist",
+            "notfound",
+            "not_found",
+            "不存在",
+        )
+    )
+
+
+def _is_create_session_start_fail_error(exc: Exception) -> bool:
+    return CREATE_SESSION_START_FAIL_CODE in str(exc)
+
+
+def _is_confirmed_session_ready(
+    session: tools_types.SessionInfosForListSessions,
+) -> bool:
+    status = getattr(session, "status", None)
+    endpoint = getattr(session, "endpoint", None)
+    if (
+        not isinstance(status, str)
+        or status.strip().lower() != CREATE_SESSION_READY_STATUS
+    ):
+        return False
+    return isinstance(endpoint, str) and bool(endpoint.strip())
+
+
+def _build_result(
+    *,
+    session_id: str,
+    tool_id: str,
+    instance_id: object,
+    endpoint: object,
+) -> dict[str, object]:
+    return {
+        "session_id": session_id,
+        "tool_id": tool_id,
+        "instance_id": instance_id,
+        "endpoint": endpoint,
+    }
+
+
+def _build_create_result(
+    response: tools_types.CreateSessionResponse,
+    session_id: str,
+    tool_id: str,
+) -> dict[str, object]:
+    return _build_result(
+        session_id=response.user_session_id or session_id,
+        tool_id=tool_id,
+        instance_id=response.session_id,
+        endpoint=response.endpoint,
+    )
+
+
+def _build_get_result(
+    response: tools_types.GetSessionResponse,
+    existing: dict[str, object],
+    session_id: str,
+    tool_id: str,
+) -> dict[str, object]:
+    return _build_result(
+        session_id=response.user_session_id or session_id,
+        tool_id=tool_id,
+        instance_id=response.session_id or existing.get("instance_id"),
+        endpoint=response.endpoint or existing.get("endpoint"),
+    )
+
+
+def _get_existing_remote_session(
+    client: AgentkitToolsClient,
+    existing: dict[str, object],
+    session_id: str,
+    tool_id: str,
+) -> dict[str, object] | None:
+    instance_id = existing.get("instance_id")
+    if not isinstance(instance_id, str) or not instance_id:
+        return None
+
+    try:
+        response = client.get_session(
+            tools_types.GetSessionRequest(
+                tool_id=tool_id,
+                session_id=instance_id,
+            )
+        )
+    except Exception as exc:
+        if _is_session_missing_error(exc):
+            return None
+        raise
+
+    return _build_get_result(response, existing, session_id, tool_id)
+
+
+def _build_session_bucket_path(
+    bucket_path: object,
+    *,
+    tool_id: str,
+    session_id: str,
+) -> str:
+    base_path = bucket_path if isinstance(bucket_path, str) else ""
+    base_path = base_path.strip().rstrip("/")
+    if base_path.endswith("/default/default"):
+        base_path = base_path[: -len("/default/default")]
+    if not base_path:
+        base_path = "/sandbox-session"
+    if not base_path.startswith("/"):
+        base_path = f"/{base_path}"
+    return f"{base_path}/tool-{tool_id}/session-{session_id}/"
+
+
+def _build_session_tos_mount_points(
+    tool: tools_types.GetToolResponse,
+    *,
+    tool_id: str,
+    session_id: str,
+) -> list[tools_types.TosMountPointsItemForCreateSession] | None:
+    tos_mount_config = getattr(tool, "tos_mount_config", None)
+    if not tos_mount_config:
+        return None
+
+    mount_points = getattr(tos_mount_config, "mount_points", None) or []
+    result: list[tools_types.TosMountPointsItemForCreateSession] = []
+    for mount in mount_points:
+        bucket_name = getattr(mount, "bucket_name", None)
+        local_mount_path = getattr(mount, "local_mount_path", None)
+        if not bucket_name or not local_mount_path:
+            continue
+        result.append(
+            tools_types.TosMountPointsItemForCreateSession(
+                bucket_name=bucket_name,
+                bucket_path=_build_session_bucket_path(
+                    getattr(mount, "bucket_path", None),
+                    tool_id=tool_id,
+                    session_id=session_id,
+                ),
+                local_mount_path=local_mount_path,
+            )
+        )
+
+    return result or None
+
+
+def _create_session(
+    client: AgentkitToolsClient,
+    session_id: str,
+    tool_id: str,
+    ttl: int,
+    envs: Optional[list[tools_types.EnvsItemForCreateSession]] = None,
+) -> dict[str, object]:
+    tool = client.get_tool(tools_types.GetToolRequest(tool_id=tool_id))
+    request = tools_types.CreateSessionRequest(
+        tool_id=tool_id,
+        ttl=ttl,
+        ttl_unit="second",
+        user_session_id=session_id,
+        envs=envs,
+        tos_mount_points=_build_session_tos_mount_points(
+            tool,
+            tool_id=tool_id,
+            session_id=session_id,
+        ),
+    )
+    try:
+        response = client.create_session(request)
+    except Exception as exc:
+        if not _is_create_session_start_fail_error(exc):
+            raise
+        result = _confirm_session_after_create_start_fail(
+            client,
+            session_id=session_id,
+            tool_id=tool_id,
+        )
+        if result:
+            return result
+        raise
+    return _build_create_result(response, session_id, tool_id)
+
+
+def _confirm_session_after_create_start_fail(
+    client: AgentkitToolsClient,
+    *,
+    session_id: str,
+    tool_id: str,
+) -> dict[str, object] | None:
+    for attempt in range(CREATE_SESSION_CONFIRM_ATTEMPTS):
+        response = client.list_sessions(
+            tools_types.ListSessionsRequest(
+                tool_id=tool_id,
+                max_results=10,
+                filters=[
+                    tools_types.FiltersItemForListSessions(
+                        name="UserSessionId",
+                        values=[session_id],
+                    )
+                ],
+            )
+        )
+        for session in response.session_infos or []:
+            result = session_info_to_result(session, tool_id)
+            if (
+                result
+                and result.get("session_id") == session_id
+                and _is_confirmed_session_ready(session)
+            ):
+                return result
+
+        if attempt < CREATE_SESSION_CONFIRM_ATTEMPTS - 1:
+            time.sleep(CREATE_SESSION_CONFIRM_INTERVAL_SECONDS)
+
+    return None
+
+
+def ensure_sandbox_session(
+    session_id: Optional[str] = None,
+    tool_id: Optional[str] = None,
+    tool_type: str = DEFAULT_SANDBOX_TOOL_TYPE,
+    ttl: Optional[int] = None,
+    envs: Optional[list[tools_types.EnvsItemForCreateSession]] = None,
+) -> dict[str, object]:
+    resolved_session_id = session_id or str(uuid.uuid4())
+    existing = find_session_result(resolved_session_id) if session_id else None
+    client = AgentkitToolsClient()
+    if session_id and not existing:
+        sync_remote_sessions(
+            session_id=resolved_session_id,
+            tool_id=tool_id,
+            tool_type=tool_type,
+            client=client,
+            env_var_name=SANDBOX_TOOL_ID_ENV,
+        )
+        existing = find_session_result(resolved_session_id)
+
+    resolved_tool_id = resolve_sandbox_tool_id(
+        tool_id=tool_id,
+        tool_type=tool_type,
+        default_tool_id=existing.get("tool_id") if existing else None,
+        client=client,
+        env_var_name=SANDBOX_TOOL_ID_ENV,
+    )
+
+    if existing:
+        result = _get_existing_remote_session(
+            client,
+            existing,
+            resolved_session_id,
+            resolved_tool_id,
+        )
+        if result:
+            save_session_result(result)
+            return result
+
+    result = _create_session(
+        client,
+        resolved_session_id,
+        resolved_tool_id,
+        _resolve_ttl(ttl),
+        envs=envs,
+    )
+    save_session_result(result)
+    return result
