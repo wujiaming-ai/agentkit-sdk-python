@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional, Any
 import json
 import typer
+from typer.core import TyperGroup
 from rich.console import Console
 import time
 import random
@@ -230,6 +231,34 @@ def build_a2a_payload(
     return a2a
 
 
+class InvokeGroup(TyperGroup):
+    """Group for ``agentkit invoke`` that keeps the bare-message form working.
+
+    ``invoke`` exposes named subcommands (``run``, ``harness``). When the first
+    token is neither a known subcommand nor ``--help``, it is treated as the
+    default ``run`` command's arguments, so ``agentkit invoke "hi"`` and
+    ``agentkit invoke --runtime-id ...`` behave exactly as before.
+    """
+
+    default_cmd_name = "run"
+
+    def parse_args(self, ctx, args):
+        if args:
+            first = args[0]
+            if first != "--help" and first not in self.commands:
+                args = [self.default_cmd_name] + args
+        return super().parse_args(ctx, args)
+
+
+invoke_app = typer.Typer(
+    cls=InvokeGroup,
+    name="invoke",
+    help="Send a test request to a deployed Agent (default) or harness.",
+    add_completion=False,
+)
+
+
+@invoke_app.command("run")
 def invoke_command(
     config_file: Optional[Path] = typer.Option(
         None, "--config-file", help="Configuration file"
@@ -568,3 +597,171 @@ def invoke_command(
         console.print(response)
 
     return str(response)
+
+
+def build_harness_overrides(
+    system_prompt: Optional[str],
+    model_name: Optional[str],
+    tools: Optional[str],
+    skills: Optional[str],
+    runtime: Optional[str],
+) -> dict:
+    """Collect the non-null fields for the harness app's ``HarnessOverrides``.
+
+    Field names/shapes match veadk's ``HarnessOverrides`` model: ``model_name``
+    (string), ``tools`` / ``skills`` as comma-separated strings, ``system_prompt``,
+    ``runtime``. Only the keys present here are applied server-side
+    (``model_fields_set``); unset fields keep the deployed harness's values.
+    """
+    overrides: dict[str, Any] = {}
+    if system_prompt is not None:
+        overrides["system_prompt"] = system_prompt
+    if model_name is not None:
+        overrides["model_name"] = model_name
+    if tools is not None:
+        overrides["tools"] = tools
+    if skills is not None:
+        overrides["skills"] = skills
+    if runtime is not None:
+        overrides["runtime"] = runtime
+    return overrides
+
+
+@invoke_app.command("harness")
+def harness_command(
+    name: str = typer.Argument(
+        ..., help="Deployed harness name (looked up in the harness.json registry)."
+    ),
+    message: str = typer.Argument(..., help="Prompt to send to the harness"),
+    directory: str = typer.Option(
+        ".", "--directory", help="Directory holding the harness.json registry."
+    ),
+    user_id: str = typer.Option(
+        "agentkit_user", "--user-id", help="user_id for the run."
+    ),
+    session_id: str = typer.Option(
+        "agentkit_sample_session", "--session-id", help="session_id for the run."
+    ),
+    max_llm_calls: int = typer.Option(
+        None,
+        "--max-llm-calls",
+        help="Override max LLM calls for this single invocation.",
+    ),
+    system_prompt: str = typer.Option(
+        None,
+        "--system-prompt",
+        help="Override the harness system prompt for this invocation.",
+    ),
+    model_name: str = typer.Option(
+        None,
+        "--model-name",
+        help="Override the harness model name for this invocation.",
+    ),
+    tools: str = typer.Option(
+        None, "--tools", help="Override harness tools (comma-separated) for this call."
+    ),
+    skills: str = typer.Option(
+        None,
+        "--skills",
+        help="Override harness skills (comma-separated) for this call.",
+    ),
+    runtime: str = typer.Option(
+        None, "--runtime", help="Override the harness runtime backend for this call."
+    ),
+    apikey: str = typer.Option(
+        None,
+        "--apikey",
+        "-ak",
+        help="Bearer token override (e.g. OAuth JWT for custom_jwt harnesses).",
+    ),
+    raw: bool = typer.Option(
+        False, "--raw", help="Print the raw InvokeHarnessResponse JSON."
+    ),
+) -> Any:
+    """Invoke a deployed harness by name (resolved via the harness.json registry).
+
+    ``agentkit deploy --harness <name>`` records each deployed harness in a
+    ``harness.json`` registry; this command looks the name up there and POSTs to
+    the harness runtime's ``/harness/invoke`` endpoint. Run it from the same
+    directory you deployed in, or pass --directory.
+
+    Per-call overrides are one-time: they apply only to this invocation and are
+    not persisted. Only the flags you pass are sent; unset fields keep the
+    deployed harness's values (tools/skills are added incrementally).
+
+    Examples:
+        # Invoke a deployed harness
+        agentkit invoke harness my-harness "What is 2+2?"
+
+        # Per-call overrides
+        agentkit invoke harness my-harness --system-prompt "Be terse." "What is 2+2?"
+        agentkit invoke harness my-harness --max-llm-calls 10 "Plan a trip."
+    """
+    import requests
+    from agentkit.toolkit.harness import load_harness_registry
+
+    console.print("[cyan]Invoking harness...[/cyan]")
+
+    registry = load_harness_registry(directory)
+    entry = registry.get(name)
+    if not isinstance(entry, dict) or not entry.get("url"):
+        registry_path = Path(directory).resolve() / "harness.json"
+        console.print(
+            f"[red]Error: harness '{name}' not found in registry {registry_path}. "
+            f"Deploy it first with `agentkit deploy --harness {name}`.[/red]"
+        )
+        raise typer.Exit(1)
+
+    invoke_url = entry["url"].rstrip("/") + "/harness/invoke"
+    token = apikey or entry.get("key") or ""
+    req_headers = {"Content-Type": "application/json"}
+    if token:
+        req_headers["Authorization"] = f"Bearer {token}"
+
+    run_agent_request: dict[str, Any] = {
+        "user_id": user_id,
+        "session_id": session_id,
+    }
+    if max_llm_calls is not None:
+        run_agent_request["max_llm_calls"] = max_llm_calls
+
+    body: dict[str, Any] = {
+        "prompt": message,
+        "harness_name": name,
+        "run_agent_request": run_agent_request,
+    }
+    overrides = build_harness_overrides(
+        system_prompt, model_name, tools, skills, runtime
+    )
+    if overrides:
+        body["harness"] = overrides
+        console.print(f"[blue]Using one-time overrides: {overrides}[/blue]")
+
+    try:
+        resp = requests.post(invoke_url, json=body, headers=req_headers, timeout=300)
+    except requests.RequestException as e:
+        console.print(f"[red]❌ Request to {invoke_url} failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    if resp.status_code != 200:
+        console.print(
+            f"[red]❌ Harness returned HTTP {resp.status_code}: {resp.text}[/red]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        data = resp.json()
+    except ValueError:
+        console.print(f"[red]❌ Non-JSON response: {resp.text}[/red]")
+        raise typer.Exit(1)
+
+    if raw:
+        console.print(json.dumps(data, ensure_ascii=False, indent=2))
+        return str(data)
+
+    console.print("[green]✅ Invocation successful[/green]")
+    if data.get("overwrite"):
+        console.print("[yellow](served with one-time overrides)[/yellow]")
+    console.print("[cyan]📝 Response:[/cyan]")
+    console.print(data.get("output", ""))
+    return str(data.get("output", ""))

@@ -23,7 +23,7 @@ from agentkit.utils.logging_config import setup_cli_logging
 
 # Import command modules
 from agentkit.toolkit.cli.cli_init import init_command, show_logo
-from agentkit.toolkit.cli.cli_invoke import invoke_command
+from agentkit.toolkit.cli.cli_invoke import invoke_app
 from agentkit.toolkit.cli.cli_config import config_command
 from agentkit.toolkit.cli.cli_version import version_command, get_package_version
 from agentkit.toolkit.cli.cli_build import build_command
@@ -44,6 +44,9 @@ from agentkit.toolkit.cli.cli_auth import (
     logout_command,
     whoami_command,
 )
+from agentkit.toolkit.cli.cli_add import add_app
+from agentkit.toolkit.cli.cli_list import list_app
+from agentkit.toolkit.cli.cli_delete import delete_app
 
 # Note: Avoid importing heavy packages at the top to keep CLI startup fast
 
@@ -99,7 +102,6 @@ def main(
 
 # Register commands
 app.command(name="init")(init_command)
-app.command(name="invoke")(invoke_command)
 app.command(name="config")(config_command)
 app.command(name="version")(version_command)
 app.command(name="build")(build_command)
@@ -122,6 +124,10 @@ app.add_typer(tools_app, name="tools")
 app.add_typer(runtime_app, name="runtime")
 app.add_typer(skills_app, name="skills")
 app.add_typer(sandbox_app, name="sandbox")
+app.add_typer(invoke_app, name="invoke")
+app.add_typer(add_app, name="add")
+app.add_typer(list_app, name="list")
+app.add_typer(delete_app, name="delete")
 
 
 if __name__ == "__main__":

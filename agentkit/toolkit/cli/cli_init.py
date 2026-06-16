@@ -317,6 +317,44 @@ def init_command(
         # ===== UI Layer: Interactive template selection =====
         template_key = select_template(template)
 
+        # ===== HARNESS MODE: only create an empty directory =====
+        if template_key == "harness":
+            if not project_name:
+                console.print(
+                    "[red]Error: the harness template requires a name "
+                    "(the directory to create).[/red]"
+                )
+                raise typer.Exit(1)
+
+            console.print(
+                f"[bold green]Creating harness directory: {project_name}[/bold green]"
+            )
+            console.print()
+
+            result = executor.init_harness(
+                project_name=project_name, directory=directory
+            )
+            if result.success:
+                console.print(
+                    "[bold blue]✨ Harness directory created![/bold blue]"
+                )
+                console.print(f"[blue]Path: {result.project_path}[/blue]")
+                if result.created_files:
+                    console.print("\n[bold cyan]Created files:[/bold cyan]")
+                    for file in result.created_files:
+                        console.print(f"  [green]✓[/green] {file}")
+                console.print(
+                    "\n[bold cyan]Next steps:[/bold cyan]\n"
+                    "  1. Copy [bold].env.example[/bold] to [bold].env[/bold]\n"
+                    "  2. Fill in VOLCENGINE_ACCESS_KEY / VOLCENGINE_SECRET_KEY"
+                )
+                raise typer.Exit(0)
+
+            console.print(f"[red]✗ Failed: {result.error}[/red]")
+            if result.error_code:
+                console.print(f"[yellow]Error code: {result.error_code}[/yellow]")
+            raise typer.Exit(1)
+
         # Get template info for UI display
         templates = _get_templates()
         template_info = templates[template_key]
