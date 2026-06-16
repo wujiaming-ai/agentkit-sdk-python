@@ -143,6 +143,8 @@ VOLCENGINE_SECRET_KEY=
 # Container image for the harness server. The base image's apt mirror is an
 # unreachable internal host, so apt is repointed at aliyun; the source branch is
 # cloned via the ghfast proxy with a github fallback; uv installs from aliyun.
+# `openai-codex` is installed alongside veadk so the `codex` runtime works
+# (it bundles the Codex CLI binary); without it `--runtime codex` fails.
 _HARNESS_DOCKERFILE = """\
 FROM agentkit-cn-beijing.cr.volces.com/base/py-simple:python3.12-bookworm-slim-latest
 ENV PYTHONUNBUFFERED=1
@@ -166,7 +168,7 @@ RUN set -eux; \\
     done; \\
     test -d src/veadk
 RUN uv pip install --system --index-url https://mirrors.aliyun.com/pypi/simple/ \\
-        ./src fastapi "uvicorn[standard]"
+        ./src fastapi "uvicorn[standard]" openai-codex
 EXPOSE 8000
 CMD ["python", "-m", "uvicorn", "veadk.cloud.harness_app.app:app", "--host", "0.0.0.0", "--port", "8000"]
 """
