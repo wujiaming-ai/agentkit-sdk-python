@@ -49,6 +49,13 @@ from veadk.runner import Runner
 from agentkit.apps.agent_server_app.middleware import (
     AgentkitTelemetryHTTPMiddleware,
 )
+from agentkit.apps.agent_server_app.origin import (
+    add_cors_compat_middleware,
+    adk_supports_regex_origins,
+    resolve_agentkit_allow_origins,
+    split_allow_origins,
+    supports_get_fast_api_kwarg,
+)
 from agentkit.apps.agent_server_app.telemetry import telemetry
 from agentkit.apps.base_app import BaseAgentkitApp
 
@@ -101,6 +108,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         *,
         app: App | None = None,
         allow_origins: list[str] | None = None,
+        allow_origin_regex: str | list[str] | None = None,
     ) -> None:
         super().__init__()
 
@@ -153,9 +161,36 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 await handler()
             yield
 
-        self.app = self.server.get_fast_api_app(
-            lifespan=lifespan, allow_origins=allow_origins
+        resolved_allow_origins = resolve_agentkit_allow_origins(
+            allow_origins=allow_origins,
+            allow_origin_regex=allow_origin_regex,
         )
+        get_fast_api_app = self.server.get_fast_api_app
+        get_fast_api_app_kwargs: dict[str, Any] = {"lifespan": lifespan}
+        supports_allow_origins = supports_get_fast_api_kwarg(
+            get_fast_api_app, "allow_origins"
+        )
+        supports_regex_origins = adk_supports_regex_origins()
+        needs_cors_compat_middleware = False
+
+        if supports_allow_origins:
+            if supports_regex_origins:
+                get_fast_api_app_kwargs["allow_origins"] = (
+                    resolved_allow_origins or None
+                )
+            else:
+                literal_origins, combined_regex = split_allow_origins(
+                    resolved_allow_origins
+                )
+                get_fast_api_app_kwargs["allow_origins"] = literal_origins or None
+                needs_cors_compat_middleware = combined_regex is not None
+        else:
+            needs_cors_compat_middleware = bool(resolved_allow_origins)
+
+        self.app = get_fast_api_app(**get_fast_api_app_kwargs)
+
+        if needs_cors_compat_middleware:
+            add_cors_compat_middleware(self.app, resolved_allow_origins)
 
         @self.app.post("/run_sse")
         async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
