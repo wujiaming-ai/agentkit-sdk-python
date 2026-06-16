@@ -297,17 +297,14 @@ class VeIAM(BaseIAMClient):
         if resp is None:
             resp = self.create_role(role_name, trust_policy_document)
             """
-            ArkReadOnlyAccess
-            TLSReadOnlyAccess
-            APMPlusServerReadOnlyAccess
-            VikingdbReadOnlyAccess
-            ESCloudReadOnlyAccess
-            LLMShieldProtectSdkAccess
-            AgentKitReadOnlyAccess
-            TorchlightApiFullAccess
-            Mem0ReadOnlyAccess
+            CloudControlReadOnlyAccess
             AgentKitTosAccess
+            TorchlightApiFullAccess
+            LLMShieldProtectSdkAccess
             AgentKitToolAccess
+            IDReadOnlyAccess
+            Mem0ReadOnlyAccess
+            AgentkitRuntimeAccess
             """
             try:
                 from agentkit.toolkit.config.global_config import get_global_config
@@ -328,18 +325,14 @@ class VeIAM(BaseIAMClient):
                 to_attach = custom_policies
             else:
                 to_attach = [
-                    "ArkReadOnlyAccess",
-                    "TLSReadOnlyAccess",
-                    "APMPlusServerReadOnlyAccess",
-                    "VikingdbReadOnlyAccess",
-                    "ESCloudReadOnlyAccess",
-                    "LLMShieldProtectSdkAccess",
-                    "AgentKitReadOnlyAccess",
-                    "TorchlightApiFullAccess",
-                    "Mem0ReadOnlyAccess",
-                    "IDReadOnlyAccess",
+                    "CloudControlReadOnlyAccess",
                     "AgentKitTosAccess",
+                    "TorchlightApiFullAccess",
+                    "LLMShieldProtectSdkAccess",
                     "AgentKitToolAccess",
+                    "IDReadOnlyAccess",
+                    "Mem0ReadOnlyAccess",
+                    "AgentkitRuntimeAccess"
                 ]
             for policy in to_attach:
                 self.attach_role_policy(
