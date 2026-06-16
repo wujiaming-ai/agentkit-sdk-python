@@ -125,7 +125,6 @@ class PaginationHelper:
                 or getattr(response, "memories", None)
                 or getattr(response, "tools", None)
                 or getattr(response, "agent_kit_runtimes", None)
-                or getattr(response, "inbound_auth_configs", None)
                 or []
             )
 
