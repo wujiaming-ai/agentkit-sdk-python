@@ -168,9 +168,9 @@ RUN set -eux; \\
     done; \\
     test -d src/veadk
 RUN uv pip install --system --index-url https://mirrors.aliyun.com/pypi/simple/ \\
-        ./src fastapi "uvicorn[standard]" openai-codex
+        ./src agentkit-sdk-python fastapi "uvicorn[standard]" openai-codex
 EXPOSE 8000
-CMD ["python", "-m", "uvicorn", "veadk.cloud.harness_app.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "agentkit.apps.harness_app.app:app", "--host", "0.0.0.0", "--port", "8000"]
 """
 
 
