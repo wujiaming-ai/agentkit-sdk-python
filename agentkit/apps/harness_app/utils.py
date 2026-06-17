@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,19 @@ from veadk.memory.short_term_memory import ShortTermMemory
 from veadk.tools import get_builtin_tool
 
 logger = logging.getLogger(__name__)
+
+_REGISTRY_CONFIG_ATTR = "_agentkit_a2a_registry_config"
+_REGISTRY_TOOL_NAMES = {
+    "a2a_registry_search_agent_cards",
+    "a2a_registry_task_create",
+    "a2a_registry_task_poll",
+}
+_REGISTRY_OVERRIDE_FIELDS = {
+    "registry_space_id",
+    "registry_endpoint",
+    "registry_region",
+    "registry_top_k",
+}
 
 __all__ = [
     "HarnessConfig",
@@ -148,6 +162,7 @@ def config_from_env() -> HarnessConfig:
 
 def _assemble_agent(config: HarnessConfig) -> tuple[Agent, ShortTermMemory]:
     tools = [get_builtin_tool(name) for name in split_csv(config.tools)]
+    registry_config = None
 
     skills = split_csv(config.skills)
     if skills:
@@ -160,19 +175,18 @@ def _assemble_agent(config: HarnessConfig) -> tuple[Agent, ShortTermMemory]:
         logger.info(
             "Mounting AgentKit A2A registry tools: type=%s", config.registry_type
         )
+        registry_config = AgentKitA2ARegistryConfig(
+            space_id=config.registry_space_id,
+            endpoint=config.registry_endpoint,
+            version=config.registry_version,
+            service_name=config.registry_service_name,
+            region=config.registry_region,
+            top_k=config.registry_top_k,
+            timeout_ms=config.registry_timeout_ms,
+            poll_interval_ms=config.registry_poll_interval_ms,
+        )
         tools.extend(
-            build_a2a_registry_tools(
-                AgentKitA2ARegistryConfig(
-                    space_id=config.registry_space_id,
-                    endpoint=config.registry_endpoint,
-                    version=config.registry_version,
-                    service_name=config.registry_service_name,
-                    region=config.registry_region,
-                    top_k=config.registry_top_k,
-                    timeout_ms=config.registry_timeout_ms,
-                    poll_interval_ms=config.registry_poll_interval_ms,
-                )
-            )
+            build_a2a_registry_tools(registry_config)
         )
 
     knowledgebase = None
@@ -216,6 +230,8 @@ def _assemble_agent(config: HarnessConfig) -> tuple[Agent, ShortTermMemory]:
         long_term_memory=long_term_memory,
         short_term_memory=short_term_memory,
     )
+    if registry_config is not None:
+        setattr(agent, _REGISTRY_CONFIG_ATTR, registry_config)
     return agent, short_term_memory
 
 
@@ -263,6 +279,38 @@ def _add_incremental_skills(
     agent.tools.append(SkillToolset(skills=existing_skills + new_skills))
 
 
+def _remove_a2a_registry_tools(agent: Agent) -> None:
+    agent.tools = [
+        tool for tool in agent.tools if _tool_name(tool) not in _REGISTRY_TOOL_NAMES
+    ]
+
+
+def _apply_registry_overrides(
+    agent: Agent,
+    base_config: AgentKitA2ARegistryConfig | None,
+    overrides: HarnessOverrides,
+) -> None:
+    set_fields = overrides.model_fields_set
+    if not (_REGISTRY_OVERRIDE_FIELDS & set_fields):
+        return
+
+    config = base_config or AgentKitA2ARegistryConfig()
+    updates: dict[str, Any] = {}
+    if "registry_space_id" in set_fields:
+        updates["space_id"] = overrides.registry_space_id
+    if "registry_endpoint" in set_fields:
+        updates["endpoint"] = overrides.registry_endpoint
+    if "registry_region" in set_fields:
+        updates["region"] = overrides.registry_region
+    if "registry_top_k" in set_fields:
+        updates["top_k"] = overrides.registry_top_k
+
+    overridden_config = replace(config, **updates)
+    _remove_a2a_registry_tools(agent)
+    agent.tools.extend(build_a2a_registry_tools(overridden_config))
+    setattr(agent, _REGISTRY_CONFIG_ATTR, overridden_config)
+
+
 def spawn_harness_agent(
     base_agent: Agent, overrides: HarnessOverrides, download_dir: Path | None = None
 ) -> Agent:
@@ -285,5 +333,9 @@ def spawn_harness_agent(
 
     if "skills" in set_fields:
         _add_incremental_skills(cloned, split_csv(overrides.skills), download_dir)
+
+    _apply_registry_overrides(
+        cloned, getattr(base_agent, _REGISTRY_CONFIG_ATTR, None), overrides
+    )
 
     return cloned

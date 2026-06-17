@@ -605,13 +605,18 @@ def build_harness_overrides(
     tools: Optional[str],
     skills: Optional[str],
     runtime: Optional[str],
+    registry_space_id: Optional[str] = None,
+    registry_top_k: Optional[int] = None,
+    registry_endpoint: Optional[str] = None,
+    registry_region: Optional[str] = None,
 ) -> dict:
     """Collect the non-null fields for the harness app's ``HarnessOverrides``.
 
-    Field names/shapes match veadk's ``HarnessOverrides`` model: ``model_name``
-    (string), ``tools`` / ``skills`` as comma-separated strings, ``system_prompt``,
-    ``runtime``. Only the keys present here are applied server-side
-    (``model_fields_set``); unset fields keep the deployed harness's values.
+    Field names/shapes match AgentKit's ``HarnessOverrides`` model:
+    ``model_name`` (string), ``tools`` / ``skills`` as comma-separated strings,
+    ``system_prompt``, ``runtime``, and optional registry overrides. Only the
+    keys present here are applied server-side (``model_fields_set``); unset
+    fields keep the deployed harness's values.
     """
     overrides: dict[str, Any] = {}
     if system_prompt is not None:
@@ -624,6 +629,14 @@ def build_harness_overrides(
         overrides["skills"] = skills
     if runtime is not None:
         overrides["runtime"] = runtime
+    if registry_space_id is not None:
+        overrides["registry_space_id"] = registry_space_id
+    if registry_top_k is not None:
+        overrides["registry_top_k"] = registry_top_k
+    if registry_endpoint is not None:
+        overrides["registry_endpoint"] = registry_endpoint
+    if registry_region is not None:
+        overrides["registry_region"] = registry_region
     return overrides
 
 
@@ -668,6 +681,26 @@ def harness_command(
     runtime: str = typer.Option(
         None, "--runtime", help="Override the harness runtime backend for this call."
     ),
+    registry_space_id: str = typer.Option(
+        None,
+        "--registry-space-id",
+        help="Override the A2A registry space id for this invocation.",
+    ),
+    registry_top_k: int = typer.Option(
+        None,
+        "--registry-top-k",
+        help="Override the number of A2A AgentCards to retrieve for this invocation.",
+    ),
+    registry_endpoint: str = typer.Option(
+        None,
+        "--registry-endpoint",
+        help="Override the A2A registry OpenAPI endpoint for this invocation.",
+    ),
+    registry_region: str = typer.Option(
+        None,
+        "--registry-region",
+        help="Override the A2A registry OpenAPI region for this invocation.",
+    ),
     apikey: str = typer.Option(
         None,
         "--apikey",
@@ -696,6 +729,7 @@ def harness_command(
         # Per-call overrides
         agentkit invoke harness my-harness --system-prompt "Be terse." "What is 2+2?"
         agentkit invoke harness my-harness --max-llm-calls 10 "Plan a trip."
+        agentkit invoke harness my-harness --registry-space-id as-xxx "Find an agent."
     """
     import requests
     from agentkit.toolkit.harness import load_harness_registry
@@ -731,7 +765,15 @@ def harness_command(
         "run_agent_request": run_agent_request,
     }
     overrides = build_harness_overrides(
-        system_prompt, model_name, tools, skills, runtime
+        system_prompt,
+        model_name,
+        tools,
+        skills,
+        runtime,
+        registry_space_id,
+        registry_top_k,
+        registry_endpoint,
+        registry_region,
     )
     if overrides:
         body["harness"] = overrides

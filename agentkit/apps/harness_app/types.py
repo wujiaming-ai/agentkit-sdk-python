@@ -28,6 +28,10 @@ class HarnessOverrides(BaseModel):
     runtime: Literal["adk", "codex"] = Field(
         default="adk", description="Agent runtime backend."
     )
+    registry_space_id: str = Field(default="")
+    registry_endpoint: str = Field(default="")
+    registry_region: str = Field(default="")
+    registry_top_k: int = Field(default=3)
 
 
 class HarnessConfig(HarnessOverrides):

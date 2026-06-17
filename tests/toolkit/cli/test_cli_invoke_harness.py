@@ -65,6 +65,10 @@ def test_build_harness_overrides_matches_harness_overrides_model():
         tools="web_search,web_fetch",
         skills="s1",
         runtime="codex",
+        registry_space_id="space-1",
+        registry_top_k=5,
+        registry_endpoint="https://open.volcengineapi.com/",
+        registry_region="cn-beijing",
     )
     # model_name (not model.name); tools/skills as comma-separated STRINGS.
     assert overrides == {
@@ -73,6 +77,10 @@ def test_build_harness_overrides_matches_harness_overrides_model():
         "tools": "web_search,web_fetch",
         "skills": "s1",
         "runtime": "codex",
+        "registry_space_id": "space-1",
+        "registry_top_k": 5,
+        "registry_endpoint": "https://open.volcengineapi.com/",
+        "registry_region": "cn-beijing",
     }
 
 
@@ -137,6 +145,40 @@ def test_harness_invoke_posts_correct_request(tmp_path, monkeypatch):
     assert body["run_agent_request"]["max_llm_calls"] == 7
     # Partial overrides only (model_fields_set semantics).
     assert body["harness"] == {"system_prompt": "Reply PINEAPPLE."}
+
+
+def test_harness_invoke_posts_registry_overrides(tmp_path, monkeypatch):
+    _write_registry(
+        tmp_path,
+        {"first": {"url": "https://x", "key": "ak", "runtime_id": "r-1"}},
+    )
+    captured = {}
+    _patch_post(monkeypatch, captured)
+
+    result = _run_harness(
+        [
+            "first",
+            "Find a finance expert.",
+            "--directory",
+            str(tmp_path),
+            "--registry-space-id",
+            "space-override",
+            "--registry-top-k",
+            "8",
+            "--registry-endpoint",
+            "https://open.volcengineapi.com/",
+            "--registry-region",
+            "cn-beijing",
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["json"]["harness"] == {
+        "registry_space_id": "space-override",
+        "registry_top_k": 8,
+        "registry_endpoint": "https://open.volcengineapi.com/",
+        "registry_region": "cn-beijing",
+    }
 
 
 def test_harness_invoke_no_overrides_omits_harness_key(tmp_path, monkeypatch):
