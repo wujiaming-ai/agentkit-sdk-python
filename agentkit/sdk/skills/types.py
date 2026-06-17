@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class SkillsBaseModel(BaseModel):
@@ -354,3 +354,23 @@ class UpdateSkillSpaceRequest(SkillsBaseModel):
 
 class UpdateSkillSpaceResponse(SkillsBaseModel):
     pass
+
+
+class GenTempTosObjectUrlRequest(SkillsBaseModel):
+    project_name: str = Field(..., alias="ProjectName")
+    skill_name: str = Field(..., alias="SkillName")
+
+
+class GenTempTosObjectUrlResponse(SkillsBaseModel):
+    # The exact response key is tolerated across known spellings; `extra="allow"`
+    # keeps any other returned fields so callers can fast-fail with full context
+    # when no URL is present.
+    model_config = {"populate_by_name": True, "extra": "allow"}
+
+    url: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "Url", "TosUrl", "TempUrl", "ObjectUrl", "PresignedUrl"
+        ),
+        serialization_alias="Url",
+    )

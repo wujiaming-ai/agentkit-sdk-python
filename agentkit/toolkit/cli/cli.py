@@ -36,6 +36,7 @@ from agentkit.toolkit.cli.cli_knowledge import knowledge_app
 from agentkit.toolkit.cli.cli_tools import tools_app
 from agentkit.toolkit.cli.cli_runtime import runtime_app
 from agentkit.toolkit.cli.cli_skills import skills_app
+from agentkit.toolkit.cli.cli_skill import skill_app
 from agentkit.toolkit.cli.sandbox.cli import sandbox_app
 from agentkit.toolkit.cli.cli_auth import (
     auth_app,
@@ -123,6 +124,7 @@ app.add_typer(knowledge_app, name="knowledge")
 app.add_typer(tools_app, name="tools")
 app.add_typer(runtime_app, name="runtime")
 app.add_typer(skills_app, name="skills")
+app.add_typer(skill_app, name="skill")
 app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(invoke_app, name="invoke")
 app.add_typer(add_app, name="add")

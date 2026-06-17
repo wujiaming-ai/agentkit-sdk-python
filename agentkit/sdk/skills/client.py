@@ -28,6 +28,8 @@ from .types import (
     DeleteSkillResponse,
     DeleteSkillSpaceRequest,
     DeleteSkillSpaceResponse,
+    GenTempTosObjectUrlRequest,
+    GenTempTosObjectUrlResponse,
     GetSkillInfoRequest,
     GetSkillInfoResponse,
     GetSkillRequest,
@@ -69,6 +71,7 @@ class AgentkitSkillsClient(BaseAgentkitClient):
         "CreateSkillSpace": "CreateSkillSpace",
         "DeleteSkill": "DeleteSkill",
         "DeleteSkillSpace": "DeleteSkillSpace",
+        "GenTempTosObjectUrl": "GenTempTosObjectUrl",
         "GetSkill": "GetSkill",
         "GetSkillInfo": "GetSkillInfo",
         "GetSkillSpace": "GetSkillSpace",
@@ -131,6 +134,15 @@ class AgentkitSkillsClient(BaseAgentkitClient):
             api_action="DeleteSkillSpace",
             request=request,
             response_type=DeleteSkillSpaceResponse,
+        )
+
+    def gen_temp_tos_object_url(
+        self, request: GenTempTosObjectUrlRequest
+    ) -> GenTempTosObjectUrlResponse:
+        return self._invoke_api(
+            api_action="GenTempTosObjectUrl",
+            request=request,
+            response_type=GenTempTosObjectUrlResponse,
         )
 
     def get_skill(self, request: GetSkillRequest) -> GetSkillResponse:
