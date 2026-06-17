@@ -8,6 +8,7 @@ from unittest.mock import patch
 from agentkit.a2a.registry_client import (
     AgentKitA2ARegistryConfig,
     RegistryError,
+    register_runtime_agent,
     registry_config_from_env,
     search_agent_cards,
 )
@@ -148,3 +149,45 @@ def test_missing_prompt_raises_registry_error():
         assert exc.code == "INVALID_ARGUMENT"
     else:
         raise AssertionError("expected RegistryError")
+
+
+@patch("agentkit.a2a.registry_client.requests.post")
+def test_register_runtime_agent_calls_create_a2a_agent(post, monkeypatch):
+    monkeypatch.setenv("AGENTKIT_ACCESS_KEY", "ak")
+    monkeypatch.setenv("AGENTKIT_SECRET_KEY", "sk")
+    post.return_value = _Response(
+        {
+            "ResponseMetadata": {"RequestId": "req-register"},
+            "Result": {
+                "Id": "a-test",
+                "Tags": [{"Key": "env", "Value": "test"}],
+            },
+        }
+    )
+
+    result = register_runtime_agent(
+        a2a_space_id="space-test",
+        runtime_id="r-test",
+        network_type="public",
+        project_name="default",
+        tags=[{"Key": "env", "Value": "test"}],
+        config=AgentKitA2ARegistryConfig(
+            space_id="space-test",
+            endpoint="https://agentkit.cn-beijing.volcengineapi.com/",
+        ),
+    )
+
+    assert result["outcome"] == "success"
+    assert result["agent_id"] == "a-test"
+    assert post.call_args.kwargs["params"] == {
+        "Action": "CreateA2aAgent",
+        "Version": "2025-10-30",
+    }
+    assert json.loads(post.call_args.kwargs["data"]) == {
+        "Source": "Runtime",
+        "A2aSpaceId": "space-test",
+        "RuntimeConfig": {"RuntimeId": "r-test", "NetworkType": "public"},
+        "ProjectName": "default",
+        "Tags": [{"Key": "env", "Value": "test"}],
+        "SetDefaultVersion": True,
+    }

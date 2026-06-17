@@ -11,7 +11,7 @@ import json
 import os
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -183,6 +183,67 @@ def poll_task(
 
     _, card, _, _ = _get_a2a_agent(agent_name.strip(), config)
     return _poll_card(card, task_id, history_length, config, started)
+
+
+def register_runtime_agent(
+    a2a_space_id: str,
+    runtime_id: str,
+    network_type: str = "public",
+    project_name: str | None = None,
+    tags: list[dict[str, str]] | None = None,
+    set_default_version: bool = True,
+    config: AgentKitA2ARegistryConfig | None = None,
+) -> dict[str, Any]:
+    """Register an AgentKit Runtime A2A agent into an A2A registry space."""
+
+    started = time.monotonic()
+    if not a2a_space_id or not a2a_space_id.strip():
+        raise RegistryError("INVALID_ARGUMENT", "a2a_space_id is required")
+    if not runtime_id or not runtime_id.strip():
+        raise RegistryError("INVALID_ARGUMENT", "runtime_id is required")
+    normalized_network_type = network_type.strip().lower()
+    if normalized_network_type not in {"public", "private"}:
+        raise RegistryError(
+            "INVALID_ARGUMENT",
+            "network_type must be one of: public, private",
+            {"network_type": network_type},
+        )
+
+    resolved_config = _resolve_config(config)
+    if not resolved_config.space_id:
+        resolved_config = replace(resolved_config, space_id=a2a_space_id.strip())
+
+    body: dict[str, Any] = {
+        "Source": "Runtime",
+        "A2aSpaceId": a2a_space_id.strip(),
+        "RuntimeConfig": {
+            "RuntimeId": runtime_id.strip(),
+            "NetworkType": normalized_network_type,
+        },
+        "SetDefaultVersion": bool(set_default_version),
+    }
+    if project_name:
+        body["ProjectName"] = project_name
+    if tags:
+        body["Tags"] = tags
+
+    response, request_duration_ms = _agentkit_post(
+        resolved_config,
+        "CreateA2aAgent",
+        body,
+    )
+    result = response.get("Result") or {}
+    return _success(
+        {
+            "agent_id": result.get("Id", ""),
+            "tags": result.get("Tags") or [],
+            "diagnostics": {
+                "request_id": _request_id(response),
+                "request_duration_ms": request_duration_ms,
+                "duration_ms": int((time.monotonic() - started) * 1000),
+            },
+        }
+    )
 
 
 def failure(

@@ -233,3 +233,96 @@ def test_deploy_spec_loader_accepts_harness_yaml(tmp_path):
 
     assert resolved == yaml_path
     assert data["registry"]["type"] == "agentkit_a2a"
+
+
+def test_add_harness_register_a2a_resolves_runtime_and_space(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "harness.json").write_text(
+        json.dumps({"h": {"url": "https://x", "runtime_id": "r-test"}})
+    )
+    captured = {}
+
+    def fake_register_runtime_agent(**kwargs):
+        captured.update(kwargs)
+        return {
+            "outcome": "success",
+            "agent_id": "a-test",
+            "tags": [],
+            "diagnostics": {"request_id": "req-1"},
+        }
+
+    monkeypatch.setattr(
+        "agentkit.a2a.registry_client.register_runtime_agent",
+        fake_register_runtime_agent,
+    )
+
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--registry-space-id",
+            "space-test",
+            "--register-a2a",
+            "--register-tag",
+            "env=test",
+            "--register-project-name",
+            "default",
+            "--register-endpoint",
+            "https://agentkit.cn-beijing.volcengineapi.com/",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "A2A agent registered" in result.output
+    assert captured["a2a_space_id"] == "space-test"
+    assert captured["runtime_id"] == "r-test"
+    assert captured["network_type"] == "public"
+    assert captured["project_name"] == "default"
+    assert captured["tags"] == [{"Key": "env", "Value": "test"}]
+    config = captured["config"]
+    assert config.endpoint == "https://agentkit.cn-beijing.volcengineapi.com/"
+    assert config.space_id == "space-test"
+
+
+def test_add_harness_register_a2a_requires_runtime_id(tmp_path):
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--registry-space-id",
+            "space-test",
+            "--register-a2a",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 1
+    assert "runtime id is required" in result.output
+
+
+def test_add_harness_register_a2a_rejects_invalid_network_type(tmp_path):
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--register-a2a",
+            "--register-runtime-id",
+            "r-test",
+            "--register-space-id",
+            "space-test",
+            "--register-network-type",
+            "internet",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 1
+    assert "--register-network-type must be one of" in result.output

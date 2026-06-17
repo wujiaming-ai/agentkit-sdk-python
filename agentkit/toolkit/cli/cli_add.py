@@ -40,6 +40,7 @@ otherwise the command writes ``<name>.harness.json``.
 """
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -77,6 +78,8 @@ _REGISTRY_QUERY_KEYS = {
     "poll_interval_ms",
 }
 _REGISTRY_INT_KEYS = {"top_k", "timeout_ms", "poll_interval_ms"}
+_REGISTER_NETWORK_TYPES = {"public", "private"}
+_REGISTER_DEFAULT_VERSION = "2025-10-30"
 
 
 def _split_csv(value: Optional[str]) -> Optional[list[str]]:
@@ -271,6 +274,143 @@ def _write_spec(path: Path, file_format: str, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
+def _load_json(path: Path) -> dict:
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def _parse_register_tags(values: list[str]) -> list[dict[str, str]]:
+    tags = []
+    for value in values:
+        if "=" not in value:
+            console.print(
+                f"[red]Error: invalid --register-tag {value!r}. "
+                "Expected KEY=VALUE.[/red]"
+            )
+            raise typer.Exit(1)
+        key, tag_value = value.split("=", 1)
+        key = key.strip()
+        tag_value = tag_value.strip()
+        if not key:
+            console.print("[red]Error: --register-tag key must not be empty.[/red]")
+            raise typer.Exit(1)
+        tags.append({"Key": key, "Value": tag_value})
+    return tags
+
+
+def _default_agentkit_endpoint(region: str) -> str:
+    if region == "cn-beijing":
+        return "https://agentkit.cn-beijing.volcengineapi.com/"
+    return f"https://agentkit.{region}.volcengineapi.com/"
+
+
+def _resolve_register_runtime_id(
+    directory: str, name: str, runtime_id: Optional[str]
+) -> str:
+    if runtime_id:
+        return runtime_id
+    registry_path = Path(directory).resolve() / "harness.json"
+    registry = _load_json(registry_path)
+    entry = registry.get(name)
+    if isinstance(entry, dict) and entry.get("runtime_id"):
+        return str(entry["runtime_id"])
+    console.print(
+        f"[red]Error: runtime id is required for --register-a2a. Pass "
+        f"--register-runtime-id or ensure {registry_path} contains harness "
+        f"'{name}' with runtime_id.[/red]"
+    )
+    raise typer.Exit(1)
+
+
+def _resolve_register_space_id(data: dict, space_id: Optional[str]) -> str:
+    if space_id:
+        return space_id
+    registry = data.get("registry") if isinstance(data, dict) else None
+    if isinstance(registry, dict) and registry.get("space_id"):
+        return str(registry["space_id"])
+    console.print(
+        "[red]Error: A2A space id is required for --register-a2a. Pass "
+        "--register-space-id, --registry-space-id, or set `registry.space_id` "
+        "in the harness spec.[/red]"
+    )
+    raise typer.Exit(1)
+
+
+def _register_a2a_runtime_agent(
+    *,
+    name: str,
+    directory: str,
+    data: dict,
+    space_id: Optional[str],
+    runtime_id: Optional[str],
+    network_type: str,
+    project_name: Optional[str],
+    tags: list[str],
+    set_default_version: bool,
+    endpoint: Optional[str],
+    region: Optional[str],
+    version: str,
+    raw: bool,
+) -> None:
+    normalized_network_type = network_type.strip().lower()
+    if normalized_network_type not in _REGISTER_NETWORK_TYPES:
+        console.print(
+            "[red]Error: --register-network-type must be one of: public, private.[/red]"
+        )
+        raise typer.Exit(1)
+
+    resolved_region = (
+        region
+        or os.getenv("AGENTKIT_REGION")
+        or os.getenv("VOLCENGINE_REGION")
+        or "cn-beijing"
+    )
+    resolved_endpoint = endpoint or _default_agentkit_endpoint(resolved_region)
+    resolved_runtime_id = _resolve_register_runtime_id(directory, name, runtime_id)
+    resolved_space_id = _resolve_register_space_id(data, space_id)
+    parsed_tags = _parse_register_tags(tags)
+
+    from agentkit.a2a.registry_client import (
+        AgentKitA2ARegistryConfig,
+        RegistryError,
+        register_runtime_agent,
+    )
+
+    console.print(
+        f"[cyan]Registering harness '{name}' runtime {resolved_runtime_id} "
+        f"to A2A space {resolved_space_id}...[/cyan]"
+    )
+    try:
+        result = register_runtime_agent(
+            a2a_space_id=resolved_space_id,
+            runtime_id=resolved_runtime_id,
+            network_type=normalized_network_type,
+            project_name=project_name,
+            tags=parsed_tags or None,
+            set_default_version=set_default_version,
+            config=AgentKitA2ARegistryConfig(
+                space_id=resolved_space_id,
+                endpoint=resolved_endpoint,
+                version=version,
+                region=resolved_region,
+            ),
+        )
+    except RegistryError as exc:
+        console.print(f"[red]❌ A2A registration failed: {exc.message}[/red]")
+        if exc.diagnostics:
+            console.print(json.dumps(exc.diagnostics, ensure_ascii=False, indent=2))
+        raise typer.Exit(1) from exc
+
+    if raw:
+        console.print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    console.print("[green]✅ A2A agent registered[/green]")
+    console.print(f"[cyan]AgentId:[/cyan] {result.get('agent_id', '')}")
+    diagnostics = result.get("diagnostics") or {}
+    if diagnostics.get("request_id"):
+        console.print(f"[cyan]RequestId:[/cyan] {diagnostics['request_id']}")
+
+
 @add_app.command("harness")
 def harness_command(
     name: str = typer.Option(
@@ -340,6 +480,58 @@ def harness_command(
         None,
         "--registry-poll-interval-ms",
         help="A2A task polling interval in milliseconds.",
+    ),
+    # --- A2A registry registration action -----------------------------------
+    register_a2a: bool = typer.Option(
+        False,
+        "--register-a2a",
+        help="Register this deployed harness Runtime Agent to the A2A registry.",
+    ),
+    register_space_id: Optional[str] = typer.Option(
+        None,
+        "--register-space-id",
+        help="A2A registry space id for registration. Defaults to registry.space_id.",
+    ),
+    register_runtime_id: Optional[str] = typer.Option(
+        None,
+        "--register-runtime-id",
+        help="Runtime id to register. Defaults to harness.json[name].runtime_id.",
+    ),
+    register_network_type: str = typer.Option(
+        "public",
+        "--register-network-type",
+        help="Runtime network address to register: public or private.",
+    ),
+    register_project_name: Optional[str] = typer.Option(
+        None, "--register-project-name", help="A2A registry project name."
+    ),
+    register_tag: list[str] = typer.Option(
+        [],
+        "--register-tag",
+        help="A2A agent tag in KEY=VALUE form. Can be repeated.",
+    ),
+    register_set_default_version: bool = typer.Option(
+        True,
+        "--register-set-default-version/--register-no-set-default-version",
+        help="Whether to set this runtime registration as the default version.",
+    ),
+    register_endpoint: Optional[str] = typer.Option(
+        None,
+        "--register-endpoint",
+        help="AgentKit OpenAPI endpoint for CreateA2aAgent.",
+    ),
+    register_region: Optional[str] = typer.Option(
+        None,
+        "--register-region",
+        help="AgentKit OpenAPI region. Defaults to AGENTKIT_REGION/VOLCENGINE_REGION/cn-beijing.",
+    ),
+    register_version: str = typer.Option(
+        _REGISTER_DEFAULT_VERSION,
+        "--register-version",
+        help="AgentKit OpenAPI version for CreateA2aAgent.",
+    ),
+    register_raw: bool = typer.Option(
+        False, "--register-raw", help="Print raw A2A registration result."
     ),
     # --- component backend types --------------------------------------------
     knowledgebase_type: Optional[str] = typer.Option(
@@ -586,6 +778,23 @@ def harness_command(
     _prune(data)
     _write_spec(target, file_format, data)
     console.print(f"[green]✓ Wrote harness config: {target}[/green]")
+
+    if register_a2a:
+        _register_a2a_runtime_agent(
+            name=name,
+            directory=directory,
+            data=data,
+            space_id=register_space_id,
+            runtime_id=register_runtime_id,
+            network_type=register_network_type,
+            project_name=register_project_name,
+            tags=register_tag,
+            set_default_version=register_set_default_version,
+            endpoint=register_endpoint,
+            region=register_region,
+            version=register_version,
+            raw=register_raw,
+        )
 
 
 # Credential types accepted by ``agentkit add credential``. Only ``api-key`` is
