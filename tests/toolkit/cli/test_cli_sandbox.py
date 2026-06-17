@@ -1188,9 +1188,10 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
         tool_id="tool-new",
     )
 
-    assert _FakeToolsClient.get_call_count == 1
-    assert _FakeToolsClient.get_tool_call_count == 2
+    assert _FakeToolsClient.get_call_count == 2
+    assert _FakeToolsClient.get_tool_call_count == 3
     assert _FakeToolsClient.create_call_count == 1
+    assert _FakeToolsClient.list_sessions_call_count == 1
     assert _FakeToolsClient.last_get_request.tool_id == "tool-new"
     assert _FakeToolsClient.last_get_request.session_id == "session-old"
     assert _FakeToolsClient.last_request.tool_id == "tool-new"
@@ -1204,6 +1205,78 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
         "endpoint": "https://new.example.com",
     }
     assert result == stored["same-user-session"]
+
+
+def test_ensure_sandbox_session_syncs_existing_session_after_stale_instance(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    class ExistingResponse:
+        user_session_id = "same-user-session"
+        session_id = "session-remote"
+        endpoint = "https://remote.example.com"
+
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    store_path.write_text(
+        json.dumps(
+            {
+                "same-user-session": {
+                    "session_id": "same-user-session",
+                    "tool_id": "tool-stored",
+                    "instance_id": "session-stale",
+                    "endpoint": "https://stale.example.com",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _FakeToolsClient.get_error = Exception("Session not found")
+    _FakeToolsClient.list_sessions_responses = [
+        _FakeListSessionsResponse(
+            [
+                _FakeSessionInfo(
+                    user_session_id="same-user-session",
+                    session_id="session-remote",
+                    endpoint="https://listed.example.com",
+                )
+            ]
+        )
+    ]
+
+    def fake_get_session(_self, request):
+        _FakeToolsClient.last_get_request = request
+        _FakeToolsClient.get_call_count += 1
+        if request.session_id == "session-stale":
+            raise Exception("Session not found")
+        return ExistingResponse()
+
+    monkeypatch.setattr(_FakeToolsClient, "get_session", fake_get_session)
+
+    result = session_create.ensure_sandbox_session(
+        session_id="same-user-session",
+    )
+
+    assert _FakeToolsClient.create_call_count == 0
+    assert _FakeToolsClient.list_sessions_call_count == 1
+    assert _FakeToolsClient.get_call_count == 2
+    assert _FakeToolsClient.last_get_request.tool_id == "tool-stored"
+    assert _FakeToolsClient.last_get_request.session_id == "session-remote"
+    assert result == {
+        "session_id": "same-user-session",
+        "tool_id": "tool-stored",
+        "instance_id": "session-remote",
+        "endpoint": "https://remote.example.com",
+    }
+    assert json.loads(store_path.read_text(encoding="utf-8")) == {
+        "same-user-session": result
+    }
 
 
 def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:

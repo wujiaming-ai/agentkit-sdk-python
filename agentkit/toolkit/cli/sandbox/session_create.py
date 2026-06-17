@@ -381,6 +381,27 @@ def ensure_sandbox_session(
             save_session_result(result)
             return result
 
+        synced_tool_id = sync_remote_sessions(
+            session_id=resolved_session_id,
+            tool_id=resolved_tool_id,
+            tool_type=tool_type,
+            client=client,
+            env_var_name=SANDBOX_TOOL_ID_ENV,
+        )
+        if synced_tool_id:
+            resolved_tool_id = synced_tool_id
+        existing = find_session_result(resolved_session_id)
+        if existing:
+            result = _get_existing_remote_session(
+                client,
+                existing,
+                resolved_session_id,
+                resolved_tool_id,
+            )
+            if result:
+                save_session_result(result)
+                return result
+
     result = _create_session(
         client,
         resolved_session_id,
