@@ -139,13 +139,10 @@ def shell_command(
 
     effective_shell_id = shell_id or ""
     try:
-        resolved_shell_id = apply_git_config_to_session(
+        apply_git_config_to_session(
             session,
             git_config,
-            shell_id=effective_shell_id,
         )
-        if resolved_shell_id:
-            effective_shell_id = resolved_shell_id
     except typer.Exit:
         raise
     except Exception as exc:

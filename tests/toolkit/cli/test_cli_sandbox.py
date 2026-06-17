@@ -2068,7 +2068,7 @@ def test_cli_shell_uploads_sources_before_command(monkeypatch, tmp_path) -> None
     assert payload["data"]["shell_id"] == "shell-1"
 
 
-def test_cli_shell_git_config_file_reuses_returned_shell_id(
+def test_cli_shell_git_config_file_does_not_reuse_shell_exec_id(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -2141,7 +2141,7 @@ def test_cli_shell_git_config_file_reuses_returned_shell_id(
         (
             "post",
             "https://sandbox.example.com/v1/shell/exec",
-            {"id": "shell-from-git", "exec_dir": "", "command": "git status"},
+            {"id": "", "exec_dir": "", "command": "git status"},
             cli_shell.SANDBOX_EXEC_TIMEOUT_SECONDS,
         ),
     ]

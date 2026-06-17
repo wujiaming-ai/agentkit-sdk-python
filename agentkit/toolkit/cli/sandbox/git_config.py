@@ -174,32 +174,16 @@ def build_remote_git_config_command(user_name: str, user_email: str) -> str:
     )
 
 
-def _extract_shell_id(payload: Mapping[str, Any]) -> Optional[str]:
-    data = payload.get("data")
-    if not isinstance(data, Mapping):
-        return None
-    return _non_empty_string(data.get("session_id"))
-
-
 def apply_git_config_to_session(
     session: dict[str, object],
     git_config: Optional[str],
-    *,
-    shell_id: str = "",
-) -> Optional[str]:
+) -> None:
     resolved = resolve_git_config(git_config)
     if resolved is None:
-        return shell_id or None
+        return
 
     user_name, user_email = resolved
-    payload = _exec_shell_command(
+    _exec_shell_command(
         session,
         build_remote_git_config_command(user_name, user_email),
-        shell_id=shell_id,
     )
-    resolved_shell_id = _extract_shell_id(payload)
-    if resolved_shell_id:
-        return resolved_shell_id
-    if shell_id:
-        return shell_id
-    raise ValueError("Sandbox git config update response missing session_id")

@@ -459,7 +459,6 @@ def exec_command(
         apply_git_config_to_session(
             session,
             git_config,
-            shell_id=active_shell_id or "",
         )
     except typer.Exit:
         raise
