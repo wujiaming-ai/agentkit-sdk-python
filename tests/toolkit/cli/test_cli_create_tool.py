@@ -154,7 +154,7 @@ def _reset_fake_tools_client():
     _FakeTOSService.instances = []
 
 
-def test_create_command_uses_tos_service_and_default_region(
+def test_create_command_skips_tos_mount_by_default(
     monkeypatch,
     tool_store_path,
 ):
@@ -179,18 +179,12 @@ def test_create_command_uses_tos_service_and_default_region(
     assert client.secret_key == ""
     assert client.session_token == ""
     assert client.region == "cn-beijing"
-    assert len(_FakeTOSService.instances) == 1
-    assert _FakeTOSService.instances[0].config.bucket == "agentkit-platform-123"
-    assert _FakeTOSService.instances[0].config.region == "cn-beijing"
+    assert _FakeTOSService.instances == []
     assert _FakeToolsClient.last_request.name == "demo-tool"
     assert _FakeToolsClient.last_request.tool_type == "CodeEnv"
-    tos_config = _FakeToolsClient.last_request.tos_mount_config
-    assert tos_config is not None
-    assert tos_config.mount_points[0].bucket_name == "agentkit-platform-123"
-    assert (
-        tos_config.mount_points[0].bucket_path
-        == "/sandbox-session/default/default"
-    )
+    assert _FakeToolsClient.last_request.cpu_milli == 4000
+    assert _FakeToolsClient.last_request.memory_mb == 8192
+    assert _FakeToolsClient.last_request.tos_mount_config is None
     assert _FakeToolsClient.get_call_count == 1
     assert json.loads(tool_store_path.read_text(encoding="utf-8")) == {
         "SkillEnv": {
@@ -212,11 +206,106 @@ def test_create_command_uses_region_envs(monkeypatch):
     monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
-    result = runner.invoke(app, ["sandbox", "create", "--tool-name", "demo-tool"])
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--tos-bucket",
+            "my-bucket",
+        ],
+    )
 
     assert result.exit_code == 0
     assert _FakeToolsClient.instances[0].region == "cn-shanghai"
     assert _FakeTOSService.instances[0].config.region == "cn-guangzhou"
+
+
+def test_create_command_uses_tos_service_when_bucket_is_set(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.delenv("AGENTKIT_SANDBOX_TOS_REGION", raising=False)
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--tos-bucket",
+            "my-bucket",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert len(_FakeTOSService.instances) == 1
+    assert _FakeTOSService.instances[0].config.bucket == "my-bucket"
+    assert _FakeTOSService.instances[0].config.region == "cn-beijing"
+    tos_config = _FakeToolsClient.last_request.tos_mount_config
+    assert tos_config is not None
+    assert tos_config.mount_points[0].bucket_name == "my-bucket"
+    assert (
+        tos_config.mount_points[0].bucket_path
+        == "/sandbox-session/default/default"
+    )
+
+
+def test_create_command_uses_cpu_option_for_resource_shape(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--cpu",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert _FakeToolsClient.last_request.cpu_milli == 2000
+    assert _FakeToolsClient.last_request.memory_mb == 4096
+
+
+def test_create_command_rejects_invalid_cpu(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--cpu",
+            "3",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--cpu must be one of: 2, 4, 8, 16" in result.output
+    assert _FakeToolsClient.instances == []
+    assert _FakeTOSService.instances == []
 
 
 def test_create_command_rejects_region_option(monkeypatch):
@@ -325,6 +414,43 @@ def test_build_create_tool_request_adds_tos_mount(monkeypatch):
     assert request.network_configuration is not None
     assert request.network_configuration.enable_public_network is True
     assert request.network_configuration.enable_private_network is False
+    assert request.cpu_milli == 4000
+    assert request.memory_mb == 8192
+
+
+def test_build_create_tool_request_skips_tos_mount_without_bucket(monkeypatch):
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    request = cli_create._build_create_tool_request(
+        tool_type="CodeEnv",
+        name="demo-tool",
+        tos_bucket=None,
+        tos_region="cn-beijing",
+    )
+
+    assert _FakeTOSService.instances == []
+    assert request.tos_mount_config is None
+
+
+def test_build_create_tool_request_derives_memory_from_cpu(monkeypatch):
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    request = cli_create._build_create_tool_request(
+        tool_type="CodeEnv",
+        name="demo-tool",
+        tos_bucket=None,
+        tos_region="cn-beijing",
+        cpu=8,
+    )
+
+    assert request.cpu_milli == 8000
+    assert request.memory_mb == 16384
 
 
 def test_build_create_tool_request_adds_model_envs(monkeypatch):
