@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Deploy a harness spec (``<name>.harness.json``) as an AgentKit runtime.
+"""Deploy a harness spec as an AgentKit runtime.
 
 Loads the layered harness spec, flattens it into the runtime's environment,
 builds a cloud AgentKit launch config, and runs a cloud build + runtime create
@@ -25,6 +25,8 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
+
+import yaml
 
 from ..models import LifecycleResult
 from ..reporter import Reporter
@@ -179,13 +181,30 @@ def _get_runtime_version(client, runtime_id: str) -> Optional[int]:
     return runtime.current_version_number
 
 
+def _resolve_harness_spec_path(directory: Path, name: str) -> Path:
+    """Resolve the harness spec path, accepting JSON or harness.yaml."""
+    candidates = [
+        directory / f"{name}.harness.json",
+        directory / "harness.yaml",
+        directory / "harness.yml",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise FileNotFoundError(
+        f"No harness spec found in '{directory}'. Expected "
+        f"`{name}.harness.json` or `harness.yaml`."
+    )
+
+
 def _load_harness_spec(path: Path) -> Dict[str, Any]:
-    """Load a ``<name>.harness.json`` spec; fast-fail when it is missing."""
+    """Load a harness spec from JSON or YAML; fast-fail when it is missing."""
     if not path.is_file():
         raise FileNotFoundError(
-            f"No harness spec at '{path}'. Expected `<name>.harness.json` in the "
-            "deploy directory."
+            f"No harness spec at '{path}'. Expected a JSON or YAML harness spec."
         )
+    if path.suffix.lower() in {".yaml", ".yml"}:
+        return yaml.safe_load(path.read_text()) or {}
     return json.loads(path.read_text()) or {}
 
 
@@ -203,10 +222,11 @@ def deploy_harness(
 ) -> LifecycleResult:
     """Deploy a harness spec as an AgentKit runtime (cloud build, no local Docker).
 
-    Reads ``<path>/<name>.harness.json``, flattens it into the runtime's
-    environment, and runs an AgentKit cloud build + runtime create. The deploy
-    directory must also contain the harness server ``Dockerfile``. On success the
-    runtime is recorded in ``<path>/harness.json`` (keyed by ``name``).
+    Reads ``<path>/<name>.harness.json`` or ``<path>/harness.yaml``, flattens it
+    into the runtime's environment, and runs an AgentKit cloud build + runtime
+    create. The deploy directory must also contain the harness server
+    ``Dockerfile``. On success the runtime is recorded in ``<path>/harness.json``
+    (keyed by ``name``).
 
     Name-collision handling (a same-name runtime already exists):
 
@@ -223,7 +243,8 @@ def deploy_harness(
     are still merged in.
 
     Args:
-        name: Harness name; locates ``<name>.harness.json`` and names the runtime.
+        name: Harness name; locates ``<name>.harness.json`` or ``harness.yaml``
+            and names the runtime.
         path: Directory containing the spec and Dockerfile (default: cwd).
         region: AgentKit region (default ``cn-beijing`` or ``VOLCENGINE_REGION``).
         access_key / secret_key: Volcengine credentials (default: ``VOLCENGINE_*`` env).
@@ -258,7 +279,7 @@ def deploy_harness(
     for key, value in load_dotenv_file(proj_dir).items():
         os.environ.setdefault(key, value)
 
-    spec = _load_harness_spec(proj_dir / f"{name}.harness.json")
+    spec = _load_harness_spec(_resolve_harness_spec_path(proj_dir, name))
     runtime_envs = to_runtime_env(spec)
     runtime_name = name
     auth = _resolve_auth(spec.get("auth"), discovery_url, allowed_id)

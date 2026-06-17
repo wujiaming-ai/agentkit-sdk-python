@@ -41,7 +41,7 @@ def deploy_command(
     harness: Optional[str] = typer.Option(
         None,
         "--harness",
-        help="Deploy a harness spec <name>.harness.json (cloud build+deploy) "
+        help="Deploy <name>.harness.json or harness.yaml (cloud build+deploy) "
         "from the current directory instead of agentkit.yaml.",
     ),
     region: Optional[str] = typer.Option(

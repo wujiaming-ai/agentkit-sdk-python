@@ -15,10 +15,10 @@
 """AgentKit CLI - ``add`` commands.
 
 ``agentkit add harness`` writes a harness configuration file
-``<name>.harness.json`` describing a deployable agent. The schema mirrors the
-attributes of the VeADK harness (model / tools / skills / system prompt /
-runtime, plus the knowledge-base and memory components and an optional OAuth2
-auth block), serialized as a layered JSON document::
+``<name>.harness.json`` or an existing ``harness.yaml`` describing a deployable
+agent. The schema mirrors the attributes of the VeADK harness (model / tools /
+skills / system prompt / runtime, plus the knowledge-base and memory components
+and an optional OAuth2 auth block), serialized as a layered document::
 
     {
       "harness_name": "my-harness",
@@ -34,15 +34,19 @@ auth block), serialized as a layered JSON document::
     }
 
 Re-running ``add harness`` for the same ``--name`` merges the supplied options
-into the existing file, so configuration can be built up incrementally.
+into the existing file, so configuration can be built up incrementally. If a
+``harness.yaml`` already exists in the target directory it is updated in place;
+otherwise the command writes ``<name>.harness.json``.
 """
 
 import json
 import re
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs, urlparse
 
 import typer
+import yaml
 from rich.console import Console
 
 console = Console()
@@ -62,6 +66,17 @@ _SHORT_TERM_MEMORY_TYPES = ("local", "sqlite", "mysql", "postgresql")
 
 # Harness name charset (matches `init`'s directory-name rule).
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_REGISTRY_QUERY_KEYS = {
+    "space_id",
+    "top_k",
+    "endpoint",
+    "version",
+    "service_name",
+    "region",
+    "timeout_ms",
+    "poll_interval_ms",
+}
+_REGISTRY_INT_KEYS = {"top_k", "timeout_ms", "poll_interval_ms"}
 
 
 def _split_csv(value: Optional[str]) -> Optional[list[str]]:
@@ -112,12 +127,156 @@ def _validate_choice(
         raise typer.Exit(1)
 
 
+def _parse_registry_int(key: str, value: object) -> object:
+    if key not in _REGISTRY_INT_KEYS:
+        return value
+    try:
+        return int(str(value))
+    except ValueError as exc:
+        raise ValueError(f"Registry param `{key}` must be an integer, got {value!r}.") from exc
+
+
+def _parse_registry_uri(value: str) -> dict:
+    """Parse the supported AgentKit A2A registry URI into a spec section."""
+    raw = value.strip()
+    if raw.lower() in {"", "none", "disabled", "off"}:
+        return {"type": ""}
+
+    parsed = urlparse(raw)
+    if (
+        parsed.scheme != "agentkit"
+        or parsed.netloc != "a2a-registry"
+        or parsed.path not in {"", "/"}
+    ):
+        raise ValueError(
+            "Unsupported registry URI. Currently only "
+            "`agentkit://a2a-registry?space_id=xxx&top_k=3` is supported."
+        )
+
+    query = {
+        key.replace("-", "_"): values[-1]
+        for key, values in parse_qs(parsed.query, keep_blank_values=False).items()
+        if values and values[-1] != ""
+    }
+    unknown = sorted(set(query) - _REGISTRY_QUERY_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Unsupported registry query param(s): {', '.join(unknown)}. "
+            f"Known: {', '.join(sorted(_REGISTRY_QUERY_KEYS))}"
+        )
+
+    section: dict = {"type": "agentkit_a2a"}
+    for key, raw_value in query.items():
+        section[key] = _parse_registry_int(key, raw_value)
+    return section
+
+
+def _set_registry_value(section: dict, key: str, value: object | None) -> None:
+    if value is not None:
+        section[key] = _parse_registry_int(key, value)
+
+
+def _apply_registry_config(
+    data: dict,
+    registry: Optional[str],
+    registry_space_id: Optional[str],
+    registry_top_k: Optional[int],
+    registry_endpoint: Optional[str],
+    registry_version: Optional[str],
+    registry_service_name: Optional[str],
+    registry_region: Optional[str],
+    registry_timeout_ms: Optional[int],
+    registry_poll_interval_ms: Optional[int],
+) -> None:
+    has_registry_update = any(
+        value is not None
+        for value in [
+            registry,
+            registry_space_id,
+            registry_top_k,
+            registry_endpoint,
+            registry_version,
+            registry_service_name,
+            registry_region,
+            registry_timeout_ms,
+            registry_poll_interval_ms,
+        ]
+    )
+    if not has_registry_update:
+        return
+
+    section = data.get("registry")
+    if not isinstance(section, dict):
+        section = {}
+
+    if registry is not None:
+        section.update(_parse_registry_uri(registry))
+
+    _set_registry_value(section, "space_id", registry_space_id)
+    _set_registry_value(section, "top_k", registry_top_k)
+    _set_registry_value(section, "endpoint", registry_endpoint)
+    _set_registry_value(section, "version", registry_version)
+    _set_registry_value(section, "service_name", registry_service_name)
+    _set_registry_value(section, "region", registry_region)
+    _set_registry_value(section, "timeout_ms", registry_timeout_ms)
+    _set_registry_value(section, "poll_interval_ms", registry_poll_interval_ms)
+
+    if section.get("type") != "":
+        section["type"] = "agentkit_a2a"
+
+    if section.get("type") == "agentkit_a2a" and not section.get("space_id"):
+        raise ValueError(
+            "Registry space_id is required. Use "
+            '`--registry "agentkit://a2a-registry?space_id=xxx"` '
+            "or `--registry-space-id xxx`."
+        )
+
+    data["registry"] = section
+
+
+def _resolve_harness_target(directory: str, name: str) -> tuple[Path, str]:
+    """Choose the existing harness spec to update, defaulting to JSON."""
+    root = Path(directory).resolve()
+    json_path = root / f"{name}.harness.json"
+    yaml_path = root / "harness.yaml"
+    yml_path = root / "harness.yml"
+    if json_path.exists():
+        return json_path, "json"
+    if yaml_path.exists():
+        return yaml_path, "yaml"
+    if yml_path.exists():
+        return yml_path, "yaml"
+    return json_path, "json"
+
+
+def _load_spec(path: Path, file_format: str) -> dict:
+    if not path.is_file():
+        return {}
+    if file_format == "yaml":
+        return yaml.safe_load(path.read_text()) or {}
+    return json.loads(path.read_text())
+
+
+def _write_spec(path: Path, file_format: str, data: dict) -> None:
+    if file_format == "yaml":
+        path.write_text(
+            yaml.safe_dump(
+                data,
+                sort_keys=False,
+                allow_unicode=True,
+                default_flow_style=None,
+            )
+        )
+        return
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
 @add_app.command("harness")
 def harness_command(
     name: str = typer.Option(
         ...,
         "--name",
-        help="Harness name; the config is written to <name>.harness.json.",
+        help="Harness name; writes <name>.harness.json or updates harness.yaml.",
     ),
     # --- core agent parameters ----------------------------------------------
     system_prompt: Optional[str] = typer.Option(
@@ -134,6 +293,53 @@ def harness_command(
     ),
     runtime: Optional[str] = typer.Option(
         None, "--runtime", help=f"Agent runtime backend ({' | '.join(_RUNTIMES)})."
+    ),
+    structured_tool_calls: Optional[bool] = typer.Option(
+        None,
+        "--structured-tool-calls/--no-structured-tool-calls",
+        help="Ask the model to return executable structured tool calls.",
+    ),
+    include_tools_every_turn: Optional[bool] = typer.Option(
+        None,
+        "--include-tools-every-turn/--reuse-tool-context",
+        help="Include tool definitions on every model turn.",
+    ),
+    registry: Optional[str] = typer.Option(
+        None,
+        "--registry",
+        help='AgentKit A2A registry URI, e.g. "agentkit://a2a-registry?space_id=xxx&top_k=3".',
+    ),
+    registry_space_id: Optional[str] = typer.Option(
+        None, "--registry-space-id", help="AgentKit A2A SpaceId."
+    ),
+    registry_top_k: Optional[int] = typer.Option(
+        None,
+        "--registry-top-k",
+        help="Number of candidate AgentCards to retrieve from the registry.",
+    ),
+    registry_endpoint: Optional[str] = typer.Option(
+        None, "--registry-endpoint", help="AgentKit OpenAPI endpoint for A2A registry."
+    ),
+    registry_version: Optional[str] = typer.Option(
+        None, "--registry-version", help="AgentKit OpenAPI version for A2A registry."
+    ),
+    registry_service_name: Optional[str] = typer.Option(
+        None,
+        "--registry-service-name",
+        help="AgentKit OpenAPI service name for A2A registry.",
+    ),
+    registry_region: Optional[str] = typer.Option(
+        None, "--registry-region", help="AgentKit OpenAPI region."
+    ),
+    registry_timeout_ms: Optional[int] = typer.Option(
+        None,
+        "--registry-timeout-ms",
+        help="A2A registry request / polling timeout in milliseconds.",
+    ),
+    registry_poll_interval_ms: Optional[int] = typer.Option(
+        None,
+        "--registry-poll-interval-ms",
+        help="A2A task polling interval in milliseconds.",
     ),
     # --- component backend types --------------------------------------------
     knowledgebase_type: Optional[str] = typer.Option(
@@ -237,15 +443,18 @@ def harness_command(
         None, "--allowed-id", help="Comma-separated allowed client IDs for OAuth2/JWT."
     ),
     directory: str = typer.Option(
-        ".", "--directory", help="Directory to write <name>.harness.json into."
+        ".",
+        "--directory",
+        help="Directory to write <name>.harness.json into, or update harness.yaml in.",
     ),
 ):
-    """Create or update a harness config file ``<name>.harness.json``.
+    """Create or update a harness config file.
 
     Each option SETS its value; ``--tools`` / ``--skills`` / ``--allowed-id``
     take comma-separated lists. Connection params are written under their
     component section alongside its ``type``. Re-running for the same ``--name``
-    merges options into the existing file.
+    merges options into the existing file. Existing ``harness.yaml`` files are
+    updated in place; otherwise ``<name>.harness.json`` is written.
     """
     if not _NAME_RE.match(name):
         console.print(
@@ -263,15 +472,14 @@ def harness_command(
         "--short-term-memory-type", short_term_memory_type, _SHORT_TERM_MEMORY_TYPES
     )
 
-    target = Path(directory).resolve() / f"{name}.harness.json"
+    target, file_format = _resolve_harness_target(directory, name)
     if target.exists() and not target.is_file():
         console.print(f"[red]Error: '{target}' exists but is not a file.[/red]")
         raise typer.Exit(1)
 
     # Start from the existing file (merge) or a minimal default scaffold.
-    if target.is_file():
-        data = json.loads(target.read_text())
-    else:
+    data = _load_spec(target, file_format)
+    if not data:
         data = {
             "harness_name": name,
             "runtime": "adk",
@@ -287,6 +495,10 @@ def harness_command(
         data["system_prompt"] = system_prompt
     if runtime is not None:
         data["runtime"] = runtime
+    if structured_tool_calls is not None:
+        data["structured_tool_calls"] = structured_tool_calls
+    if include_tools_every_turn is not None:
+        data["include_tools_every_turn"] = include_tools_every_turn
     tools_list = _split_csv(tools)
     if tools_list is not None:
         data["tools"] = tools_list
@@ -354,8 +566,25 @@ def harness_command(
             auth["allowed_ids"] = allowed_ids
         data["auth"] = auth
 
+    try:
+        _apply_registry_config(
+            data,
+            registry,
+            registry_space_id,
+            registry_top_k,
+            registry_endpoint,
+            registry_version,
+            registry_service_name,
+            registry_region,
+            registry_timeout_ms,
+            registry_poll_interval_ms,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
     _prune(data)
-    target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    _write_spec(target, file_format, data)
     console.print(f"[green]✓ Wrote harness config: {target}[/green]")
 
 

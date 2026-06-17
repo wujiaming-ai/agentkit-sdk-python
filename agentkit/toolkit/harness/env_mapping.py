@@ -14,9 +14,9 @@
 
 """Convert a layered harness spec into the env vars the runtime reads.
 
-A ``<name>.harness.json`` spec keeps each component self-contained — a
-component's backend ``type`` and its connection params live together, which is
-the most readable layout for users::
+A harness spec (``<name>.harness.json`` or ``harness.yaml``) keeps each
+component self-contained — a component's backend ``type`` and its connection
+params live together, which is the most readable layout for users::
 
     long_term_memory:
       type: viking
