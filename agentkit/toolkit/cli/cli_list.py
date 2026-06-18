@@ -117,6 +117,7 @@ def list_harness_command(
         ("RuntimeId", "RuntimeId", "cyan"),
         ("Name", "Name", "white"),
         ("Status", "Status", "green"),
+        ("CurrentVersionNumber", "Version", "blue"),
         ("ProjectName", "ProjectName", "yellow"),
         ("UpdatedAt", "UpdatedAt", "magenta"),
     ]

@@ -26,12 +26,13 @@ from agentkit.toolkit.harness.deploy import HARNESS_TAG_KEY, HARNESS_TAG_VALUE
 runner = CliRunner()
 
 
-def _runtime(runtime_id, name, *, tags):
+def _runtime(runtime_id, name, *, tags, version=1):
     return rt.AgentKitRuntimesForListRuntimes.model_validate(
         {
             "RuntimeId": runtime_id,
             "Name": name,
             "Status": "Ready",
+            "CurrentVersionNumber": version,
             "Tags": [{"Key": k, "Value": v} for k, v in tags],
         }
     )
@@ -111,7 +112,7 @@ def test_list_harness_quiet_prints_only_ids(monkeypatch):
 def test_list_harness_json_output(monkeypatch):
     _patch_client(
         monkeypatch,
-        [_runtime("rt-harness", "my-harness", tags=[_HARNESS_TAG])],
+        [_runtime("rt-harness", "my-harness", tags=[_HARNESS_TAG], version=3)],
     )
 
     result = runner.invoke(app, ["list", "harness", "--output", "json"])
@@ -119,6 +120,20 @@ def test_list_harness_json_output(monkeypatch):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert [r["RuntimeId"] for r in data] == ["rt-harness"]
+    assert data[0]["CurrentVersionNumber"] == 3
+
+
+def test_list_harness_table_shows_version(monkeypatch):
+    _patch_client(
+        monkeypatch,
+        [_runtime("rt-harness", "my-harness", tags=[_HARNESS_TAG], version=7)],
+    )
+
+    result = runner.invoke(app, ["list", "harness"])
+
+    assert result.exit_code == 0, result.output
+    assert "Version" in result.output
+    assert "7" in result.output
 
 
 def test_list_harness_follows_pagination(monkeypatch):
