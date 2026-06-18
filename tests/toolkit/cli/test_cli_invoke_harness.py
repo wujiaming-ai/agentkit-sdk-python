@@ -585,8 +585,8 @@ def test_default_protocol_is_run_sse_with_random_session(tmp_path, monkeypatch):
     assert sess_call["url"].endswith(f"/sessions/{sid}")
 
 
-def test_run_sse_renders_thinking_then_answer(tmp_path, monkeypatch):
-    """Reasoning streams under a 思考中 header; the answer under 📝 Response."""
+def test_run_sse_hides_reasoning_shows_answer(tmp_path, monkeypatch):
+    """Reasoning (thought) stays behind the spinner; only the answer is printed."""
     _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
     sse = [
         'data: {"content":{"parts":[{"text":"let me think","thought":true}]},"partial":true}',
@@ -610,11 +610,8 @@ def test_run_sse_renders_thinking_then_answer(tmp_path, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     out = result.output
-    # Reasoning is shown (not dropped) and precedes the answer.
-    assert "思考中" in out
-    assert "let me think" in out
     assert "FINAL" in out
-    assert out.index("let me think") < out.index("FINAL")
+    assert "let me think" not in out  # reasoning is not dumped to the user
 
 
 def test_harness_invalid_protocol_fails(tmp_path):

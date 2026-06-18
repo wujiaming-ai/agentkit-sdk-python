@@ -726,58 +726,58 @@ def _harness_run_sse(
         )
         raise typer.Exit(1)
 
-    def _split_parts(event: dict) -> tuple[str, str]:
-        # Separate the model's answer text from its "thought" (reasoning) text.
+    def _answer_text(event: dict) -> str:
+        # Only the answer text; the model's "thought" (reasoning) parts stay hidden
+        # behind the thinking spinner.
         parts = (event.get("content") or {}).get("parts") or []
-        answer = thought = ""
-        for p in parts:
-            if not (isinstance(p, dict) and p.get("text")):
-                continue
-            if p.get("thought"):
-                thought += p["text"]
-            else:
-                answer += p["text"]
-        return answer, thought
+        return "".join(
+            p["text"]
+            for p in parts
+            if isinstance(p, dict) and p.get("text") and not p.get("thought")
+        )
 
     streamed = []
     final_answer = ""
-    thinking_open = False  # streaming reasoning under the "🤔 思考中" header
-    answer_open = False  # the "📝 Response:" header has been printed
-    for line in resp.iter_lines(decode_unicode=True):
-        if not line:
-            continue
-        if raw:
-            print(line)  # builtin print: no rich wrapping/markup on raw JSON
-            continue
-        event = _normalize_stream_event(line)
-        if not isinstance(event, dict):
-            continue
-        if event.get("error"):
-            console.print(f"\n[red]Error: {event['error']}[/red]")
-            continue
-        answer, thought = _split_parts(event)
-        # `partial=False` is the final aggregate (repeats everything) — keep it as
-        # a fallback but don't print it; the partial events stream answer deltas.
-        if event.get("partial") is False:
-            final_answer = answer or final_answer
-            continue
-        # Reasoning streams dim/grey under its own header, so the wait isn't blank.
-        if thought and not answer_open:
-            if not thinking_open:
-                console.print("[dim]🤔 思考中…[/dim]")
-                thinking_open = True
-            console.print(thought, end="", style="dim")
-        if answer:
-            if not answer_open:
-                if thinking_open:
-                    console.print("")  # close the reasoning block
-                console.print("[cyan]📝 Response:[/cyan]")
-                answer_open = True
-            console.print(answer, end="", style="green")
-            streamed.append(answer)
+    answer_open = False  # first answer token seen → spinner stopped, reply started
+    # A spinner covers the wait (model latency + reasoning) until the answer starts.
+    status = None if raw else console.status("thinking", spinner="dots")
+    if status is not None:
+        status.start()
+    try:
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            if raw:
+                print(line)  # builtin print: no rich wrapping/markup on raw JSON
+                continue
+            event = _normalize_stream_event(line)
+            if not isinstance(event, dict):
+                continue
+            if event.get("error"):
+                if status is not None and not answer_open:
+                    status.stop()
+                console.print(f"\n[red]Error: {event['error']}[/red]")
+                continue
+            answer = _answer_text(event)
+            # `partial=False` is the final aggregate (repeats everything) — keep it
+            # as a fallback but don't print it; partial events stream the deltas.
+            if event.get("partial") is False:
+                final_answer = answer or final_answer
+                continue
+            if answer:
+                if not answer_open:
+                    if status is not None:
+                        status.stop()  # leave the thinking phase
+                    console.print("")  # blank line before the reply
+                    answer_open = True
+                console.print(answer, end="", style="green")
+                streamed.append(answer)
+    finally:
+        if status is not None and not answer_open:
+            status.stop()
 
     if not streamed and final_answer:
-        console.print("[cyan]📝 Response:[/cyan]")
+        console.print("")
         console.print(final_answer, end="", style="green")
     console.print("")
     return "".join(streamed) or final_answer
