@@ -634,14 +634,20 @@ _HARNESS_RUN_SSE_APP = "harness"
 
 
 def _harness_run_sse(
-    *, base_url: str, token: str, prompt: str, session_id: str, raw: bool
+    *,
+    base_url: str,
+    token: str,
+    prompt: str,
+    session_id: str,
+    overrides: dict,
+    raw: bool,
 ) -> Any:
     """Invoke a deployed harness via the ADK ``/run_sse`` endpoint (streaming).
 
     app_name is the fixed ``"harness"``; user_id is a freshly generated random id
     (a temporary placeholder until real identity wiring); session_id is the
-    caller's. Per-call harness overrides are not supported on this path — it hits
-    the base agent.
+    caller's. When ``overrides`` is non-empty it is sent as the ``harness`` field
+    so the runtime streams a spawned (overridden) agent; otherwise the base agent.
     """
     import requests
 
@@ -668,13 +674,16 @@ def _harness_run_sse(
         )
         raise typer.Exit(1)
 
-    body = {
+    body: dict[str, Any] = {
         "app_name": app_name,
         "user_id": user_id,
         "session_id": session_id,
         "new_message": {"role": "user", "parts": [{"text": prompt}]},
         "streaming": True,
     }
+    if overrides:
+        body["harness"] = overrides
+        console.print(f"[blue]Using one-time overrides: {overrides}[/blue]")
     try:
         resp = requests.post(
             f"{base_url}/run_sse",
@@ -863,18 +872,21 @@ def harness_command(
         token = entry.get("key") or ""
 
     if protocol == "run_sse":
-        # run_sse hits the base agent over ADK's streaming endpoint; the
-        # /harness/invoke-only knobs below do not apply.
-        if any(v is not None for v in (system_prompt, model_name, tools, skills, runtime, max_llm_calls)):
+        # run_sse supports the same overrides (sent as the `harness` field); only
+        # --max-llm-calls is invoke-only (not part of the ADK run_sse request).
+        if max_llm_calls is not None:
             console.print(
-                "[yellow]Note: overrides / --max-llm-calls are ignored with "
-                "--protocol run_sse (it invokes the base agent).[/yellow]"
+                "[yellow]Note: --max-llm-calls is ignored with --protocol "
+                "run_sse.[/yellow]"
             )
         return _harness_run_sse(
             base_url=base_url,
             token=token,
             prompt=message,
             session_id=session_id,
+            overrides=build_harness_overrides(
+                system_prompt, model_name, tools, skills, runtime
+            ),
             raw=raw,
         )
 

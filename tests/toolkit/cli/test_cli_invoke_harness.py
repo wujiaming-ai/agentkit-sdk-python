@@ -438,9 +438,51 @@ def test_harness_run_sse_streams_answer(tmp_path, monkeypatch):
     assert run_call["json"]["app_name"] == "harness"  # fixed
     assert run_call["json"]["session_id"] == "s-1"  # caller-provided
     assert run_call["json"]["user_id"].startswith("u-")  # random, CLI-generated
+    assert "harness" not in run_call["json"]  # no overrides passed
 
     sess_call = next(c for c in calls if "/sessions/" in c["url"])
     assert sess_call["url"] == "https://x/apps/harness/users/" + run_call["json"]["user_id"] + "/sessions/s-1"
+
+
+def test_harness_run_sse_sends_overrides(tmp_path, monkeypatch):
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    calls = []
+    sse = ['data: {"content":{"parts":[{"text":"PINEAPPLE"}]},"partial":true}']
+
+    class _SSEResp:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(sse)
+
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+        calls.append({"url": url, "json": json})
+        return _SSEResp() if url.endswith("/run_sse") else _FakeResponse({}, 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = _run_harness(
+        [
+            "first",
+            "x",
+            "--directory",
+            str(tmp_path),
+            "--protocol",
+            "run_sse",
+            "--system-prompt",
+            "Reply PINEAPPLE.",
+            "--tools",
+            "web_search",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    run_call = next(c for c in calls if c["url"].endswith("/run_sse"))
+    # Overrides are sent as the `harness` field (mirrors HarnessOverrides shape).
+    assert run_call["json"]["harness"] == {
+        "system_prompt": "Reply PINEAPPLE.",
+        "tools": "web_search",
+    }
 
 
 def test_harness_invalid_protocol_fails(tmp_path):
