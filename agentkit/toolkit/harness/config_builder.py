@@ -22,12 +22,18 @@ def build_agentkit_config(
     region: str,
     envs: Dict[str, str],
     auth: Optional[Dict[str, Any]] = None,
+    runtime_id: str = "Auto",
 ) -> Dict[str, Any]:
     """Build the cloud AgentKit launch config dict (auto-provision).
 
     Mirrors the structure ``agentkit init`` produces for ``launch_type: cloud``.
     The ``{{account_id}}`` / ``{{timestamp}}`` templates are resolved by AgentKit
     at deploy time and are passed through literally.
+
+    ``runtime_id`` defaults to ``"Auto"`` (create a new runtime). Passing an
+    existing runtime id makes the deploy update that runtime in place (the runner
+    routes a real id to ``UpdateRuntime``, which the platform releases as a new
+    version).
 
     When ``auth`` (a normalized ``{discovery_url, allowed_ids}`` block) is given,
     the runtime is gated by OAuth2/JWT (``custom_jwt``); otherwise it keeps the
@@ -45,7 +51,7 @@ def build_agentkit_config(
         "build_timeout": 3600,
         "cp_workspace_name": "agentkit-cli-workspace",
         "cp_pipeline_name": "Auto",
-        "runtime_id": "Auto",
+        "runtime_id": runtime_id,
         "runtime_name": runtime_name,
         "runtime_role_name": "Auto",
     }

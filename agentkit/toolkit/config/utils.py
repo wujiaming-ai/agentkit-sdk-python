@@ -82,12 +82,25 @@ def load_veadk_yaml_file(project_dir: Path) -> Dict[str, str]:
         return {}
 
 
+# Opt-in denylist of env keys to drop from the veADK-compat (.env / config.yaml)
+# layer before it is merged into a runtime's uploaded environment. Empty by
+# default (no-op). A deploy flow may populate it (scoped, restored afterwards) to
+# keep deploy-only secrets in a local `.env` from leaking into the cloud runtime;
+# e.g. harness deploy excludes the Volcengine deploy credentials here. Compared
+# case-insensitively. Higher-priority sources (agentkit.yaml runtime_envs) are
+# unaffected, so a value explicitly set there still reaches the runtime.
+COMPAT_ENV_EXCLUDE: set = set()
+
+
 def load_compat_config_files(project_dir: Optional[Path] = None) -> Dict[str, str]:
     """Load compatibility configuration files (.env and veADK config.yaml).
 
     This function loads external configuration files for veADK compatibility:
     1. Load standard .env file if exists (higher priority)
     2. Load veADK config.yaml file if exists and flatten nested structure (lower priority)
+
+    Keys listed in :data:`COMPAT_ENV_EXCLUDE` are dropped from the result (used to
+    keep deploy-only credentials out of the uploaded runtime environment).
 
     Args:
         project_dir: Project directory to search for files. If None, uses current working directory.
@@ -101,6 +114,10 @@ def load_compat_config_files(project_dir: Optional[Path] = None) -> Dict[str, st
     veadk_envs = {}
     veadk_envs.update(load_veadk_yaml_file(project_dir))
     veadk_envs.update(load_dotenv_file(project_dir))
+
+    if COMPAT_ENV_EXCLUDE:
+        excluded = {k.upper() for k in COMPAT_ENV_EXCLUDE}
+        veadk_envs = {k: v for k, v in veadk_envs.items() if k.upper() not in excluded}
 
     return veadk_envs
 

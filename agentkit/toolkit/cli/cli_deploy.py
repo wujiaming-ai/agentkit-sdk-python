@@ -15,7 +15,7 @@
 """AgentKit CLI - Deploy command implementation."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Dict, Optional
 
 import typer
 from rich.console import Console
@@ -23,6 +23,17 @@ from rich.console import Console
 # Note: Avoid importing heavy packages at the top to keep CLI startup fast
 
 console = Console()
+
+
+def _prompt_harness_update(info: Dict) -> bool:
+    """Interactive [y/N] confirmation to update an existing same-name harness."""
+    version = info.get("version")
+    version_label = f"v{version}" if version is not None else "unknown"
+    return typer.confirm(
+        f"Harness '{info['name']}' already exists (current version "
+        f"{version_label}). Update it to a new version?",
+        default=False,
+    )
 
 
 def deploy_command(
@@ -52,6 +63,12 @@ def deploy_command(
         "--allowed-id",
         help="Comma-separated allowed client IDs for OAuth2/JWT auth (harness deploy).",
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Harness deploy: update an existing same-name harness without prompting.",
+    ),
 ):
     """Deploy the Agent to target environment."""
     from agentkit.toolkit.executors import DeployExecutor
@@ -66,6 +83,7 @@ def deploy_command(
             secret_key=volcengine_secret_key,
             discovery_url=discovery_url,
             allowed_id=allowed_id,
+            assume_yes=yes,
         )
         return
 
@@ -107,9 +125,12 @@ def _deploy_harness(
     secret_key,
     discovery_url,
     allowed_id,
+    assume_yes: bool = False,
 ):
     """Deploy a harness spec <name>.harness.json from the current directory."""
-    from agentkit.toolkit.sdk import deploy_harness
+    import sys
+
+    from agentkit.toolkit.sdk import deploy_harness, HarnessDeployAborted
     from agentkit.toolkit.cli.console_reporter import ConsoleReporter
     from agentkit.toolkit.context import ExecutionContext
 
@@ -117,6 +138,16 @@ def _deploy_harness(
 
     reporter = ConsoleReporter()
     ExecutionContext.set_reporter(reporter)
+
+    # Decide how a same-name harness collision is resolved:
+    #   --yes        -> update without prompting
+    #   tty          -> prompt [y/N]
+    #   non-tty      -> on_conflict=None, so deploy_harness fast-fails
+    on_conflict: Optional[Callable[[Dict], bool]] = None
+    if assume_yes:
+        on_conflict = lambda info: True  # noqa: E731
+    elif sys.stdin.isatty():
+        on_conflict = _prompt_harness_update
 
     # Surface fast-fail input/validation errors (missing spec, missing creds,
     # name collision) as a clean CLI error + exit code, not a raw traceback.
@@ -129,7 +160,11 @@ def _deploy_harness(
             discovery_url=discovery_url,
             allowed_id=allowed_id,
             reporter=reporter,
+            on_conflict=on_conflict,
         )
+    except HarnessDeployAborted:
+        console.print("[yellow]Harness deploy cancelled.[/yellow]")
+        return
     except (ValueError, FileNotFoundError, NotADirectoryError) as exc:
         console.print(f"[red]❌ Harness deploy failed: {exc}[/red]")
         raise typer.Exit(1)
