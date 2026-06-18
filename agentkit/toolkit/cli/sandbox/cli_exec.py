@@ -49,13 +49,13 @@ from agentkit.toolkit.cli.sandbox.session_create import (
 )
 from agentkit.toolkit.cli.sandbox.git_config import apply_git_config_to_session
 from agentkit.toolkit.cli.sandbox.model_config import ModelProviderType
+from agentkit.toolkit.cli.sandbox.tos_config import DEFAULT_TOS_LOCAL_PATH
 from agentkit.toolkit.cli.sandbox.tool_resolve import (
     SandboxToolType,
     find_tool_model_provider,
     get_remote_tool_model_provider,
 )
 from agentkit.toolkit.cli.sandbox.utils import (
-    DEFAULT_TOS_LOCAL_PATH,
     add_session_terminal_shell_id,
     build_terminal_ws_url,
     error,

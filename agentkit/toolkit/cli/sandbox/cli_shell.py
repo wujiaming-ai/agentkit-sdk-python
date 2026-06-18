@@ -31,9 +31,9 @@ from agentkit.toolkit.cli.sandbox.session_create import (
     ensure_sandbox_session,
 )
 from agentkit.toolkit.cli.sandbox.git_config import apply_git_config_to_session
+from agentkit.toolkit.cli.sandbox.tos_config import DEFAULT_TOS_LOCAL_PATH
 from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
 from agentkit.toolkit.cli.sandbox.utils import (
-    DEFAULT_TOS_LOCAL_PATH,
     SANDBOX_EXEC_TIMEOUT_SECONDS,
     build_exec_url,
     echo_json,

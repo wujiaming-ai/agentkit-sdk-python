@@ -43,6 +43,7 @@ from agentkit.toolkit.cli.sandbox.session_sync import (
     session_info_to_result,
     sync_remote_sessions,
 )
+from agentkit.toolkit.cli.sandbox.tos_config import build_session_tos_mount_points
 from agentkit.toolkit.cli.sandbox.tool_resolve import (
     DEFAULT_SANDBOX_TOOL_TYPE,
     resolve_sandbox_tool_id,
@@ -263,55 +264,6 @@ def _get_existing_remote_session(
     return _build_get_result(response, existing, session_id, tool_id)
 
 
-def _build_session_bucket_path(
-    bucket_path: object,
-    *,
-    tool_id: str,
-    session_id: str,
-) -> str:
-    base_path = bucket_path if isinstance(bucket_path, str) else ""
-    base_path = base_path.strip().rstrip("/")
-    if base_path.endswith("/default/default"):
-        base_path = base_path[: -len("/default/default")]
-    if not base_path:
-        base_path = "/sandbox-session"
-    if not base_path.startswith("/"):
-        base_path = f"/{base_path}"
-    return f"{base_path}/tool-{tool_id}/session-{session_id}/"
-
-
-def _build_session_tos_mount_points(
-    tool: tools_types.GetToolResponse,
-    *,
-    tool_id: str,
-    session_id: str,
-) -> list[tools_types.TosMountPointsItemForCreateSession] | None:
-    tos_mount_config = getattr(tool, "tos_mount_config", None)
-    if not tos_mount_config:
-        return None
-
-    mount_points = getattr(tos_mount_config, "mount_points", None) or []
-    result: list[tools_types.TosMountPointsItemForCreateSession] = []
-    for mount in mount_points:
-        bucket_name = getattr(mount, "bucket_name", None)
-        local_mount_path = getattr(mount, "local_mount_path", None)
-        if not bucket_name or not local_mount_path:
-            continue
-        result.append(
-            tools_types.TosMountPointsItemForCreateSession(
-                bucket_name=bucket_name,
-                bucket_path=_build_session_bucket_path(
-                    getattr(mount, "bucket_path", None),
-                    tool_id=tool_id,
-                    session_id=session_id,
-                ),
-                local_mount_path=local_mount_path,
-            )
-        )
-
-    return result or None
-
-
 def _create_session(
     client: AgentkitToolsClient,
     session_id: str,
@@ -326,7 +278,7 @@ def _create_session(
         ttl_unit="second",
         user_session_id=session_id,
         envs=envs,
-        tos_mount_points=_build_session_tos_mount_points(
+        tos_mount_points=build_session_tos_mount_points(
             tool,
             tool_id=tool_id,
             session_id=session_id,

@@ -38,7 +38,6 @@ SANDBOX_FILE_UPLOAD_ROUTE = "/v1/file/upload"
 SANDBOX_FILE_DOWNLOAD_ROUTE = "/v1/file/download"
 SANDBOX_FILE_LIST_ROUTE = "/v1/file/list"
 SANDBOX_WEB_ROUTE = "/vnc/index.html"
-DEFAULT_TOS_LOCAL_PATH = "/home/gem"
 SANDBOX_WEB_QUERY_PARAMS = (
     ("autoconnect", "true"),
     ("resize", "scale"),
@@ -53,13 +52,6 @@ _SESSION_STORE_THREAD_LOCK = threading.RLock()
 def error(message: str) -> NoReturn:
     typer.echo(f"Error: {message}", err=True)
     raise typer.Exit(1)
-
-
-def resolve_tos_mount_path(value: str | None) -> str:
-    resolved = (value or "").strip()
-    if not resolved:
-        error("--tos-mount must not be empty")
-    return resolved
 
 
 def echo_json(payload: object) -> None:
