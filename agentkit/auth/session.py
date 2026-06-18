@@ -77,6 +77,26 @@ def _effective_expiry(
     return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=duration_seconds)
 
 
+def _jwt_expired(token: str, skew_seconds: int) -> bool:
+    """True if a JWT is expired, within ``skew_seconds`` of expiry, or unreadable.
+
+    Reads only the ``exp`` claim (no signature check — the harness endpoint verifies
+    the signature; we just decide locally whether to refresh). An unparseable token or
+    a missing/invalid ``exp`` is treated as expired so we refresh rather than send a
+    token that will be rejected."""
+    try:
+        import jwt as _jwt
+
+        claims = _jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
+    except Exception:
+        return True
+    exp = claims.get("exp")
+    if not isinstance(exp, (int, float)):
+        return True
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    return now >= (exp - skew_seconds)
+
+
 @dataclass(frozen=True)
 class StsCredentials:
     """Short-lived Volcengine STS credentials."""
@@ -104,11 +124,17 @@ class AuthSession:
         refresh_token: str | None = None,
         sts: StsCredentials | None = None,
         duration_seconds: int = 3600,
+        id_token: str | None = None,
+        access_token: str | None = None,
     ) -> None:
         self.profile = profile
         self._refresh_token = refresh_token
         self._sts = sts
         self._duration = duration_seconds
+        # OIDC tokens kept for data-plane (JWT) auth — the id_token is the inbound
+        # credential for `agentkit invoke harness`; access_token is stored for parity.
+        self._id_token = id_token
+        self._access_token = access_token
         self._lock = threading.Lock()
 
     # -- persistence ----------------------------------------------------------
@@ -118,6 +144,8 @@ class AuthSession:
             "profile": self.profile.name,
             "issuer": self.profile.issuer,
             "refresh_token": self._refresh_token,
+            "id_token": self._id_token,
+            "access_token": self._access_token,
             "duration_seconds": self._duration,
             "sts": None
             if sts is None
@@ -151,6 +179,8 @@ class AuthSession:
             refresh_token=blob.get("refresh_token"),
             sts=sts,
             duration_seconds=int(blob.get("duration_seconds") or 3600),
+            id_token=blob.get("id_token"),
+            access_token=blob.get("access_token"),
         )
 
     # -- credentials ----------------------------------------------------------
@@ -180,6 +210,67 @@ class AuthSession:
             assert self._sts is not None
             return self._sts
 
+    # -- data-plane JWT (id_token) --------------------------------------------
+    def valid_id_token(self, *, skew_seconds: int = 60, force_refresh: bool = False) -> str:
+        """Return a currently-valid OIDC ``id_token`` for data-plane (JWT) auth.
+
+        Used by ``agentkit invoke harness`` as the inbound Bearer credential — it never
+        touches STS. Refreshes via the ``refresh_token`` (``grant_type=refresh_token`` at
+        the UserPool token endpoint) when the cached id_token is missing, within
+        ``skew_seconds`` of expiry, or when ``force_refresh`` is set (e.g. the harness
+        returned 401). Raises :class:`AuthError` pointing at ``agentkit login`` when no
+        refresh is possible.
+        """
+        with self._lock:
+            if not force_refresh and self._id_token and not _jwt_expired(self._id_token, skew_seconds):
+                return self._id_token
+            with _profile_file_lock(self.profile.name):
+                # Re-read under the lock to pick up any sibling's rotated refresh_token /
+                # refreshed STS — so we neither refresh with a stale refresh_token nor clobber
+                # a sibling's update when we save below.
+                blob = store.load_session(self.profile.name)
+                if blob:
+                    sibling = AuthSession.from_blob(self.profile, blob)
+                    self._refresh_token = sibling._refresh_token or self._refresh_token
+                    self._sts = sibling._sts or self._sts
+                    if not force_refresh and sibling._id_token and not _jwt_expired(sibling._id_token, skew_seconds):
+                        self._id_token = sibling._id_token
+                        self._access_token = sibling._access_token or self._access_token
+                        return self._id_token
+                self._refresh_id_token_locked()
+            assert self._id_token is not None
+            return self._id_token
+
+    def _refresh_id_token_locked(self) -> None:
+        if not self._refresh_token:
+            raise AuthError(
+                "no id_token and no refresh token available; re-login required.",
+                hint="run `agentkit login` to start a new browser session.",
+            )
+        from agentkit.auth.ssl_trust import harden_default_ssl_context
+
+        harden_default_ssl_context()
+        client = OAuthClient(self.profile.issuer, self.profile.client_id, scope=self.profile.scope)
+        try:
+            token = client.refresh(self._refresh_token)
+        except AuthError as exc:
+            raise AuthError(
+                "session refresh failed — the login has expired or was revoked.",
+                hint="run `agentkit login` to log in again.",
+            ) from exc
+        id_token = str(token.get("id_token") or "")
+        if not id_token:
+            raise AuthError(
+                "refresh did not return an id_token; re-login required.",
+                hint="ensure the OAuth scope includes 'openid' (OIDC requires an ID Token).",
+            )
+        self._id_token = id_token
+        if token.get("access_token"):
+            self._access_token = str(token["access_token"])
+        if token.get("refresh_token"):
+            self._refresh_token = str(token["refresh_token"])
+        self.save()
+
     def _renew_locked(self) -> None:
         if not self._refresh_token:
             raise AuthError(
@@ -199,6 +290,10 @@ class AuthSession:
                 "refresh did not return an id_token; re-login required.",
                 hint="ensure the OAuth scope includes 'openid' (OIDC requires an ID Token).",
             )
+        # Keep the freshly-issued OIDC tokens for data-plane (JWT) auth, not just STS.
+        self._id_token = id_token
+        if token.get("access_token"):
+            self._access_token = str(token["access_token"])
         # A rotated refresh token, if returned, must replace the old one.
         if token.get("refresh_token"):
             self._refresh_token = str(token["refresh_token"])

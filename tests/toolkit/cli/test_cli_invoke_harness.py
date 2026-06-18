@@ -16,12 +16,23 @@
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from agentkit.toolkit.cli.cli import app
 from agentkit.toolkit.cli import cli_invoke
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_login_home(monkeypatch, tmp_path):
+    """Keep harness tests from reading the developer's real ~/.agentkit login session.
+
+    Points AGENTKIT_HOME at a clean per-test dir so by default no login session exists
+    (the harness then uses the harness.json key). Tests that exercise the id_token path
+    create a session explicitly via _setup_login_session()."""
+    monkeypatch.setenv("AGENTKIT_HOME", str(tmp_path / "_agentkit_home"))
 
 
 def _write_registry(directory, mapping):
@@ -236,3 +247,142 @@ def test_bare_message_falls_back_to_run(monkeypatch):
     assert captured.get("config_dict") is None
     assert captured["config_file"] is not None
     assert captured["payload"] == {"prompt": "hello"}
+
+
+# --- data-plane JWT: harness invoke uses the `agentkit login` id_token --------
+
+
+def _make_id_token(exp_delta=3600, sub="u-alice"):
+    import datetime
+
+    import jwt
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    return jwt.encode({"sub": sub, "exp": int(now + exp_delta)}, "test-signing-secret-0123456789abcdef", algorithm="HS256")
+
+
+def _setup_login_session(monkeypatch, tmp_path, id_token, refresh_token="rt-1"):
+    """Create an active `agentkit login` session carrying ``id_token`` under a temp home."""
+    monkeypatch.setenv("AGENTKIT_HOME", str(tmp_path / "home"))
+    from agentkit.auth.profile import AuthProfile, save_profile, set_active_profile
+    from agentkit.auth.session import AuthSession
+
+    prof = AuthProfile(
+        name="default", issuer="https://userpool-x.example.com",
+        client_id="c1", role_trn="trn:iam::1:role/r",
+    )
+    save_profile(prof)
+    set_active_profile("default")
+    AuthSession(prof, refresh_token=refresh_token, id_token=id_token).save()
+    return prof
+
+
+def test_harness_invoke_uses_login_id_token_as_bearer(monkeypatch, tmp_path):
+    tok = _make_id_token()
+    _setup_login_session(monkeypatch, tmp_path, tok)
+    _write_registry(tmp_path, {"first": {"url": "https://h.example.com"}})  # no static key
+    captured = {}
+    _patch_post(monkeypatch, captured)
+    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert captured["headers"].get("Authorization") == f"Bearer {tok}"
+
+
+def test_harness_invoke_apikey_overrides_login_id_token(monkeypatch, tmp_path):
+    _setup_login_session(monkeypatch, tmp_path, _make_id_token())
+    _write_registry(tmp_path, {"first": {"url": "https://h.example.com"}})
+    captured = {}
+    _patch_post(monkeypatch, captured)
+    result = _run_harness(["first", "hi", "--directory", str(tmp_path), "--apikey", "explicit-key"])
+    assert result.exit_code == 0, result.output
+    assert captured["headers"].get("Authorization") == "Bearer explicit-key"
+
+
+def test_harness_invoke_refreshes_on_401_and_retries_once(monkeypatch, tmp_path):
+    tok1 = _make_id_token(sub="u1")
+    tok2 = _make_id_token(sub="u1-refreshed")
+    _setup_login_session(monkeypatch, tmp_path, tok1)
+    _write_registry(tmp_path, {"first": {"url": "https://h.example.com"}})
+
+    import agentkit.auth.session as sess_mod
+    monkeypatch.setattr("agentkit.auth.ssl_trust.harden_default_ssl_context", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sess_mod.OAuthClient, "refresh",
+        lambda self, rt: {"id_token": tok2, "refresh_token": "rt-2"},
+    )
+
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls.append(headers.get("Authorization"))
+        return _FakeResponse({"output": "ok"}, 401 if len(calls) == 1 else 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert calls == [f"Bearer {tok1}", f"Bearer {tok2}"]  # one refresh + one retry
+
+
+def test_harness_invoke_relogin_error_when_refresh_fails_on_expired(monkeypatch, tmp_path):
+    _setup_login_session(monkeypatch, tmp_path, _make_id_token(exp_delta=-10))  # already expired
+    _write_registry(tmp_path, {"first": {"url": "https://h.example.com"}})
+
+    import agentkit.auth.session as sess_mod
+    from agentkit.auth.errors import AuthError
+    monkeypatch.setattr("agentkit.auth.ssl_trust.harden_default_ssl_context", lambda *a, **k: None)
+
+    def boom(self, rt):
+        raise AuthError("token endpoint rejected the request")
+
+    monkeypatch.setattr(sess_mod.OAuthClient, "refresh", boom)
+    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "login" in result.output.lower()
+
+
+def test_harness_invoke_keyauth_uses_key_even_when_logged_in(monkeypatch, tmp_path):
+    # P1 guard: a key_auth harness ({"key": ...}) must use the static key even when logged
+    # in — a key_auth authorizer would reject an OIDC JWT.
+    _setup_login_session(monkeypatch, tmp_path, _make_id_token())
+    _write_registry(tmp_path, {"first": {"url": "https://h.example.com", "key": "ak", "runtime_id": "r-1"}})
+    captured = {}
+    _patch_post(monkeypatch, captured)
+    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert captured["headers"].get("Authorization") == "Bearer ak"
+
+
+def test_harness_invoke_custom_jwt_entry_uses_login_id_token(monkeypatch, tmp_path):
+    tok = _make_id_token()
+    _setup_login_session(monkeypatch, tmp_path, tok)
+    _write_registry(tmp_path, {"first": {
+        "url": "https://h.example.com", "runtime_id": "r-1", "auth_type": "custom_jwt",
+        "discovery_url": "https://up/.well-known/openid-configuration", "allowed_ids": ["c1"],
+    }})
+    captured = {}
+    _patch_post(monkeypatch, captured)
+    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert captured["headers"].get("Authorization") == f"Bearer {tok}"
+
+
+def test_harness_invoke_persistent_401_stops_after_one_retry(monkeypatch, tmp_path):
+    tok1 = _make_id_token(sub="u1")
+    tok2 = _make_id_token(sub="u1-refreshed")
+    _setup_login_session(monkeypatch, tmp_path, tok1)
+    _write_registry(tmp_path, {"first": {"url": "https://h.example.com"}})
+
+    import agentkit.auth.session as sess_mod
+    monkeypatch.setattr("agentkit.auth.ssl_trust.harden_default_ssl_context", lambda *a, **k: None)
+    monkeypatch.setattr(sess_mod.OAuthClient, "refresh", lambda self, rt: {"id_token": tok2, "refresh_token": "rt-2"})
+
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        calls.append(headers.get("Authorization"))
+        return _FakeResponse({"detail": "denied"}, 401)
+
+    monkeypatch.setattr("requests.post", fake_post)
+    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    assert result.exit_code == 1
+    assert len(calls) == 2  # original + exactly one refresh-retry, no third
+    assert "HTTP 401" in result.output

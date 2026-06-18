@@ -713,7 +713,37 @@ def harness_command(
         raise typer.Exit(1)
 
     invoke_url = entry["url"].rstrip("/") + "/harness/invoke"
-    token = apikey or entry.get("key") or ""
+
+    # Inbound credential selection is auth-type aware — the registry records how each
+    # harness was deployed (harness/deploy.py _record_harness): a custom_jwt harness is
+    # {auth_type:"custom_jwt", no "key"}; a key_auth harness is {"key": ...}.
+    #   1. --apikey always wins (explicit manual override).
+    #   2. custom_jwt harness → the `agentkit login` id_token (OIDC JWT, auto-refreshed) —
+    #      the data plane's JWT path; refresh failure errors (re-login), never silent.
+    #   3. key_auth harness → the static "key"; a key_auth authorizer would reject a JWT,
+    #      so we never force the id_token onto it.
+    from agentkit.auth.errors import AuthError
+    from agentkit.auth.sso import load_session
+
+    is_jwt_harness = entry.get("auth_type") == "custom_jwt" or not entry.get("key")
+    auth_session = None  # set only when the login id_token is the credential (enables 401 refresh)
+    token = apikey or ""
+    if not token and is_jwt_harness:
+        try:
+            auth_session = load_session()
+        except Exception:
+            auth_session = None
+        if auth_session is not None:
+            try:
+                token = auth_session.valid_id_token()
+            except AuthError as e:
+                console.print(f"[red]❌ {e}[/red]")
+                if getattr(e, "hint", None):
+                    console.print(f"[yellow]{e.hint}[/yellow]")
+                raise typer.Exit(1)
+    if not token:
+        token = entry.get("key") or ""
+
     req_headers = {"Content-Type": "application/json"}
     if token:
         req_headers["Authorization"] = f"Bearer {token}"
@@ -739,6 +769,18 @@ def harness_command(
 
     try:
         resp = requests.post(invoke_url, json=body, headers=req_headers, timeout=300)
+        # If the harness rejects a locally-valid JWT (clock skew, mid-flight rotation,
+        # server-side revocation), force one refresh and retry exactly once.
+        if resp.status_code == 401 and auth_session is not None and not apikey:
+            try:
+                token = auth_session.valid_id_token(force_refresh=True)
+            except AuthError as e:
+                console.print(f"[red]❌ session refresh failed: {e}[/red]")
+                if getattr(e, "hint", None):
+                    console.print(f"[yellow]{e.hint}[/yellow]")
+                raise typer.Exit(1)
+            req_headers["Authorization"] = f"Bearer {token}"
+            resp = requests.post(invoke_url, json=body, headers=req_headers, timeout=300)
     except requests.RequestException as e:
         console.print(f"[red]❌ Request to {invoke_url} failed: {e}[/red]")
         raise typer.Exit(1)

@@ -102,7 +102,15 @@ def login(
         account_id=account,
     )
     session = AuthSession(
-        prof, refresh_token=refresh_token, sts=sts, duration_seconds=duration_seconds
+        prof,
+        refresh_token=refresh_token,
+        sts=sts,
+        duration_seconds=duration_seconds,
+        # Persist the OIDC tokens so the data plane (`agentkit invoke harness`) can use
+        # the id_token as its inbound Bearer credential. Store the real id_token (not the
+        # access_token fallback used above for AssumeRoleWithOIDC).
+        id_token=token.get("id_token"),
+        access_token=token.get("access_token"),
     )
     session.save()
     # Mark this profile active so separate CLI invocations (e.g. `sandbox create`)
