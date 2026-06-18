@@ -667,10 +667,10 @@ def _harness_run_sse(
 ) -> Any:
     """Invoke a deployed harness via the ADK ``/run_sse`` endpoint (streaming).
 
-    app_name is the fixed ``"harness"``; user_id is a freshly generated random id
-    (a temporary placeholder until real identity wiring); session_id is the
-    caller's. When ``overrides`` is non-empty it is sent as the ``harness`` field
-    so the runtime streams a spawned (overridden) agent; otherwise the base agent.
+    app_name is the fixed ``"harness"``; user_id is the JWT ``sub`` when the token
+    is an OIDC id_token, else a random id; session_id is the caller's. When
+    ``overrides`` is non-empty it is sent as the ``harness`` field so the runtime
+    streams a spawned (overridden) agent; otherwise the base agent.
     """
     import requests
 
@@ -780,7 +780,9 @@ def harness_command(
         "agentkit_user", "--user-id", help="user_id for the run."
     ),
     session_id: str = typer.Option(
-        "agentkit_sample_session", "--session-id", help="session_id for the run."
+        None,
+        "--session-id",
+        help="session_id for the run (run_sse: random if unset).",
     ),
     max_llm_calls: int = typer.Option(
         None,
@@ -818,9 +820,9 @@ def harness_command(
         False, "--raw", help="Print the raw response (InvokeHarnessResponse / SSE)."
     ),
     protocol: str = typer.Option(
-        "invoke",
+        "run_sse",
         "--protocol",
-        help="Transport: 'invoke' (POST /harness/invoke) or 'run_sse' (ADK /run_sse).",
+        help="Transport: 'run_sse' (ADK /run_sse, default) or 'invoke' (POST /harness/invoke).",
     ),
 ) -> Any:
     """Invoke a deployed harness by name (resolved via the harness.json registry).
@@ -908,13 +910,15 @@ def harness_command(
             base_url=base_url,
             token=token,
             prompt=message,
-            session_id=session_id,
+            # No session given → mint a random one; creating it is idempotent.
+            session_id=session_id or f"s-{uuid.uuid4().hex[:12]}",
             overrides=build_harness_overrides(
                 system_prompt, model_name, tools, skills, runtime
             ),
             raw=raw,
         )
 
+    session_id = session_id or "agentkit_sample_session"
     invoke_url = base_url + "/harness/invoke"
     req_headers = {"Content-Type": "application/json"}
     if token:
