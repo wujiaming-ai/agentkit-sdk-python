@@ -15,7 +15,7 @@
 """Harness deploy support: flatten a layered harness spec and deploy it as a runtime."""
 
 from .config_builder import build_agentkit_config
-from .deploy import deploy_harness, load_harness_registry
+from .deploy import HarnessDeployAborted, deploy_harness, load_harness_registry
 from .env_mapping import to_runtime_env
 
 __all__ = [
@@ -23,4 +23,5 @@ __all__ = [
     "build_agentkit_config",
     "deploy_harness",
     "load_harness_registry",
+    "HarnessDeployAborted",
 ]

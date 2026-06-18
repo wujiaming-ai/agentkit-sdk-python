@@ -50,7 +50,7 @@ from .invoker import invoke
 from .lifecycle import launch, destroy
 from .status import status
 from .initializer import init_project, get_available_templates
-from ..harness import deploy_harness
+from ..harness import deploy_harness, HarnessDeployAborted
 
 # Import client, config and helpers
 from .client import AgentKitClient
@@ -78,6 +78,7 @@ __all__ = [
     "init_project",
     "get_available_templates",
     "deploy_harness",
+    "HarnessDeployAborted",
     # Client and Config
     "AgentKitClient",
     "AgentConfig",

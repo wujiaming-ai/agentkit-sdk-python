@@ -24,7 +24,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 from ..models import LifecycleResult
 from ..reporter import Reporter
@@ -42,6 +42,25 @@ _DEFAULT_HARNESS_NAME = "default"
 # harness` uses this exact key/value to recognize harness runtimes.
 HARNESS_TAG_KEY = "agentkit:agenttype"
 HARNESS_TAG_VALUE = "harness"
+
+# Volcengine deploy credentials: needed locally to authenticate the build/deploy,
+# but must never be uploaded into the cloud runtime's environment (the runtime
+# gets its Volcengine access from its IAM role). A harness's own `.env` carries
+# these for deploy; they are excluded from the runtime env upload (see
+# COMPAT_ENV_EXCLUDE). Credentials a harness genuinely needs at runtime come from
+# its spec instead, so they are not affected.
+_DEPLOY_CREDENTIAL_ENV_KEYS = {
+    "VOLCENGINE_ACCESS_KEY",
+    "VOLCENGINE_SECRET_KEY",
+    "VOLCENGINE_SESSION_TOKEN",
+    "VOLC_ACCESSKEY",
+    "VOLC_SECRETKEY",
+    "VOLC_SESSIONTOKEN",
+}
+
+
+class HarnessDeployAborted(Exception):
+    """Raised when the user declines to update an existing same-name harness."""
 
 
 def _resolve_auth(
@@ -122,16 +141,16 @@ def _record_harness(
     return path
 
 
-def _existing_runtime_ids(client, name: str) -> list:
-    """Return the ids of every runtime whose name equals ``name`` (all pages).
+def _find_runtimes_by_name(client, name: str) -> list:
+    """Return ``[{runtime_id, is_harness}]`` for every runtime named ``name``.
 
-    Used to fast-fail before a harness deploy: the harness config always sets
-    ``runtime_id: Auto`` (always create-new), so without this check re-deploying
-    would pile up duplicate same-name runtimes.
+    Scans all pages. ``is_harness`` is derived from the deploy-time harness tag on
+    the list item (no extra get_runtime call). Used to decide between create,
+    update, and fast-fail before a harness deploy.
     """
     from agentkit.sdk.runtime import types as rt_types
 
-    ids = []
+    matches = []
     next_token = None
     while True:
         resp = client.list_runtimes(
@@ -139,11 +158,25 @@ def _existing_runtime_ids(client, name: str) -> list:
         )
         for runtime in resp.agent_kit_runtimes or []:
             if runtime.name == name:
-                ids.append(runtime.runtime_id or "")
+                is_harness = any(
+                    tag.key == HARNESS_TAG_KEY and tag.value == HARNESS_TAG_VALUE
+                    for tag in (runtime.tags or [])
+                )
+                matches.append(
+                    {"runtime_id": runtime.runtime_id or "", "is_harness": is_harness}
+                )
         next_token = resp.next_token
         if not next_token:
             break
-    return ids
+    return matches
+
+
+def _get_runtime_version(client, runtime_id: str) -> Optional[int]:
+    """Return a runtime's current version number (None if unavailable)."""
+    from agentkit.sdk.runtime import types as rt_types
+
+    runtime = client.get_runtime(rt_types.GetRuntimeRequest(runtime_id=runtime_id))
+    return runtime.current_version_number
 
 
 def _load_harness_spec(path: Path) -> Dict[str, Any]:
@@ -166,6 +199,7 @@ def deploy_harness(
     discovery_url: Optional[str] = None,
     allowed_id: Optional[str] = None,
     reporter: Optional[Reporter] = None,
+    on_conflict: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> LifecycleResult:
     """Deploy a harness spec as an AgentKit runtime (cloud build, no local Docker).
 
@@ -174,6 +208,20 @@ def deploy_harness(
     directory must also contain the harness server ``Dockerfile``. On success the
     runtime is recorded in ``<path>/harness.json`` (keyed by ``name``).
 
+    Name-collision handling (a same-name runtime already exists):
+
+    * not a harness runtime, or more than one match -> fast-fail (``ValueError``);
+    * a single harness runtime -> if ``on_conflict`` is given, it is called with
+      ``{name, runtime_id, version}`` and must return ``True`` to update that
+      runtime in place (the platform releases a new version) or ``False`` to abort
+      (``HarnessDeployAborted``); if ``on_conflict`` is ``None`` (e.g. a
+      programmatic caller or a non-interactive CLI), it fast-fails.
+
+    Credentials note: a local ``.env`` is loaded for deploy auth, but the
+    Volcengine deploy credentials in it are NOT uploaded into the runtime
+    environment (the runtime authenticates via its IAM role); other ``.env`` keys
+    are still merged in.
+
     Args:
         name: Harness name; locates ``<name>.harness.json`` and names the runtime.
         path: Directory containing the spec and Dockerfile (default: cwd).
@@ -181,18 +229,22 @@ def deploy_harness(
         access_key / secret_key: Volcengine credentials (default: ``VOLCENGINE_*`` env).
         discovery_url / allowed_id: OAuth2/JWT overrides for the spec ``auth`` block.
         reporter: Progress reporter forwarded to the launch (default: silent).
+        on_conflict: Callback consulted when a single same-name harness exists;
+            returns True to update it, False to abort.
 
     Returns:
         LifecycleResult: the build+deploy result from ``sdk.launch``.
 
     Raises:
         NotADirectoryError / FileNotFoundError / ValueError: on invalid inputs
-        (fast-fail). Deployment failures are returned in ``LifecycleResult.error``.
+        (fast-fail). HarnessDeployAborted when the user declines an update.
+        Deployment failures are returned in ``LifecycleResult.error``.
     """
     # Heavy imports are lazy: this module is imported by `agentkit.toolkit.sdk`
     # at package init, and these pull in the runtime client / executors.
     from agentkit.toolkit.sdk.lifecycle import launch
     from agentkit.toolkit.models import PreflightMode
+    from agentkit.toolkit.config import utils as cfg_utils
     from agentkit.toolkit.config.utils import load_dotenv_file
     from agentkit.sdk.runtime import types as rt_types
     from agentkit.sdk.runtime.client import AgentkitRuntimeClient
@@ -227,20 +279,56 @@ def deploy_harness(
 
     resolved_region = region or os.getenv("VOLCENGINE_REGION") or "cn-beijing"
 
-    # Fast-fail on a name collision: the harness config sets `runtime_id: Auto`
-    # (always create-new), so deploying over an existing same-name runtime would
-    # silently create a duplicate. Refuse and let the user delete/rename first.
-    existing_ids = _existing_runtime_ids(
-        AgentkitRuntimeClient(region=resolved_region), runtime_name
-    )
-    if existing_ids:
+    # Resolve a name collision into a deploy mode. The harness config defaults to
+    # `runtime_id: Auto` (create new); an existing same-name harness can instead
+    # be updated in place (new version) after confirmation.
+    client = AgentkitRuntimeClient(region=resolved_region)
+    matches = _find_runtimes_by_name(client, runtime_name)
+    update_runtime_id = None
+    if len(matches) > 1:
+        ids = ", ".join(m["runtime_id"] for m in matches if m["runtime_id"])
         raise ValueError(
-            f"A runtime named '{runtime_name}' already exists "
-            f"(runtime_id: {', '.join(i for i in existing_ids if i)}). "
-            "Delete it or use a different harness name before deploying."
+            f"Multiple runtimes named '{runtime_name}' already exist "
+            f"(runtime_id: {ids}). Clean them up or use a different name."
         )
+    if matches:
+        match = matches[0]
+        if not match["is_harness"]:
+            raise ValueError(
+                f"'{runtime_name}' already exists but is not a harness application "
+                f"(missing {HARNESS_TAG_KEY}={HARNESS_TAG_VALUE} tag). "
+                "Refusing to update it."
+            )
+        existing_id = match["runtime_id"]
+        version = _get_runtime_version(client, existing_id)
+        version_label = f"v{version}" if version is not None else "unknown"
+        if reporter:
+            reporter.info(
+                f"Harness '{runtime_name}' already exists "
+                f"(runtime_id: {existing_id}, current version {version_label})."
+            )
+        if on_conflict is None:
+            raise ValueError(
+                f"A runtime named '{runtime_name}' already exists "
+                f"(runtime_id: {existing_id}, current version {version_label}). "
+                "Re-run interactively to update it, pass --yes, or use a "
+                "different name."
+            )
+        if not on_conflict(
+            {"name": runtime_name, "runtime_id": existing_id, "version": version}
+        ):
+            raise HarnessDeployAborted(
+                f"Update of harness '{runtime_name}' was declined."
+            )
+        update_runtime_id = existing_id
 
-    cfg = build_agentkit_config(runtime_name, resolved_region, runtime_envs, auth)
+    cfg = build_agentkit_config(
+        runtime_name,
+        resolved_region,
+        runtime_envs,
+        auth,
+        runtime_id=update_runtime_id or "Auto",
+    )
 
     # AgentKit's launch path exposes no hook for runtime tags, so tag the runtime
     # at creation by wrapping the SDK's create_runtime: every harness runtime is
@@ -256,10 +344,16 @@ def deploy_harness(
         ]
         return orig_create_runtime(self, request)
 
-    logger.info("Deploying harness runtime '%s' from %s", runtime_name, proj_dir)
+    action = "Updating" if update_runtime_id else "Deploying"
+    logger.info("%s harness runtime '%s' from %s", action, runtime_name, proj_dir)
     cwd = os.getcwd()
     os.chdir(proj_dir)
     AgentkitRuntimeClient.create_runtime = _create_runtime_with_harness_tag
+    # Keep deploy-only Volcengine credentials in the local .env out of the
+    # uploaded runtime environment (the compat layer auto-loads .env). Scoped to
+    # this launch and restored afterwards.
+    prev_exclude = cfg_utils.COMPAT_ENV_EXCLUDE
+    cfg_utils.COMPAT_ENV_EXCLUDE = set(prev_exclude) | _DEPLOY_CREDENTIAL_ENV_KEYS
     try:
         result = launch(
             config_dict=cfg,
@@ -268,6 +362,7 @@ def deploy_harness(
         )
     finally:
         AgentkitRuntimeClient.create_runtime = orig_create_runtime
+        cfg_utils.COMPAT_ENV_EXCLUDE = prev_exclude
         os.chdir(cwd)
 
     if not result.success:
@@ -280,7 +375,15 @@ def deploy_harness(
     meta = deploy_result.metadata if (deploy_result and deploy_result.metadata) else {}
     endpoint = deploy_result.endpoint_url if deploy_result else None
     apikey = meta.get("runtime_apikey")
-    runtime_id = meta.get("runtime_id")
+    runtime_id = meta.get("runtime_id") or update_runtime_id
+
+    # Echo the new version after an in-place update (the platform bumps it).
+    if update_runtime_id and reporter:
+        new_version = _get_runtime_version(client, update_runtime_id)
+        if new_version is not None:
+            reporter.success(
+                f"Harness '{runtime_name}' updated to version v{new_version}."
+            )
 
     if endpoint:
         _record_harness(
