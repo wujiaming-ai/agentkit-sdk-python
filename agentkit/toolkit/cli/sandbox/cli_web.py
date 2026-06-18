@@ -21,37 +21,28 @@ from typing import Optional
 
 import typer
 
-from agentkit.sdk.tools.client import AgentkitToolsClient
-from agentkit.toolkit.cli.sandbox.session_create import SANDBOX_TOOL_ID_ENV
-from agentkit.toolkit.cli.sandbox.session_sync import sync_remote_sessions
+from agentkit.toolkit.cli.sandbox.session_create import (
+    SANDBOX_TOOL_ID_ENV,
+    ensure_sandbox_session_with_status,
+)
 from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
 from agentkit.toolkit.cli.sandbox.utils import (
     build_web_url,
     echo_json,
     error,
-    find_session_result,
 )
 
 
-def _resolve_existing_session(
+def _resolve_web_session(
     *,
     session_id: str,
     tool_id: Optional[str],
-) -> dict[str, object]:
-    client = AgentkitToolsClient()
-    resolved_tool_id = sync_remote_sessions(
+) -> tuple[dict[str, object], bool]:
+    return ensure_sandbox_session_with_status(
         session_id=session_id,
         tool_id=tool_id,
-        tool_type=SandboxToolType.CODE_ENV,
-        client=client,
-        env_var_name=SANDBOX_TOOL_ID_ENV,
+        tool_type=SandboxToolType.CODE_ENV.value,
     )
-    result = find_session_result(session_id)
-    if result is None:
-        error(f"Sandbox session not found: {session_id}")
-    if resolved_tool_id and result.get("tool_id") != resolved_tool_id:
-        error(f"Sandbox session not found: {session_id}")
-    return result
 
 
 def web_command(
@@ -71,7 +62,7 @@ def web_command(
 ) -> None:
     """Return the browser URL for a sandbox session."""
     try:
-        session = _resolve_existing_session(
+        session, is_new = _resolve_web_session(
             session_id=session_id,
             tool_id=tool_id,
         )
@@ -92,5 +83,6 @@ def web_command(
             "url": url,
             "tool_id": session.get("tool_id"),
             "session_id": resolved_session_id,
+            "is_new": is_new,
         }
     )

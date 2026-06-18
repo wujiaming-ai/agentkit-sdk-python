@@ -382,13 +382,13 @@ def _confirm_session_after_create_start_fail(
     return None
 
 
-def ensure_sandbox_session(
+def ensure_sandbox_session_with_status(
     session_id: Optional[str] = None,
     tool_id: Optional[str] = None,
     tool_type: str = DEFAULT_SANDBOX_TOOL_TYPE,
     ttl: Optional[int] = None,
     envs: Optional[list[tools_types.EnvsItemForCreateSession]] = None,
-) -> dict[str, object]:
+) -> tuple[dict[str, object], bool]:
     resolved_session_id = session_id or str(uuid.uuid4())
     existing = find_session_result(resolved_session_id) if session_id else None
     client = AgentkitToolsClient()
@@ -422,7 +422,7 @@ def ensure_sandbox_session(
         )
         if result:
             save_session_result(result)
-            return result
+            return result, False
 
         synced_tool_id = sync_remote_sessions(
             session_id=resolved_session_id,
@@ -443,7 +443,7 @@ def ensure_sandbox_session(
             )
             if result:
                 save_session_result(result)
-                return result
+                return result, False
 
     result = _create_session(
         client,
@@ -453,4 +453,21 @@ def ensure_sandbox_session(
         envs=envs,
     )
     save_session_result(result)
+    return result, True
+
+
+def ensure_sandbox_session(
+    session_id: Optional[str] = None,
+    tool_id: Optional[str] = None,
+    tool_type: str = DEFAULT_SANDBOX_TOOL_TYPE,
+    ttl: Optional[int] = None,
+    envs: Optional[list[tools_types.EnvsItemForCreateSession]] = None,
+) -> dict[str, object]:
+    result, _is_new = ensure_sandbox_session_with_status(
+        session_id=session_id,
+        tool_id=tool_id,
+        tool_type=tool_type,
+        ttl=ttl,
+        envs=envs,
+    )
     return result
