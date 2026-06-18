@@ -16,6 +16,8 @@
 
 from pathlib import Path
 from typing import Optional, Any
+import base64
+import binascii
 import json
 import typer
 from typer.core import TyperGroup
@@ -633,6 +635,27 @@ def build_harness_overrides(
 _HARNESS_RUN_SSE_APP = "harness"
 
 
+def _user_id_from_token(token: str) -> str | None:
+    """Return the OIDC ``sub`` claim from a JWT bearer token, else ``None``.
+
+    A custom_jwt harness is called with an OIDC id_token whose ``sub`` is the
+    authenticated user's stable id — use it as the run's user_id so sessions are
+    tied to the real identity. A key_auth token is an opaque api key (not a JWT,
+    no ``sub``), so this returns ``None`` and the caller falls back to a random id.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None  # not a JWT (e.g. a key_auth api key)
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)  # restore base64 padding
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except (ValueError, binascii.Error):
+        return None  # malformed JWT payload → fall back to random
+    sub = claims.get("sub")
+    return sub if isinstance(sub, str) and sub else None
+
+
 def _harness_run_sse(
     *,
     base_url: str,
@@ -652,12 +675,14 @@ def _harness_run_sse(
     import requests
 
     app_name = _HARNESS_RUN_SSE_APP
-    user_id = f"u-{uuid.uuid4().hex[:12]}"
+    sub = _user_id_from_token(token)
+    user_id = sub or f"u-{uuid.uuid4().hex[:12]}"
+    user_id_origin = "jwt sub" if sub else "random"
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     console.print(
-        f"[blue]run_sse: app_name={app_name}, user_id={user_id} (random), "
+        f"[blue]run_sse: app_name={app_name}, user_id={user_id} ({user_id_origin}), "
         f"session_id={session_id}[/blue]"
     )
 

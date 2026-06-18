@@ -485,6 +485,65 @@ def test_harness_run_sse_sends_overrides(tmp_path, monkeypatch):
     }
 
 
+def _make_jwt(sub):
+    """Build an unsigned JWT whose payload carries the given ``sub`` claim."""
+    import base64
+
+    def _seg(obj):
+        raw = json.dumps(obj).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    return f"{_seg({'alg': 'none'})}.{_seg({'sub': sub})}.sig"
+
+
+def test_run_sse_user_id_from_jwt_sub(tmp_path, monkeypatch):
+    """With a JWT bearer token, user_id is the token's ``sub`` (not random)."""
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    calls = []
+    sse = ['data: {"content":{"parts":[{"text":"OK"}]},"partial":true}']
+
+    class _SSEResp:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(sse)
+
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+        calls.append({"url": url, "json": json})
+        return _SSEResp() if url.endswith("/run_sse") else _FakeResponse({}, 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    token = _make_jwt("user-abc-123")
+    result = _run_harness(
+        [
+            "first",
+            "hi",
+            "--directory",
+            str(tmp_path),
+            "--protocol",
+            "run_sse",
+            "--session-id",
+            "s-1",
+            "--apikey",
+            token,
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    run_call = next(c for c in calls if c["url"].endswith("/run_sse"))
+    assert run_call["json"]["user_id"] == "user-abc-123"
+    # Session is created under the same (sub-derived) user_id.
+    sess_call = next(c for c in calls if "/sessions/" in c["url"])
+    assert sess_call["url"] == "https://x/apps/harness/users/user-abc-123/sessions/s-1"
+
+
+def test_user_id_from_token_helper():
+    assert cli_invoke._user_id_from_token(_make_jwt("u-42")) == "u-42"
+    assert cli_invoke._user_id_from_token("opaque-api-key") is None
+    assert cli_invoke._user_id_from_token("") is None
+
+
 def test_harness_invalid_protocol_fails(tmp_path):
     _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
     result = _run_harness(
