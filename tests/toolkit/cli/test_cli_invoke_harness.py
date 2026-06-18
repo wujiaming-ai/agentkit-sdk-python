@@ -386,3 +386,67 @@ def test_harness_invoke_persistent_401_stops_after_one_retry(monkeypatch, tmp_pa
     assert result.exit_code == 1
     assert len(calls) == 2  # original + exactly one refresh-retry, no third
     assert "HTTP 401" in result.output
+
+
+# --- run_sse protocol --------------------------------------------------------
+
+
+def test_harness_run_sse_streams_answer(tmp_path, monkeypatch):
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    calls = []
+    sse_lines = [
+        'data: {"content":{"parts":[{"text":"KI"}],"role":"model"},"partial":true}',
+        'data: {"content":{"parts":[{"text":"WI"}],"role":"model"},"partial":true}',
+        # final aggregate repeats everything (incl. a thought part); must be skipped
+        'data: {"content":{"parts":[{"text":"reasoning","thought":true},'
+        '{"text":"KIWI"}],"role":"model"},"partial":false}',
+    ]
+
+    class _SSEResp:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(sse_lines)
+
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+        calls.append({"url": url, "json": json})
+        return _SSEResp() if url.endswith("/run_sse") else _FakeResponse({}, 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = _run_harness(
+        [
+            "first",
+            "hello",
+            "--directory",
+            str(tmp_path),
+            "--protocol",
+            "run_sse",
+            "--session-id",
+            "s-1",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    # Answer streamed from the deltas; thought text and the final aggregate are
+    # not double-printed.
+    assert "KIWI" in result.output
+    assert "reasoning" not in result.output
+
+    run_call = next(c for c in calls if c["url"].endswith("/run_sse"))
+    assert run_call["url"] == "https://x/run_sse"
+    assert run_call["json"]["app_name"] == "harness"  # fixed
+    assert run_call["json"]["session_id"] == "s-1"  # caller-provided
+    assert run_call["json"]["user_id"].startswith("u-")  # random, CLI-generated
+
+    sess_call = next(c for c in calls if "/sessions/" in c["url"])
+    assert sess_call["url"] == "https://x/apps/harness/users/" + run_call["json"]["user_id"] + "/sessions/s-1"
+
+
+def test_harness_invalid_protocol_fails(tmp_path):
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    result = _run_harness(
+        ["first", "hi", "--directory", str(tmp_path), "--protocol", "bogus"]
+    )
+    assert result.exit_code == 1
+    assert "must be 'invoke' or 'run_sse'" in result.output

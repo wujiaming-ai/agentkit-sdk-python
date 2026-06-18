@@ -627,6 +627,112 @@ def build_harness_overrides(
     return overrides
 
 
+# Fixed ADK app name for the run_sse path. The harness loader serves its single
+# agent under any app name, so a stable constant keeps the CLI decoupled from the
+# deployed HARNESS_NAME.
+_HARNESS_RUN_SSE_APP = "harness"
+
+
+def _harness_run_sse(
+    *, base_url: str, token: str, prompt: str, session_id: str, raw: bool
+) -> Any:
+    """Invoke a deployed harness via the ADK ``/run_sse`` endpoint (streaming).
+
+    app_name is the fixed ``"harness"``; user_id is a freshly generated random id
+    (a temporary placeholder until real identity wiring); session_id is the
+    caller's. Per-call harness overrides are not supported on this path — it hits
+    the base agent.
+    """
+    import requests
+
+    app_name = _HARNESS_RUN_SSE_APP
+    user_id = f"u-{uuid.uuid4().hex[:12]}"
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    console.print(
+        f"[blue]run_sse: app_name={app_name}, user_id={user_id} (random), "
+        f"session_id={session_id}[/blue]"
+    )
+
+    # ADK /run_sse requires an existing session; create it (ignore "exists").
+    session_url = f"{base_url}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+    try:
+        sr = requests.post(session_url, json={}, headers=headers, timeout=60)
+    except requests.RequestException as e:
+        console.print(f"[red]❌ Session create failed: {e}[/red]")
+        raise typer.Exit(1)
+    if sr.status_code not in (200, 400, 409):
+        console.print(
+            f"[red]❌ Session create HTTP {sr.status_code}: {sr.text[:300]}[/red]"
+        )
+        raise typer.Exit(1)
+
+    body = {
+        "app_name": app_name,
+        "user_id": user_id,
+        "session_id": session_id,
+        "new_message": {"role": "user", "parts": [{"text": prompt}]},
+        "streaming": True,
+    }
+    try:
+        resp = requests.post(
+            f"{base_url}/run_sse",
+            json=body,
+            headers=headers,
+            timeout=300,
+            stream=True,
+        )
+    except requests.RequestException as e:
+        console.print(f"[red]❌ run_sse request failed: {e}[/red]")
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        console.print(
+            f"[red]❌ run_sse HTTP {resp.status_code}: {resp.text[:500]}[/red]"
+        )
+        raise typer.Exit(1)
+
+    console.print("[cyan]📝 Response:[/cyan]")
+
+    def _answer_text(event: dict) -> str:
+        # Answer text parts only; drop model "thought" (reasoning) parts.
+        parts = (event.get("content") or {}).get("parts") or []
+        return "".join(
+            p["text"]
+            for p in parts
+            if isinstance(p, dict) and p.get("text") and not p.get("thought")
+        )
+
+    streamed = []
+    final_answer = ""
+    for line in resp.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+        if raw:
+            print(line)  # builtin print: no rich wrapping/markup on raw JSON
+            continue
+        event = _normalize_stream_event(line)
+        if not isinstance(event, dict):
+            continue
+        if event.get("error"):
+            console.print(f"\n[red]Error: {event['error']}[/red]")
+            continue
+        answer = _answer_text(event)
+        # `partial=False` is the final aggregate (repeats everything) — keep it as
+        # a fallback but don't print it; the partial events stream answer deltas.
+        if event.get("partial") is False:
+            final_answer = answer or final_answer
+            continue
+        if answer:
+            console.print(answer, end="", style="green")
+            streamed.append(answer)
+
+    if not streamed and final_answer:
+        console.print(final_answer, end="", style="green")
+    console.print("")
+    return "".join(streamed) or final_answer
+
+
 @invoke_app.command("harness")
 def harness_command(
     name: str = typer.Argument(
@@ -675,7 +781,12 @@ def harness_command(
         help="Bearer token override (e.g. OAuth JWT for custom_jwt harnesses).",
     ),
     raw: bool = typer.Option(
-        False, "--raw", help="Print the raw InvokeHarnessResponse JSON."
+        False, "--raw", help="Print the raw response (InvokeHarnessResponse / SSE)."
+    ),
+    protocol: str = typer.Option(
+        "invoke",
+        "--protocol",
+        help="Transport: 'invoke' (POST /harness/invoke) or 'run_sse' (ADK /run_sse).",
     ),
 ) -> Any:
     """Invoke a deployed harness by name (resolved via the harness.json registry).
@@ -712,7 +823,13 @@ def harness_command(
         )
         raise typer.Exit(1)
 
-    invoke_url = entry["url"].rstrip("/") + "/harness/invoke"
+    if protocol not in ("invoke", "run_sse"):
+        console.print(
+            f"[red]Error: --protocol must be 'invoke' or 'run_sse', got '{protocol}'.[/red]"
+        )
+        raise typer.Exit(1)
+
+    base_url = entry["url"].rstrip("/")
 
     # Inbound credential selection is auth-type aware — the registry records how each
     # harness was deployed (harness/deploy.py _record_harness): a custom_jwt harness is
@@ -722,6 +839,7 @@ def harness_command(
     #      the data plane's JWT path; refresh failure errors (re-login), never silent.
     #   3. key_auth harness → the static "key"; a key_auth authorizer would reject a JWT,
     #      so we never force the id_token onto it.
+    # Both transports (invoke and run_sse) share this resolution.
     from agentkit.auth.errors import AuthError
     from agentkit.auth.sso import load_session
 
@@ -744,6 +862,23 @@ def harness_command(
     if not token:
         token = entry.get("key") or ""
 
+    if protocol == "run_sse":
+        # run_sse hits the base agent over ADK's streaming endpoint; the
+        # /harness/invoke-only knobs below do not apply.
+        if any(v is not None for v in (system_prompt, model_name, tools, skills, runtime, max_llm_calls)):
+            console.print(
+                "[yellow]Note: overrides / --max-llm-calls are ignored with "
+                "--protocol run_sse (it invokes the base agent).[/yellow]"
+            )
+        return _harness_run_sse(
+            base_url=base_url,
+            token=token,
+            prompt=message,
+            session_id=session_id,
+            raw=raw,
+        )
+
+    invoke_url = base_url + "/harness/invoke"
     req_headers = {"Content-Type": "application/json"}
     if token:
         req_headers["Authorization"] = f"Bearer {token}"
