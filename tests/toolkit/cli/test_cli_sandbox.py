@@ -1035,6 +1035,19 @@ def test_sandbox_session_id_options_accept_aliases(args) -> None:
     assert "-s" in result.output
 
 
+@pytest.mark.parametrize(
+    "args",
+    [["sandbox", "shell", "--help"], ["sandbox", "exec", "--help"]],
+)
+def test_sandbox_shell_id_option_is_disabled(args) -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0
+    assert "--shell-id" not in result.output
+
+
 def test_sandbox_commands_are_not_registered_at_top_level() -> None:
     from agentkit.toolkit.cli.cli import app
 
@@ -1995,8 +2008,6 @@ def test_cli_shell_posts_to_session_endpoint(monkeypatch, tmp_path) -> None:
             "echo 123",
             "--exec-dir",
             "/workspace",
-            "--shell-id",
-            "shell-1",
         ],
     )
 
@@ -2004,7 +2015,7 @@ def test_cli_shell_posts_to_session_endpoint(monkeypatch, tmp_path) -> None:
     assert captured_session["tool_type"] == "SkillEnv"
     assert captured["url"] == "https://sandbox.example.com/v1/shell/exec?token=abc"
     assert captured["json"] == {
-        "id": "shell-1",
+        "id": "",
         "exec_dir": "/workspace",
         "command": "echo 123",
     }
@@ -2012,6 +2023,28 @@ def test_cli_shell_posts_to_session_endpoint(monkeypatch, tmp_path) -> None:
     payload = json.loads(result.output)
     assert payload["data"]["shell_id"] == "shell-1"
     assert "session_id" not in payload["data"]
+
+
+def test_cli_shell_rejects_shell_id_option() -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "shell",
+            "--session-id",
+            "user-1",
+            "--command",
+            "echo 123",
+            "--shell-id",
+            "shell-1",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "No such option" in result.output
+    assert "--shell-id" in result.output
 
 
 def test_cli_shell_uploads_sources_before_command(monkeypatch, tmp_path) -> None:
@@ -3186,7 +3219,7 @@ def test_cli_exec_rejects_model_base_url_option() -> None:
     assert "No such option" in result.output
 
 
-def test_cli_exec_supports_shell_id_and_empty_command(
+def test_cli_exec_supports_empty_command(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -3220,8 +3253,6 @@ def test_cli_exec_supports_shell_id_and_empty_command(
             "exec",
             "--session-id",
             "user-1",
-            "--shell-id",
-            "shell-1",
             "--command",
             "",
         ],
@@ -3230,37 +3261,13 @@ def test_cli_exec_supports_shell_id_and_empty_command(
     assert result.exit_code == 0
     assert (
         captured["ws_url"]
-        == "ws://sandbox.example.com/base/v1/shell/ws?token=abc&session_id=shell-1"
+        == "ws://sandbox.example.com/base/v1/shell/ws?token=abc"
     )
     assert captured["initial_command"] == ""
 
 
-def test_cli_exec_does_not_restart_codex_for_shell_id(
-    monkeypatch,
-    tmp_path,
-) -> None:
+def test_cli_exec_rejects_shell_id_option() -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
-
-    store_path = _patch_store_path(monkeypatch, tmp_path)
-    stored_session = {
-        "session_id": "user-1",
-        "tool_id": "tool-1",
-        "instance_id": "session-1",
-        "endpoint": "https://sandbox.example.com/?token=abc",
-    }
-    store_path.write_text(
-        json.dumps({"user-1": stored_session}),
-        encoding="utf-8",
-    )
-    _patch_exec_session(monkeypatch, cli_exec, stored_session)
-    captured = {}
-
-    def fake_connect(ws_url, initial_command, on_shell_id=None):
-        captured["ws_url"] = ws_url
-        captured["initial_command"] = initial_command
-
-    monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
     result = runner.invoke(
         app,
@@ -3274,8 +3281,9 @@ def test_cli_exec_does_not_restart_codex_for_shell_id(
         ],
     )
 
-    assert result.exit_code == 0
-    assert captured["initial_command"] is None
+    assert result.exit_code != 0
+    assert "No such option" in result.output
+    assert "--shell-id" in result.output
 
 
 def test_cli_exec_clears_remote_shell_id_on_disconnect(
@@ -3354,51 +3362,6 @@ def test_cli_exec_does_not_clear_newer_shell_id(
     assert result.exit_code == 0
     stored = json.loads(store_path.read_text(encoding="utf-8"))
     assert stored["user-1"]["terminal_shell_id"] == ["shell-from-newer-terminal"]
-
-
-def test_cli_exec_clears_shell_id_option_on_disconnect(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
-
-    store_path = _patch_store_path(monkeypatch, tmp_path)
-    stored_session = {
-        "session_id": "user-1",
-        "tool_id": "tool-1",
-        "instance_id": "session-1",
-        "endpoint": "https://sandbox.example.com/?token=abc",
-        "terminal_shell_id": ["shell-from-cli"],
-    }
-    store_path.write_text(
-        json.dumps({"user-1": stored_session}, indent=2),
-        encoding="utf-8",
-    )
-    _patch_exec_session(monkeypatch, cli_exec, stored_session)
-
-    def fake_connect(_ws_url, initial_command=None, on_shell_id=None):
-        assert on_shell_id is not None
-        stored = json.loads(store_path.read_text(encoding="utf-8"))
-        assert stored["user-1"]["terminal_shell_id"] == ["shell-from-cli"]
-
-    monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
-
-    result = runner.invoke(
-        app,
-        [
-            "sandbox",
-            "exec",
-            "--session-id",
-            "user-1",
-            "--shell-id",
-            "shell-from-cli",
-        ],
-    )
-
-    assert result.exit_code == 0
-    stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert "terminal_shell_id" not in stored["user-1"]
 
 
 def test_cli_exec_keeps_stored_shell_ids_without_current_shell_id(

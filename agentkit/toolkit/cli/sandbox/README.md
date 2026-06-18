@@ -289,8 +289,7 @@ Execute a command in a sandbox shell.
 ```bash
 agentkit sandbox shell \
   --session-id 123456789 \
-  --command 'echo $TEST_VAR' \
-  --shell-id shell-example
+  --command 'echo $TEST_VAR'
 
 agentkit sandbox shell \
   --session-id 123456789 \
@@ -311,7 +310,6 @@ Options:
   `AGENTKIT_SANDBOX_TOOL_ID` are both absent.
 - `--command`: required. Command to execute in the sandbox.
 - `--exec-dir`: optional execution directory.
-- `--shell-id`: optional shell terminal ID for re-entering an existing shell.
 - `--workspace`: optional sandbox workspace root; defaults to `/home/gem`.
 - `--src-dir`: optional local file or directory to upload before executing the
   shell command. Additional file or directory paths can follow this option,
@@ -324,7 +322,7 @@ The command posts to `<endpoint>/v1/shell/exec` with:
 
 ```json
 {
-  "id": "shell-example",
+  "id": "",
   "exec_dir": "",
   "command": "echo $TEST_VAR"
 }
@@ -393,8 +391,6 @@ Options:
 - `--command`: optional. Initial command to run after the exec session is ready.
   Omit this option to connect without running an initial command. Use
   `--command codex` to start the remote Codex TUI.
-- `--shell-id`: optional. Existing shell terminal ID to connect to. When this is
-  set and `--command` is omitted, no initial command is sent.
 - `--workspace`: optional sandbox workspace root; defaults to `/home/gem`.
 - `--src-dir`: optional local file or directory to upload before opening the
   exec session. Additional file or directory paths can follow this option,

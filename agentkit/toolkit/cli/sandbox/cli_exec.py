@@ -407,11 +407,6 @@ def exec_command(
             "Omit this option to connect without an initial command."
         ),
     ),
-    shell_id: Optional[str] = typer.Option(
-        None,
-        "--shell-id",
-        help="Existing shell terminal ID to connect to.",
-    ),
     workspace: str = typer.Option(
         DEFAULT_EXEC_WORKSPACE,
         "--workspace",
@@ -519,7 +514,6 @@ def exec_command(
             if remote_shell_id not in cleanup_shell_ids:
                 cleanup_shell_ids.append(remote_shell_id)
 
-    active_shell_id = shell_id
     try:
         apply_git_config_to_session(
             session,
@@ -530,11 +524,7 @@ def exec_command(
     except Exception as exc:
         error(str(exc))
 
-    if active_shell_id:
-        add_session_terminal_shell_id(session_id, active_shell_id)
-        remember_cleanup_shell_id(active_shell_id)
-
-    ws_url = build_terminal_ws_url(session.get("endpoint"), shell_id=active_shell_id)
+    ws_url = build_terminal_ws_url(session.get("endpoint"))
     initial_command = command
 
     def on_shell_id(remote_shell_id: str) -> None:

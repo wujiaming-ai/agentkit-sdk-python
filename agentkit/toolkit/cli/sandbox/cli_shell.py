@@ -74,11 +74,6 @@ def shell_command(
         "--exec-dir",
         help="Execution directory.",
     ),
-    shell_id: Optional[str] = typer.Option(
-        None,
-        "--shell-id",
-        help="Shell terminal ID for re-entering an existing shell.",
-    ),
     workspace: str = typer.Option(
         DEFAULT_EXEC_WORKSPACE,
         "--workspace",
@@ -137,7 +132,6 @@ def shell_command(
     except Exception as exc:
         error(str(exc))
 
-    effective_shell_id = shell_id or ""
     try:
         apply_git_config_to_session(
             session,
@@ -150,7 +144,7 @@ def shell_command(
 
     url = build_exec_url(session.get("endpoint"))
     body = {
-        "id": effective_shell_id,
+        "id": "",
         "exec_dir": exec_dir or "",
         "command": command,
     }
