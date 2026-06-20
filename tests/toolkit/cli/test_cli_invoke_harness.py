@@ -44,6 +44,15 @@ def _run_harness(args):
     return runner.invoke(app, ["invoke", "harness", *args])
 
 
+def _run_invoke(args):
+    """Run the harness subcommand pinned to the ``invoke`` transport.
+
+    ``--protocol`` now defaults to ``run_sse``; these tests exercise the
+    ``/harness/invoke`` path, so they request it explicitly.
+    """
+    return _run_harness([*args, "--protocol", "invoke"])
+
+
 class _FakeResponse:
     def __init__(self, payload, status_code=200):
         self._payload = payload
@@ -96,13 +105,13 @@ def test_build_harness_overrides_empty_when_unset():
 
 def test_unknown_harness_fails(tmp_path):
     _write_registry(tmp_path, {"other": {"url": "https://x", "key": "k"}})
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
     assert result.exit_code == 1
     assert "not found in registry" in result.output
 
 
 def test_no_registry_fails(tmp_path):
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
     assert result.exit_code == 1
     assert "not found in registry" in result.output
 
@@ -122,7 +131,7 @@ def test_harness_invoke_posts_correct_request(tmp_path, monkeypatch):
         "output": "PINEAPPLE",
     })
 
-    result = _run_harness(
+    result = _run_invoke(
         [
             "first",
             "What should you reply?",
@@ -145,6 +154,8 @@ def test_harness_invoke_posts_correct_request(tmp_path, monkeypatch):
     assert body["prompt"] == "What should you reply?"
     assert body["harness_name"] == "first"
     assert body["run_agent_request"]["user_id"] == "agentkit_user"
+    # No --session-id → random s-<id>, consistent with the run_sse path.
+    assert body["run_agent_request"]["session_id"].startswith("s-")
     assert body["run_agent_request"]["max_llm_calls"] == 7
     # Partial overrides only (model_fields_set semantics).
     assert body["harness"] == {"system_prompt": "Reply PINEAPPLE."}
@@ -155,7 +166,7 @@ def test_harness_invoke_no_overrides_omits_harness_key(tmp_path, monkeypatch):
     captured = {}
     _patch_post(monkeypatch, captured)
 
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
 
     assert result.exit_code == 0, result.output
     assert "harness" not in captured["json"]
@@ -176,7 +187,7 @@ def test_harness_error_field_is_surfaced(tmp_path, monkeypatch):
         },
     )
 
-    result = _run_harness(
+    result = _run_invoke(
         ["first", "hi", "--directory", str(tmp_path), "--tools", "bogus"]
     )
     assert result.exit_code == 1
@@ -189,7 +200,7 @@ def test_harness_invoke_http_error_fails(tmp_path, monkeypatch):
     captured = {}
     _patch_post(monkeypatch, captured, payload={"detail": "boom"}, status_code=500)
 
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
     assert result.exit_code == 1
     assert "HTTP 500" in result.output
 
@@ -199,7 +210,7 @@ def test_apikey_overrides_registry_key(tmp_path, monkeypatch):
     captured = {}
     _patch_post(monkeypatch, captured)
 
-    result = _run_harness(
+    result = _run_invoke(
         ["first", "hi", "--directory", str(tmp_path), "--apikey", "jwt-token"]
     )
     assert result.exit_code == 0, result.output
@@ -282,7 +293,7 @@ def test_harness_invoke_uses_login_id_token_as_bearer(monkeypatch, tmp_path):
     _write_registry(tmp_path, {"first": {"url": "https://h.example.com"}})  # no static key
     captured = {}
     _patch_post(monkeypatch, captured)
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert captured["headers"].get("Authorization") == f"Bearer {tok}"
 
@@ -292,7 +303,7 @@ def test_harness_invoke_apikey_overrides_login_id_token(monkeypatch, tmp_path):
     _write_registry(tmp_path, {"first": {"url": "https://h.example.com"}})
     captured = {}
     _patch_post(monkeypatch, captured)
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path), "--apikey", "explicit-key"])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path), "--apikey", "explicit-key"])
     assert result.exit_code == 0, result.output
     assert captured["headers"].get("Authorization") == "Bearer explicit-key"
 
@@ -317,7 +328,7 @@ def test_harness_invoke_refreshes_on_401_and_retries_once(monkeypatch, tmp_path)
         return _FakeResponse({"output": "ok"}, 401 if len(calls) == 1 else 200)
 
     monkeypatch.setattr("requests.post", fake_post)
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert calls == [f"Bearer {tok1}", f"Bearer {tok2}"]  # one refresh + one retry
 
@@ -334,7 +345,7 @@ def test_harness_invoke_relogin_error_when_refresh_fails_on_expired(monkeypatch,
         raise AuthError("token endpoint rejected the request")
 
     monkeypatch.setattr(sess_mod.OAuthClient, "refresh", boom)
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
     assert result.exit_code == 1
     assert "login" in result.output.lower()
 
@@ -346,7 +357,7 @@ def test_harness_invoke_keyauth_uses_key_even_when_logged_in(monkeypatch, tmp_pa
     _write_registry(tmp_path, {"first": {"url": "https://h.example.com", "key": "ak", "runtime_id": "r-1"}})
     captured = {}
     _patch_post(monkeypatch, captured)
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert captured["headers"].get("Authorization") == "Bearer ak"
 
@@ -360,7 +371,7 @@ def test_harness_invoke_custom_jwt_entry_uses_login_id_token(monkeypatch, tmp_pa
     }})
     captured = {}
     _patch_post(monkeypatch, captured)
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert captured["headers"].get("Authorization") == f"Bearer {tok}"
 
@@ -382,7 +393,231 @@ def test_harness_invoke_persistent_401_stops_after_one_retry(monkeypatch, tmp_pa
         return _FakeResponse({"detail": "denied"}, 401)
 
     monkeypatch.setattr("requests.post", fake_post)
-    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    result = _run_invoke(["first", "hi", "--directory", str(tmp_path)])
     assert result.exit_code == 1
     assert len(calls) == 2  # original + exactly one refresh-retry, no third
     assert "HTTP 401" in result.output
+
+
+# --- run_sse protocol --------------------------------------------------------
+
+
+def test_harness_run_sse_streams_answer(tmp_path, monkeypatch):
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    calls = []
+    sse_lines = [
+        'data: {"content":{"parts":[{"text":"KI"}],"role":"model"},"partial":true}',
+        'data: {"content":{"parts":[{"text":"WI"}],"role":"model"},"partial":true}',
+        # final aggregate repeats everything (incl. a thought part); must be skipped
+        'data: {"content":{"parts":[{"text":"reasoning","thought":true},'
+        '{"text":"KIWI"}],"role":"model"},"partial":false}',
+    ]
+
+    class _SSEResp:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(sse_lines)
+
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+        calls.append({"url": url, "json": json})
+        return _SSEResp() if url.endswith("/run_sse") else _FakeResponse({}, 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = _run_harness(
+        [
+            "first",
+            "hello",
+            "--directory",
+            str(tmp_path),
+            "--protocol",
+            "run_sse",
+            "--session-id",
+            "s-1",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    # Answer streamed from the deltas; thought text and the final aggregate are
+    # not double-printed.
+    assert "KIWI" in result.output
+    assert "reasoning" not in result.output
+
+    run_call = next(c for c in calls if c["url"].endswith("/run_sse"))
+    assert run_call["url"] == "https://x/run_sse"
+    assert run_call["json"]["app_name"] == "harness"  # fixed
+    assert run_call["json"]["session_id"] == "s-1"  # caller-provided
+    assert run_call["json"]["user_id"].startswith("u-")  # random, CLI-generated
+    assert "harness" not in run_call["json"]  # no overrides passed
+
+    sess_call = next(c for c in calls if "/sessions/" in c["url"])
+    assert sess_call["url"] == "https://x/apps/harness/users/" + run_call["json"]["user_id"] + "/sessions/s-1"
+
+
+def test_harness_run_sse_sends_overrides(tmp_path, monkeypatch):
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    calls = []
+    sse = ['data: {"content":{"parts":[{"text":"PINEAPPLE"}]},"partial":true}']
+
+    class _SSEResp:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(sse)
+
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+        calls.append({"url": url, "json": json})
+        return _SSEResp() if url.endswith("/run_sse") else _FakeResponse({}, 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = _run_harness(
+        [
+            "first",
+            "x",
+            "--directory",
+            str(tmp_path),
+            "--protocol",
+            "run_sse",
+            "--system-prompt",
+            "Reply PINEAPPLE.",
+            "--tools",
+            "web_search",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    run_call = next(c for c in calls if c["url"].endswith("/run_sse"))
+    # Overrides are sent as the `harness` field (mirrors HarnessOverrides shape).
+    assert run_call["json"]["harness"] == {
+        "system_prompt": "Reply PINEAPPLE.",
+        "tools": "web_search",
+    }
+
+
+def _make_jwt(sub):
+    """Build an unsigned JWT whose payload carries the given ``sub`` claim."""
+    import base64
+
+    def _seg(obj):
+        raw = json.dumps(obj).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    return f"{_seg({'alg': 'none'})}.{_seg({'sub': sub})}.sig"
+
+
+def test_run_sse_user_id_from_jwt_sub(tmp_path, monkeypatch):
+    """With a JWT bearer token, user_id is the token's ``sub`` (not random)."""
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    calls = []
+    sse = ['data: {"content":{"parts":[{"text":"OK"}]},"partial":true}']
+
+    class _SSEResp:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(sse)
+
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+        calls.append({"url": url, "json": json})
+        return _SSEResp() if url.endswith("/run_sse") else _FakeResponse({}, 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    token = _make_jwt("user-abc-123")
+    result = _run_harness(
+        [
+            "first",
+            "hi",
+            "--directory",
+            str(tmp_path),
+            "--protocol",
+            "run_sse",
+            "--session-id",
+            "s-1",
+            "--apikey",
+            token,
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    run_call = next(c for c in calls if c["url"].endswith("/run_sse"))
+    assert run_call["json"]["user_id"] == "user-abc-123"
+    # Session is created under the same (sub-derived) user_id.
+    sess_call = next(c for c in calls if "/sessions/" in c["url"])
+    assert sess_call["url"] == "https://x/apps/harness/users/user-abc-123/sessions/s-1"
+
+
+def test_user_id_from_token_helper():
+    assert cli_invoke._user_id_from_token(_make_jwt("u-42")) == "u-42"
+    assert cli_invoke._user_id_from_token("opaque-api-key") is None
+    assert cli_invoke._user_id_from_token("") is None
+
+
+def test_default_protocol_is_run_sse_with_random_session(tmp_path, monkeypatch):
+    """No --protocol and no --session-id → run_sse with a freshly minted session."""
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    calls = []
+    sse = ['data: {"content":{"parts":[{"text":"OK"}]},"partial":true}']
+
+    class _SSEResp:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(sse)
+
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+        calls.append({"url": url, "json": json})
+        return _SSEResp() if url.endswith("/run_sse") else _FakeResponse({}, 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = _run_harness(["first", "hi", "--directory", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    # Default transport is run_sse (not /harness/invoke).
+    run_call = next(c for c in calls if c["url"].endswith("/run_sse"))
+    sid = run_call["json"]["session_id"]
+    assert sid.startswith("s-")  # random, not the invoke-path default
+    # The session is created (idempotently) before the run, under that id.
+    sess_call = next(c for c in calls if "/sessions/" in c["url"])
+    assert sess_call["url"].endswith(f"/sessions/{sid}")
+
+
+def test_run_sse_hides_reasoning_shows_answer(tmp_path, monkeypatch):
+    """Reasoning (thought) stays behind the spinner; only the answer is printed."""
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    sse = [
+        'data: {"content":{"parts":[{"text":"let me think","thought":true}]},"partial":true}',
+        'data: {"content":{"parts":[{"text":"FINAL"}]},"partial":true}',
+    ]
+
+    class _SSEResp:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(sse)
+
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+        return _SSEResp() if url.endswith("/run_sse") else _FakeResponse({}, 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = _run_harness(
+        ["first", "hi", "--directory", str(tmp_path), "--session-id", "s-1"]
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "FINAL" in out
+    assert "let me think" not in out  # reasoning is not dumped to the user
+
+
+def test_harness_invalid_protocol_fails(tmp_path):
+    _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
+    result = _run_harness(
+        ["first", "hi", "--directory", str(tmp_path), "--protocol", "bogus"]
+    )
+    assert result.exit_code == 1
+    assert "must be 'invoke' or 'run_sse'" in result.output

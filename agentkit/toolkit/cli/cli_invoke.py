@@ -16,6 +16,8 @@
 
 from pathlib import Path
 from typing import Optional, Any
+import base64
+import binascii
 import json
 import typer
 from typer.core import TyperGroup
@@ -627,6 +629,160 @@ def build_harness_overrides(
     return overrides
 
 
+# Fixed ADK app name for the run_sse path. The harness loader serves its single
+# agent under any app name, so a stable constant keeps the CLI decoupled from the
+# deployed HARNESS_NAME.
+_HARNESS_RUN_SSE_APP = "harness"
+
+
+def _user_id_from_token(token: str) -> str | None:
+    """Return the OIDC ``sub`` claim from a JWT bearer token, else ``None``.
+
+    A custom_jwt harness is called with an OIDC id_token whose ``sub`` is the
+    authenticated user's stable id — use it as the run's user_id so sessions are
+    tied to the real identity. A key_auth token is an opaque api key (not a JWT,
+    no ``sub``), so this returns ``None`` and the caller falls back to a random id.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None  # not a JWT (e.g. a key_auth api key)
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)  # restore base64 padding
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except (ValueError, binascii.Error):
+        return None  # malformed JWT payload → fall back to random
+    sub = claims.get("sub")
+    return sub if isinstance(sub, str) and sub else None
+
+
+def _harness_run_sse(
+    *,
+    base_url: str,
+    token: str,
+    prompt: str,
+    session_id: str,
+    overrides: dict,
+    raw: bool,
+) -> Any:
+    """Invoke a deployed harness via the ADK ``/run_sse`` endpoint (streaming).
+
+    app_name is the fixed ``"harness"``; user_id is the JWT ``sub`` when the token
+    is an OIDC id_token, else a random id; session_id is the caller's. When
+    ``overrides`` is non-empty it is sent as the ``harness`` field so the runtime
+    streams a spawned (overridden) agent; otherwise the base agent.
+    """
+    import requests
+
+    app_name = _HARNESS_RUN_SSE_APP
+    sub = _user_id_from_token(token)
+    user_id = sub or f"u-{uuid.uuid4().hex[:12]}"
+    user_id_origin = "jwt sub" if sub else "random"
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    console.print(
+        f"[blue]run_sse: app_name={app_name}, user_id={user_id} ({user_id_origin}), "
+        f"session_id={session_id}[/blue]"
+    )
+
+    # ADK /run_sse requires an existing session; create it (ignore "exists").
+    session_url = f"{base_url}/apps/{app_name}/users/{user_id}/sessions/{session_id}"
+    try:
+        sr = requests.post(session_url, json={}, headers=headers, timeout=60)
+    except requests.RequestException as e:
+        console.print(f"[red]❌ Session create failed: {e}[/red]")
+        raise typer.Exit(1)
+    if sr.status_code not in (200, 400, 409):
+        console.print(
+            f"[red]❌ Session create HTTP {sr.status_code}: {sr.text[:300]}[/red]"
+        )
+        raise typer.Exit(1)
+
+    body: dict[str, Any] = {
+        "app_name": app_name,
+        "user_id": user_id,
+        "session_id": session_id,
+        "new_message": {"role": "user", "parts": [{"text": prompt}]},
+        "streaming": True,
+    }
+    if overrides:
+        body["harness"] = overrides
+        console.print(f"[blue]Using one-time overrides: {overrides}[/blue]")
+    try:
+        resp = requests.post(
+            f"{base_url}/run_sse",
+            json=body,
+            headers=headers,
+            timeout=300,
+            stream=True,
+        )
+    except requests.RequestException as e:
+        console.print(f"[red]❌ run_sse request failed: {e}[/red]")
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        console.print(
+            f"[red]❌ run_sse HTTP {resp.status_code}: {resp.text[:500]}[/red]"
+        )
+        raise typer.Exit(1)
+
+    def _answer_text(event: dict) -> str:
+        # Only the answer text; the model's "thought" (reasoning) parts stay hidden
+        # behind the thinking spinner.
+        parts = (event.get("content") or {}).get("parts") or []
+        return "".join(
+            p["text"]
+            for p in parts
+            if isinstance(p, dict) and p.get("text") and not p.get("thought")
+        )
+
+    streamed = []
+    final_answer = ""
+    answer_open = False  # first answer token seen → spinner stopped, reply started
+    # A spinner covers the wait (model latency + reasoning) until the answer starts.
+    status = None if raw else console.status("thinking", spinner="dots")
+    if status is not None:
+        status.start()
+    try:
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            if raw:
+                print(line)  # builtin print: no rich wrapping/markup on raw JSON
+                continue
+            event = _normalize_stream_event(line)
+            if not isinstance(event, dict):
+                continue
+            if event.get("error"):
+                if status is not None and not answer_open:
+                    status.stop()
+                console.print(f"\n[red]Error: {event['error']}[/red]")
+                continue
+            answer = _answer_text(event)
+            # `partial=False` is the final aggregate (repeats everything) — keep it
+            # as a fallback but don't print it; partial events stream the deltas.
+            if event.get("partial") is False:
+                final_answer = answer or final_answer
+                continue
+            if answer:
+                if not answer_open:
+                    if status is not None:
+                        status.stop()  # leave the thinking phase
+                    console.print("")  # blank line before the reply
+                    answer_open = True
+                console.print(answer, end="", style="green")
+                streamed.append(answer)
+    finally:
+        if status is not None and not answer_open:
+            status.stop()
+
+    if not streamed and final_answer:
+        console.print("")
+        console.print(final_answer, end="", style="green")
+    console.print("")
+    return "".join(streamed) or final_answer
+
+
 @invoke_app.command("harness")
 def harness_command(
     name: str = typer.Argument(
@@ -640,7 +796,9 @@ def harness_command(
         "agentkit_user", "--user-id", help="user_id for the run."
     ),
     session_id: str = typer.Option(
-        "agentkit_sample_session", "--session-id", help="session_id for the run."
+        None,
+        "--session-id",
+        help="session_id for the run (random if unset).",
     ),
     max_llm_calls: int = typer.Option(
         None,
@@ -675,7 +833,12 @@ def harness_command(
         help="Bearer token override (e.g. OAuth JWT for custom_jwt harnesses).",
     ),
     raw: bool = typer.Option(
-        False, "--raw", help="Print the raw InvokeHarnessResponse JSON."
+        False, "--raw", help="Print the raw response (InvokeHarnessResponse / SSE)."
+    ),
+    protocol: str = typer.Option(
+        "run_sse",
+        "--protocol",
+        help="Transport: 'run_sse' (ADK /run_sse, default) or 'invoke' (POST /harness/invoke).",
     ),
 ) -> Any:
     """Invoke a deployed harness by name (resolved via the harness.json registry).
@@ -712,7 +875,13 @@ def harness_command(
         )
         raise typer.Exit(1)
 
-    invoke_url = entry["url"].rstrip("/") + "/harness/invoke"
+    if protocol not in ("invoke", "run_sse"):
+        console.print(
+            f"[red]Error: --protocol must be 'invoke' or 'run_sse', got '{protocol}'.[/red]"
+        )
+        raise typer.Exit(1)
+
+    base_url = entry["url"].rstrip("/")
 
     # Inbound credential selection is auth-type aware — the registry records how each
     # harness was deployed (harness/deploy.py _record_harness): a custom_jwt harness is
@@ -722,6 +891,7 @@ def harness_command(
     #      the data plane's JWT path; refresh failure errors (re-login), never silent.
     #   3. key_auth harness → the static "key"; a key_auth authorizer would reject a JWT,
     #      so we never force the id_token onto it.
+    # Both transports (invoke and run_sse) share this resolution.
     from agentkit.auth.errors import AuthError
     from agentkit.auth.sso import load_session
 
@@ -744,6 +914,30 @@ def harness_command(
     if not token:
         token = entry.get("key") or ""
 
+    # No session given → mint a random one (both transports behave identically;
+    # creating it is idempotent).
+    session_id = session_id or f"s-{uuid.uuid4().hex[:12]}"
+
+    if protocol == "run_sse":
+        # run_sse supports the same overrides (sent as the `harness` field); only
+        # --max-llm-calls is invoke-only (not part of the ADK run_sse request).
+        if max_llm_calls is not None:
+            console.print(
+                "[yellow]Note: --max-llm-calls is ignored with --protocol "
+                "run_sse.[/yellow]"
+            )
+        return _harness_run_sse(
+            base_url=base_url,
+            token=token,
+            prompt=message,
+            session_id=session_id,
+            overrides=build_harness_overrides(
+                system_prompt, model_name, tools, skills, runtime
+            ),
+            raw=raw,
+        )
+
+    invoke_url = base_url + "/harness/invoke"
     req_headers = {"Content-Type": "application/json"}
     if token:
         req_headers["Authorization"] = f"Bearer {token}"
