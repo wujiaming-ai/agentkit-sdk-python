@@ -203,6 +203,62 @@ def test_harness_invoke_posts_registry_overrides(tmp_path, monkeypatch):
     }
 
 
+def test_harness_invoke_registry_uri_override(tmp_path, monkeypatch):
+    _write_registry(
+        tmp_path,
+        {"first": {"url": "https://x", "key": "ak", "runtime_id": "r-1"}},
+    )
+    captured = {}
+    _patch_post(monkeypatch, captured)
+
+    result = _run_invoke(
+        [
+            "first",
+            "Find a finance expert.",
+            "--directory",
+            str(tmp_path),
+            "--registry",
+            "agentkit://a2a-registry?space_id=space-uri&top_k=4&region=cn-beijing",
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["json"]["harness"] == {
+        "registry_space_id": "space-uri",
+        "registry_top_k": 4,
+        "registry_region": "cn-beijing",
+    }
+
+
+def test_harness_invoke_registry_http_url_override(tmp_path, monkeypatch):
+    _write_registry(
+        tmp_path,
+        {"first": {"url": "https://x", "key": "ak", "runtime_id": "r-1"}},
+    )
+    captured = {}
+    _patch_post(monkeypatch, captured)
+    discovery_url = (
+        "https://open.volcengineapi.com/?Action=Discover&space_id=space-url"
+    )
+
+    result = _run_invoke(
+        [
+            "first",
+            "Find a finance expert.",
+            "--directory",
+            str(tmp_path),
+            "--registry",
+            discovery_url,
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["json"]["harness"] == {
+        "registry_endpoint": discovery_url,
+        "registry_space_id": "space-url",
+    }
+
+
 def test_harness_invoke_no_overrides_omits_harness_key(tmp_path, monkeypatch):
     _write_registry(tmp_path, {"first": {"url": "https://x", "key": "ak"}})
     captured = {}
@@ -535,6 +591,63 @@ def test_harness_run_sse_sends_overrides(tmp_path, monkeypatch):
     assert run_call["json"]["harness"] == {
         "system_prompt": "Reply PINEAPPLE.",
         "tools": "web_search",
+    }
+
+
+def test_top_level_harness_option_routes_to_run_sse_with_overrides(
+    tmp_path, monkeypatch
+):
+    _write_registry(tmp_path, {"paper-researcher": {"url": "https://x", "key": "ak"}})
+    calls = []
+    sse = ['data: {"content":{"parts":[{"text":"OK"}]},"partial":true}']
+
+    class _SSEResp:
+        status_code = 200
+        text = ""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(sse)
+
+    def fake_post(url, json=None, headers=None, timeout=None, stream=False):
+        calls.append({"url": url, "json": json})
+        return _SSEResp() if url.endswith("/run_sse") else _FakeResponse({}, 200)
+
+    monkeypatch.setattr("requests.post", fake_post)
+
+    result = runner.invoke(
+        app,
+        [
+            "invoke",
+            "--harness",
+            "paper-researcher",
+            "--directory",
+            str(tmp_path),
+            "--model-id",
+            "doubao-seed-2-0-code-preview-260215",
+            "--tools",
+            "web_search,run_code,link_reader",
+            "--skills",
+            "data-visualization-cloud,byted-arkclaw-paper-research,web-scraper",
+            "--registry",
+            "agentkit://a2a-registry?space_id=space-1&top_k=6&region=cn-beijing",
+            "Plot the performance comparison between different transformer models.",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    run_call = next(c for c in calls if c["url"].endswith("/run_sse"))
+    assert run_call["json"]["new_message"]["parts"] == [
+        {
+            "text": "Plot the performance comparison between different transformer models."
+        }
+    ]
+    assert run_call["json"]["harness"] == {
+        "model_name": "doubao-seed-2-0-code-preview-260215",
+        "tools": "web_search,run_code,link_reader",
+        "skills": "data-visualization-cloud,byted-arkclaw-paper-research,web-scraper",
+        "registry_space_id": "space-1",
+        "registry_top_k": 6,
+        "registry_region": "cn-beijing",
     }
 
 

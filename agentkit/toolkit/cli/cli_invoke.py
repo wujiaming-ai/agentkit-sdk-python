@@ -27,6 +27,7 @@ import random
 import uuid
 from agentkit.toolkit.config import get_config
 import logging
+from urllib.parse import parse_qs, urlparse
 
 # Note: Avoid importing heavy packages at the top to keep CLI startup fast
 logger = logging.getLogger(__name__)
@@ -247,7 +248,12 @@ class InvokeGroup(TyperGroup):
     def parse_args(self, ctx, args):
         if args:
             first = args[0]
-            if first != "--help" and first not in self.commands:
+            if first in ("--harness", "-H"):
+                if len(args) >= 2:
+                    args = ["harness", args[1], *args[2:]]
+            elif first.startswith("--harness="):
+                args = ["harness", first.split("=", 1)[1], *args[1:]]
+            elif first != "--help" and first not in self.commands:
                 args = [self.default_cmd_name] + args
         return super().parse_args(ctx, args)
 
@@ -642,6 +648,101 @@ def build_harness_overrides(
     return overrides
 
 
+_INVOKE_REGISTRY_QUERY_ALIASES = {
+    "space_id": "registry_space_id",
+    "registry_space_id": "registry_space_id",
+    "top_k": "registry_top_k",
+    "registry_top_k": "registry_top_k",
+    "endpoint": "registry_endpoint",
+    "registry_endpoint": "registry_endpoint",
+    "region": "registry_region",
+    "registry_region": "registry_region",
+}
+_INVOKE_REGISTRY_INT_KEYS = {"registry_top_k"}
+
+
+def _parse_harness_registry_override(value: Optional[str]) -> dict[str, Any]:
+    """Parse ``--registry`` into one-time harness registry overrides.
+
+    Supported forms:
+    - agentkit://a2a-registry?space_id=xxx&top_k=3&region=cn-beijing
+    - https://... (treated as registry_endpoint; recognized query params are
+      also extracted when present)
+    """
+    if value is None:
+        return {}
+
+    raw = value.strip()
+    if not raw:
+        return {}
+
+    parsed = urlparse(raw)
+    overrides: dict[str, Any] = {}
+
+    query = {
+        key.replace("-", "_"): values[-1]
+        for key, values in parse_qs(parsed.query, keep_blank_values=False).items()
+        if values and values[-1] != ""
+    }
+
+    if parsed.scheme == "agentkit":
+        if parsed.netloc != "a2a-registry" or parsed.path not in {"", "/"}:
+            raise ValueError(
+                "Unsupported registry URI. Use "
+                '`agentkit://a2a-registry?space_id=xxx&top_k=3` or an http(s) URL.'
+            )
+    elif parsed.scheme in {"http", "https"}:
+        overrides["registry_endpoint"] = raw
+    else:
+        raise ValueError(
+            "Unsupported registry value. Use "
+            '`agentkit://a2a-registry?space_id=xxx&top_k=3` or an http(s) URL.'
+        )
+
+    unknown = sorted(set(query) - set(_INVOKE_REGISTRY_QUERY_ALIASES))
+    if unknown and parsed.scheme == "agentkit":
+        raise ValueError(
+            f"Unsupported registry query param(s): {', '.join(unknown)}. "
+            f"Known: {', '.join(sorted(_INVOKE_REGISTRY_QUERY_ALIASES))}"
+        )
+
+    for key, raw_value in query.items():
+        if key not in _INVOKE_REGISTRY_QUERY_ALIASES:
+            continue
+        target = _INVOKE_REGISTRY_QUERY_ALIASES[key]
+        if target in _INVOKE_REGISTRY_INT_KEYS:
+            try:
+                overrides[target] = int(str(raw_value))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Registry param `{key}` must be an integer, got {raw_value!r}."
+                ) from exc
+        else:
+            overrides[target] = raw_value
+
+    return overrides
+
+
+def _merge_harness_registry_overrides(
+    *,
+    registry: Optional[str],
+    registry_space_id: Optional[str],
+    registry_top_k: Optional[int],
+    registry_endpoint: Optional[str],
+    registry_region: Optional[str],
+) -> dict[str, Any]:
+    overrides = _parse_harness_registry_override(registry)
+    if registry_space_id is not None:
+        overrides["registry_space_id"] = registry_space_id
+    if registry_top_k is not None:
+        overrides["registry_top_k"] = registry_top_k
+    if registry_endpoint is not None:
+        overrides["registry_endpoint"] = registry_endpoint
+    if registry_region is not None:
+        overrides["registry_region"] = registry_region
+    return overrides
+
+
 # Fixed ADK app name for the run_sse path. The harness loader serves its single
 # agent under any app name, so a stable constant keeps the CLI decoupled from the
 # deployed HARNESS_NAME.
@@ -826,6 +927,7 @@ def harness_command(
     model_name: str = typer.Option(
         None,
         "--model-name",
+        "--model-id",
         help="Override the harness model name for this invocation.",
     ),
     tools: str = typer.Option(
@@ -843,6 +945,14 @@ def harness_command(
         None,
         "--registry-space-id",
         help="Override the A2A registry space id for this invocation.",
+    ),
+    registry: str = typer.Option(
+        None,
+        "--registry",
+        help=(
+            "Override A2A registry for this invocation. Accepts "
+            "`agentkit://a2a-registry?space_id=xxx&top_k=3` or an http(s) URL."
+        ),
     ),
     registry_top_k: int = typer.Option(
         None,
@@ -888,16 +998,30 @@ def harness_command(
     Examples:
         # Invoke a deployed harness
         agentkit invoke harness my-harness "What is 2+2?"
+        agentkit invoke --harness my-harness "What is 2+2?"
 
         # Per-call overrides
         agentkit invoke harness my-harness --system-prompt "Be terse." "What is 2+2?"
         agentkit invoke harness my-harness --max-llm-calls 10 "Plan a trip."
         agentkit invoke harness my-harness --registry-space-id as-xxx "Find an agent."
+        agentkit invoke --harness my-harness --model-id doubao-seed-2-0-code-preview-260215 --registry "agentkit://a2a-registry?space_id=as-xxx" "Find an agent."
     """
     import requests
     from agentkit.toolkit.harness import load_harness_registry
 
     console.print("[cyan]Invoking harness...[/cyan]")
+
+    try:
+        registry_overrides = _merge_harness_registry_overrides(
+            registry=registry,
+            registry_space_id=registry_space_id,
+            registry_top_k=registry_top_k,
+            registry_endpoint=registry_endpoint,
+            registry_region=registry_region,
+        )
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
 
     registry = load_harness_registry(directory)
     entry = registry.get(name)
@@ -966,7 +1090,15 @@ def harness_command(
             prompt=message,
             session_id=session_id,
             overrides=build_harness_overrides(
-                system_prompt, model_name, tools, skills, runtime
+                system_prompt,
+                model_name,
+                tools,
+                skills,
+                runtime,
+                registry_space_id=registry_overrides.get("registry_space_id"),
+                registry_top_k=registry_overrides.get("registry_top_k"),
+                registry_endpoint=registry_overrides.get("registry_endpoint"),
+                registry_region=registry_overrides.get("registry_region"),
             ),
             raw=raw,
         )
@@ -994,10 +1126,10 @@ def harness_command(
         tools,
         skills,
         runtime,
-        registry_space_id,
-        registry_top_k,
-        registry_endpoint,
-        registry_region,
+        registry_overrides.get("registry_space_id"),
+        registry_overrides.get("registry_top_k"),
+        registry_overrides.get("registry_endpoint"),
+        registry_overrides.get("registry_region"),
     )
     if overrides:
         body["harness"] = overrides
