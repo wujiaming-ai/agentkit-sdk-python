@@ -46,9 +46,12 @@ from agentkit.toolkit.cli.sandbox.model_config import (
     build_codex_model_catalog_json as _shared_build_codex_model_catalog_json,
 )
 from agentkit.toolkit.cli.sandbox.tool_resolve import save_tool_result
-from agentkit.toolkit.cli.sandbox.utils import error
+from agentkit.toolkit.cli.sandbox.tos_config import (
+    DEFAULT_TOS_LOCAL_PATH,
+    build_create_tool_tos_mount_config,
+)
+from agentkit.toolkit.cli.sandbox.sandbox_client import error
 from agentkit.toolkit.volcengine.services.tos_service import (
-    TOSMountConfig,
     TOSService,
     TOSServiceConfig,
 )
@@ -60,8 +63,6 @@ DEFAULT_CREATE_TOOL_TYPE = "CodeEnv"
 DEFAULT_CPU = 4
 VALID_CPU_VALUES = (2, 4, 8, 16)
 MEMORY_MB_PER_CPU = 2048
-DEFAULT_TOS_BUCKET_PATH = "/sandbox-session/default/default"
-DEFAULT_TOS_LOCAL_PATH = "/home/gem"
 DISABLED_SERVICE_ENV_KEYS = (
     "DISABLE_JUPYTER",
     "DISABLE_CODE_SERVER",
@@ -90,13 +91,6 @@ def _generate_tool_name(tool_type: str) -> str:
     if not normalized:
         normalized = "tool"
     return f"agentkit-{normalized}-{generate_random_id(8)}"
-
-
-def _resolve_tos_bucket(tos_bucket: Optional[str]) -> str:
-    resolved_bucket = (tos_bucket or "").strip()
-    if not resolved_bucket:
-        error("--tos-bucket must not be empty")
-    return resolved_bucket
 
 
 def _validate_cpu(value: int) -> int:
@@ -209,6 +203,7 @@ def _build_create_tool_request(
     name: Optional[str],
     tos_bucket: Optional[str],
     tos_region: str,
+    tos_mount_path: str = DEFAULT_TOS_LOCAL_PATH,
     cpu: int = DEFAULT_CPU,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
@@ -216,7 +211,13 @@ def _build_create_tool_request(
 ) -> tools_types.CreateToolRequest:
     resolved_tool_type = tool_type.strip() or DEFAULT_CREATE_TOOL_TYPE
     resolved_name = (name or "").strip() or _generate_tool_name(resolved_tool_type)
-    tos_mount_config = _build_tos_mount_config(tos_bucket, tos_region)
+    tos_mount_config = build_create_tool_tos_mount_config(
+        tos_bucket,
+        tos_region,
+        local_mount_path=tos_mount_path,
+        tos_service_cls=TOSService,
+        tos_service_config_cls=TOSServiceConfig,
+    )
     cpu_milli, memory_mb = _cpu_to_resource_shape(cpu)
 
     return tools_types.CreateToolRequest(
@@ -241,49 +242,6 @@ def _build_create_tool_request(
             model_api_key=model_api_key,
             model_provider=model_provider,
         ),
-    )
-
-
-def _build_tos_mount_config(
-    tos_bucket: Optional[str],
-    region: str,
-) -> tools_types.TosMountForCreateTool | None:
-    if not (tos_bucket or "").strip():
-        return None
-
-    resolved_bucket = _resolve_tos_bucket(tos_bucket)
-    service = TOSService(
-        TOSServiceConfig(
-            bucket=resolved_bucket,
-            region=region,
-        )
-    )
-    mount_config = service.build_mount_config(
-        bucket_path=DEFAULT_TOS_BUCKET_PATH,
-        local_mount_path=DEFAULT_TOS_LOCAL_PATH,
-    )
-    return _to_create_tool_tos_mount_config(mount_config)
-
-
-def _to_create_tool_tos_mount_config(
-    mount_config: TOSMountConfig,
-) -> tools_types.TosMountForCreateTool:
-    return tools_types.TosMountForCreateTool(
-        EnableTos=True,
-        Credentials=tools_types.TosMountCredentialsForCreateTool(
-            AccessKeyId=mount_config.credentials.access_key_id,
-            SecretAccessKey=mount_config.credentials.secret_access_key,
-        ),
-        MountPoints=[
-            tools_types.TosMountMountPointsItemForCreateTool(
-                BucketName=mount.bucket_name,
-                BucketPath=mount.bucket_path,
-                Endpoint=mount.endpoint,
-                LocalMountPath=mount.local_mount_path,
-                ReadOnly=mount.read_only,
-            )
-            for mount in mount_config.mount_points
-        ],
     )
 
 
@@ -348,6 +306,7 @@ def create_tool(
     tool_type: str = DEFAULT_CREATE_TOOL_TYPE,
     tool_name: Optional[str] = None,
     tos_bucket: Optional[str] = None,
+    tos_mount_path: str = DEFAULT_TOS_LOCAL_PATH,
     cpu: int = DEFAULT_CPU,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
@@ -361,6 +320,7 @@ def create_tool(
         name=tool_name,
         tos_bucket=tos_bucket,
         tos_region=tos_region,
+        tos_mount_path=tos_mount_path,
         cpu=cpu,
         model_name=model_name,
         model_api_key=model_api_key,
@@ -398,8 +358,16 @@ def create_command(
         None,
         "--tos-bucket",
         help=(
-            "TOS bucket to mount at /home/gem. "
+            "TOS bucket to mount. "
             "Omit to create the tool without a TOS mount."
+        ),
+    ),
+    tos_mount: Optional[str] = typer.Option(
+        None,
+        "--tos-mount",
+        help=(
+            "Local mount path for the TOS bucket. Requires --tos-bucket. "
+            f"Defaults to {DEFAULT_TOS_LOCAL_PATH} when omitted."
         ),
     ),
     cpu: int = typer.Option(
@@ -432,10 +400,13 @@ def create_command(
 ) -> None:
     """Create an AgentKit Tool with optional TOS mount."""
     try:
+        if tos_mount is not None and not (tos_bucket or "").strip():
+            error("--tos-mount requires --tos-bucket")
         result = create_tool(
             tool_type=tool_type,
             tool_name=tool_name,
             tos_bucket=tos_bucket,
+            tos_mount_path=tos_mount or DEFAULT_TOS_LOCAL_PATH,
             cpu=cpu,
             model_name=model_name,
             model_api_key=model_api_key,

@@ -49,12 +49,13 @@ from agentkit.toolkit.cli.sandbox.session_create import (
 )
 from agentkit.toolkit.cli.sandbox.git_config import apply_git_config_to_session
 from agentkit.toolkit.cli.sandbox.model_config import ModelProviderType
+from agentkit.toolkit.cli.sandbox.tos_config import DEFAULT_TOS_LOCAL_PATH
 from agentkit.toolkit.cli.sandbox.tool_resolve import (
     SandboxToolType,
     find_tool_model_provider,
     get_remote_tool_model_provider,
 )
-from agentkit.toolkit.cli.sandbox.utils import (
+from agentkit.toolkit.cli.sandbox.sandbox_client import (
     add_session_terminal_shell_id,
     build_terminal_ws_url,
     error,
@@ -65,7 +66,6 @@ from agentkit.toolkit.cli.sandbox.utils import (
 DETACH_SEQUENCE = b"\x1d"
 DETACH_HINT = "Ctrl-]"
 LOCAL_EXIT_COMMANDS = {"exit", "exit()"}
-DEFAULT_EXEC_WORKSPACE = "/home/gem"
 
 
 def _terminal_size() -> dict[str, int]:
@@ -257,7 +257,7 @@ def _resolve_exec_dst_dir(
     workspace: Optional[str],
     dst_dir: Optional[str],
 ) -> str:
-    resolved_workspace = _normalize_workspace(workspace) or DEFAULT_EXEC_WORKSPACE
+    resolved_workspace = _normalize_workspace(workspace) or DEFAULT_TOS_LOCAL_PATH
     raw_dst_dir = (dst_dir or "").strip()
     if not raw_dst_dir:
         return resolved_workspace
@@ -408,7 +408,7 @@ def exec_command(
         ),
     ),
     workspace: str = typer.Option(
-        DEFAULT_EXEC_WORKSPACE,
+        DEFAULT_TOS_LOCAL_PATH,
         "--workspace",
         help=(
             "Sandbox workspace root. Relative --dst-dir values are "

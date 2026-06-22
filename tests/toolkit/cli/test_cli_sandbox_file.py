@@ -50,10 +50,10 @@ class _FakeResponse:
 
 
 def _patch_store_path(monkeypatch, tmp_path, session=None):
-    import agentkit.toolkit.cli.sandbox.utils as sandbox_utils
+    import agentkit.toolkit.cli.sandbox.sandbox_client as sandbox_client
 
     store_path = tmp_path / "sessions.json"
-    monkeypatch.setattr(sandbox_utils, "_get_session_store_path", lambda: store_path)
+    monkeypatch.setattr(sandbox_client, "_get_session_store_path", lambda: store_path)
     if session is None:
         session = {
             "session_id": "user-1",

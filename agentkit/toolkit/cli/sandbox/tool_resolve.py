@@ -28,7 +28,7 @@ from agentkit.toolkit.cli.sandbox.model_config import (
     MODEL_PROVIDER_ENV,
     model_provider_from_env_value,
 )
-from agentkit.toolkit.cli.sandbox.utils import error
+from agentkit.toolkit.cli.sandbox.sandbox_client import error
 
 SANDBOX_TOOL_STORE_PATH = Path(".agentkit") / "sandbox" / "tools.json"
 DEFAULT_SANDBOX_TOOL_TYPE = "CodeEnv"

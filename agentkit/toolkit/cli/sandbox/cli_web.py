@@ -26,7 +26,7 @@ from agentkit.toolkit.cli.sandbox.session_create import (
     ensure_sandbox_session_with_status,
 )
 from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
-from agentkit.toolkit.cli.sandbox.utils import (
+from agentkit.toolkit.cli.sandbox.sandbox_client import (
     build_web_url,
     echo_json,
     error,
