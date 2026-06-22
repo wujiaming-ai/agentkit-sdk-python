@@ -19,6 +19,7 @@ from typing import Optional, Any
 import base64
 import binascii
 import json
+import os
 import typer
 from typer.core import TyperGroup
 from rich.console import Console
@@ -646,6 +647,7 @@ def build_harness_overrides(
 _INVOKE_REGISTRY_QUERY_ALIASES = {
     "space_id": "registry_space_id",
     "registry_space_id": "registry_space_id",
+    "space_name": "registry_space_name",
     "top_k": "registry_top_k",
     "registry_top_k": "registry_top_k",
     "endpoint": "registry_endpoint",
@@ -718,10 +720,49 @@ def _parse_harness_registry_override(value: Optional[str]) -> dict[str, Any]:
     return overrides
 
 
+def _resolve_harness_registry_space_name(
+    overrides: dict[str, Any],
+    *,
+    registry_endpoint: Optional[str],
+    registry_region: Optional[str],
+) -> None:
+    if overrides.get("registry_space_id"):
+        overrides.pop("registry_space_name", None)
+        return
+
+    space_name = overrides.pop("registry_space_name", None)
+    if not space_name:
+        return
+
+    from agentkit.toolkit.cli.cli_add import (
+        _default_agentkit_endpoint,
+        _resolve_a2a_space_id_by_name,
+    )
+
+    resolved_region = (
+        registry_region
+        or overrides.get("registry_region")
+        or os.getenv("AGENTKIT_REGION")
+        or os.getenv("VOLCENGINE_REGION")
+        or "cn-beijing"
+    )
+    resolved_endpoint = (
+        registry_endpoint
+        or overrides.get("registry_endpoint")
+        or _default_agentkit_endpoint(str(resolved_region))
+    )
+    overrides["registry_space_id"] = _resolve_a2a_space_id_by_name(
+        str(space_name),
+        endpoint=str(resolved_endpoint),
+        region=str(resolved_region),
+    )
+
+
 def _merge_harness_registry_overrides(
     *,
     registry: Optional[str],
     registry_space_id: Optional[str],
+    registry_space_name: Optional[str],
     registry_top_k: Optional[int],
     registry_endpoint: Optional[str],
     registry_region: Optional[str],
@@ -729,12 +770,19 @@ def _merge_harness_registry_overrides(
     overrides = _parse_harness_registry_override(registry)
     if registry_space_id is not None:
         overrides["registry_space_id"] = registry_space_id
+    if registry_space_name is not None:
+        overrides["registry_space_name"] = registry_space_name
     if registry_top_k is not None:
         overrides["registry_top_k"] = registry_top_k
     if registry_endpoint is not None:
         overrides["registry_endpoint"] = registry_endpoint
     if registry_region is not None:
         overrides["registry_region"] = registry_region
+    _resolve_harness_registry_space_name(
+        overrides,
+        registry_endpoint=registry_endpoint,
+        registry_region=registry_region,
+    )
     return overrides
 
 
@@ -940,6 +988,11 @@ def harness_command(
         "--registry-space-id",
         help="Override the A2A registry space id for this invocation.",
     ),
+    registry_space_name: str = typer.Option(
+        None,
+        "--registry-space-name",
+        help="Override the A2A registry space name for this invocation.",
+    ),
     registry: str = typer.Option(
         None,
         "--registry",
@@ -999,6 +1052,7 @@ def harness_command(
         agentkit invoke harness my-harness --registry-space-id as-xxx "Find an agent."
     """
     import requests
+    from agentkit.toolkit.cli.cli_add import _A2ARegisterError
     from agentkit.toolkit.harness import load_harness_registry
 
     console.print("[cyan]Invoking harness...[/cyan]")
@@ -1007,10 +1061,14 @@ def harness_command(
         registry_overrides = _merge_harness_registry_overrides(
             registry=registry,
             registry_space_id=registry_space_id,
+            registry_space_name=registry_space_name,
             registry_top_k=registry_top_k,
             registry_endpoint=registry_endpoint,
             registry_region=registry_region,
         )
+    except _A2ARegisterError as e:
+        console.print(f"[red]Error: failed to resolve A2A space name: {e}[/red]")
+        raise typer.Exit(1)
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
