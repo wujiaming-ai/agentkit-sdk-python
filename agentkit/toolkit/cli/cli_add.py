@@ -367,11 +367,8 @@ def _create_a2a_agent(
     a2a_space_id: str,
     runtime_id: str,
     network_type: str,
-    project_name: Optional[str],
     tags: list[dict[str, str]] | None,
-    set_default_version: bool,
     endpoint: str,
-    version: str,
     region: str,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
@@ -381,16 +378,14 @@ def _create_a2a_agent(
             "RuntimeId": runtime_id,
             "NetworkType": network_type,
         },
-        "SetDefaultVersion": bool(set_default_version),
+        "SetDefaultVersion": True,
     }
-    if project_name:
-        body["ProjectName"] = project_name
     if tags:
         body["Tags"] = tags
 
     response, request_duration_ms = _agentkit_post(
         endpoint=endpoint,
-        version=version,
+        version=_REGISTER_DEFAULT_VERSION,
         region=region,
         action="CreateA2aAgent",
         body=body,
@@ -451,13 +446,9 @@ def _register_a2a_runtime_agent(
     space_id: str,
     runtime_id: str,
     network_type: str,
-    project_name: Optional[str],
     tags: list[str],
-    set_default_version: bool,
     endpoint: Optional[str],
     region: Optional[str],
-    version: str,
-    raw: bool,
 ) -> None:
     normalized_network_type = network_type.strip().lower()
     if normalized_network_type not in _REGISTER_NETWORK_TYPES:
@@ -484,11 +475,8 @@ def _register_a2a_runtime_agent(
             a2a_space_id=space_id,
             runtime_id=runtime_id,
             network_type=normalized_network_type,
-            project_name=project_name,
             tags=parsed_tags or None,
-            set_default_version=set_default_version,
             endpoint=resolved_endpoint,
-            version=version,
             region=resolved_region,
         )
     except _A2ARegisterError as exc:
@@ -496,10 +484,6 @@ def _register_a2a_runtime_agent(
         if exc.diagnostics:
             console.print(json.dumps(exc.diagnostics, ensure_ascii=False, indent=2))
         raise typer.Exit(1) from exc
-
-    if raw:
-        console.print(json.dumps(result, ensure_ascii=False, indent=2))
-        return
 
     console.print("[green]✅ A2A agent registered[/green]")
     console.print(f"[cyan]AgentId:[/cyan] {result.get('agent_id', '')}")
@@ -594,18 +578,10 @@ def harness_command(
         "--register-network-type",
         help="Runtime network address to register: public or private.",
     ),
-    register_project_name: Optional[str] = typer.Option(
-        None, "--register-project-name", help="A2A registry project name."
-    ),
     register_tag: list[str] = typer.Option(
         [],
         "--register-tag",
         help="A2A agent tag in KEY=VALUE form. Can be repeated.",
-    ),
-    register_set_default_version: bool = typer.Option(
-        True,
-        "--register-set-default-version/--register-no-set-default-version",
-        help="Whether to set this runtime registration as the default version.",
     ),
     register_endpoint: Optional[str] = typer.Option(
         None,
@@ -616,14 +592,6 @@ def harness_command(
         None,
         "--register-region",
         help="AgentKit OpenAPI region. Defaults to AGENTKIT_REGION/VOLCENGINE_REGION/cn-beijing.",
-    ),
-    register_version: str = typer.Option(
-        _REGISTER_DEFAULT_VERSION,
-        "--register-version",
-        help="AgentKit OpenAPI version for CreateA2aAgent.",
-    ),
-    register_raw: bool = typer.Option(
-        False, "--register-raw", help="Print raw A2A registration result."
     ),
     # --- component backend types --------------------------------------------
     knowledgebase_type: Optional[str] = typer.Option(
@@ -879,13 +847,9 @@ def harness_command(
             space_id=resolved_space_id,
             runtime_id=str(entry["runtime_id"]),
             network_type=register_network_type,
-            project_name=register_project_name,
             tags=register_tag,
-            set_default_version=register_set_default_version,
             endpoint=register_endpoint,
             region=register_region,
-            version=register_version,
-            raw=register_raw,
         )
 
 

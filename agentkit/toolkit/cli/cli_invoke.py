@@ -922,7 +922,6 @@ def harness_command(
     model_name: str = typer.Option(
         None,
         "--model-name",
-        "--model-id",
         help="Override the harness model name for this invocation.",
     ),
     tools: str = typer.Option(

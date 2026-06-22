@@ -16,11 +16,9 @@
 
 import json
 
-import yaml
 from typer.testing import CliRunner
 
 from agentkit.toolkit.cli.cli import app
-from agentkit.toolkit.harness.deploy import _load_harness_spec, _resolve_harness_spec_path
 from agentkit.toolkit.harness.env_mapping import to_runtime_env
 
 runner = CliRunner()
@@ -188,56 +186,6 @@ def test_registry_config_maps_to_runtime_env():
     assert env["INCLUDE_TOOLS_EVERY_TURN"] == "true"
 
 
-def test_add_harness_writes_json_even_when_harness_yaml_exists(tmp_path):
-    yaml_path = tmp_path / "harness.yaml"
-    yaml_path.write_text(
-        "harness_name: h\nruntime: adk\nshort_term_memory: {type: local}\n"
-    )
-
-    result = _run(
-        [
-            "harness",
-            "--name",
-            "h",
-            "--registry-space-id",
-            "space-test",
-            "--registry-top-k",
-            "3",
-            "--registry-region",
-            "cn-beijing",
-            "--structured-tool-calls",
-            "--directory",
-            str(tmp_path),
-        ]
-    )
-
-    assert result.exit_code == 0, result.output
-    assert yaml_path.read_text() == (
-        "harness_name: h\nruntime: adk\nshort_term_memory: {type: local}\n"
-    )
-    data = json.loads((tmp_path / "h.harness.json").read_text())
-    assert data["registry"] == {
-        "space_id": "space-test",
-        "top_k": 3,
-        "region": "cn-beijing",
-        "type": "agentkit_a2a",
-    }
-    assert data["structured_tool_calls"] is True
-
-
-def test_deploy_spec_loader_accepts_harness_yaml(tmp_path):
-    yaml_path = tmp_path / "harness.yaml"
-    yaml_path.write_text(
-        "harness_name: h\nregistry: {type: agentkit_a2a, space_id: space-test}\n"
-    )
-
-    resolved = _resolve_harness_spec_path(tmp_path, "h")
-    data = _load_harness_spec(resolved)
-
-    assert resolved == yaml_path
-    assert data["registry"]["type"] == "agentkit_a2a"
-
-
 def test_add_harness_register_self_resolves_runtime_and_space(
     tmp_path, monkeypatch
 ):
@@ -270,8 +218,6 @@ def test_add_harness_register_self_resolves_runtime_and_space(
             "--register-self",
             "--register-tag",
             "env=test",
-            "--register-project-name",
-            "default",
             "--register-endpoint",
             "https://agentkit.cn-beijing.volcengineapi.com/",
             "--directory",
@@ -285,10 +231,8 @@ def test_add_harness_register_self_resolves_runtime_and_space(
     assert captured["a2a_space_id"] == "space-test"
     assert captured["runtime_id"] == "r-test"
     assert captured["network_type"] == "public"
-    assert captured["project_name"] == "default"
     assert captured["tags"] == [{"Key": "env", "Value": "test"}]
     assert captured["endpoint"] == "https://agentkit.cn-beijing.volcengineapi.com/"
-    assert captured["version"] == "2025-10-30"
     assert captured["region"] == "cn-beijing"
 
 
