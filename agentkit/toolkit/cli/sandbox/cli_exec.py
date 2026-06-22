@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import select
+import shlex
 import shutil
 import signal
 import sys
@@ -66,6 +67,7 @@ from agentkit.toolkit.cli.sandbox.sandbox_client import (
 DETACH_SEQUENCE = b"\x1d"
 DETACH_HINT = "Ctrl-]"
 LOCAL_EXIT_COMMANDS = {"exit", "exit()"}
+EXEC_MODE_TMUX = "tmux"
 
 
 def _terminal_size() -> dict[str, int]:
@@ -377,6 +379,35 @@ def _resolve_exec_model_provider(
         return None
 
 
+def _normalize_exec_mode(mode: Optional[str]) -> Optional[str]:
+    resolved = (mode or "").strip()
+    if not resolved:
+        return None
+    if resolved != EXEC_MODE_TMUX:
+        error("--mode must be empty or tmux")
+    return resolved
+
+
+def _build_initial_command(
+    *,
+    command: Optional[str],
+    mode: Optional[str],
+    session_id: str,
+) -> Optional[str]:
+    if mode != EXEC_MODE_TMUX:
+        return command
+
+    tmux_session_id = shlex.quote(session_id)
+    tmux_command = (
+        f"tmux has-session -t {tmux_session_id} 2>/dev/null "
+        f"&& tmux a -t {tmux_session_id} "
+        f"|| tmux new -s {tmux_session_id}"
+    )
+    if command:
+        tmux_command = f"{tmux_command} {command}"
+    return tmux_command
+
+
 def exec_command(
     ctx: typer.Context,
     session_id: Optional[str] = typer.Option(
@@ -405,6 +436,14 @@ def exec_command(
         help=(
             "Initial command to run after the exec session is ready. "
             "Omit this option to connect without an initial command."
+        ),
+    ),
+    mode: Optional[str] = typer.Option(
+        None,
+        "--mode",
+        help=(
+            "Exec command mode. Omit or pass an empty value for the default "
+            "behavior; use 'tmux' to attach to or create a tmux session."
         ),
     ),
     workspace: str = typer.Option(
@@ -464,6 +503,7 @@ def exec_command(
     ),
 ) -> None:
     """Open a streaming sandbox exec session. Press Ctrl-] or type exit/exit()."""
+    exec_mode = _normalize_exec_mode(mode)
     try:
         resolved_model_provider = _resolve_exec_model_provider(
             session_id=session_id,
@@ -525,7 +565,11 @@ def exec_command(
         error(str(exc))
 
     ws_url = build_terminal_ws_url(session.get("endpoint"))
-    initial_command = command
+    initial_command = _build_initial_command(
+        command=command,
+        mode=exec_mode,
+        session_id=session_id,
+    )
 
     def on_shell_id(remote_shell_id: str) -> None:
         add_session_terminal_shell_id(session_id, remote_shell_id)

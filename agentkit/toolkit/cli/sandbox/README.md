@@ -436,6 +436,14 @@ Options:
 - `--command`: optional. Initial command to run after the exec session is ready.
   Omit this option to connect without running an initial command. Use
   `--command codex` to start the remote Codex TUI.
+- `--mode`: optional. Omit this option or pass an empty value for the default
+  `--command` behavior. Use `--mode tmux` to replace `--command` with
+
+  ```bash
+  tmux has-session -t <session-id> 2>/dev/null && tmux a -t <session-id> || tmux new -s <session-id> <command>
+  ```
+
+  Repeated execs then attach to the same tmux session.
 - `--workspace`: optional sandbox workspace root; defaults to `/home/gem`.
 - `--src-dir`: optional local file or directory to upload before opening the
   exec session. Additional file or directory paths can follow this option,
@@ -520,7 +528,7 @@ exec:
 ```
 
 Mapping entries support the same option names as `sandbox exec`, written with
-underscores, such as `session_id`, `tool_id`, `tool_type`, `command`,
+underscores, such as `session_id`, `tool_id`, `tool_type`, `command`, `mode`,
 `shell_id`, `workspace`, `dst_dir`, `git_config`, `model_name`,
 `model_api_key`, and `model_provider`. Use `src_dir` or `src_dirs` for the
 first uploaded source and optional additional source paths; use `extra_sources`
