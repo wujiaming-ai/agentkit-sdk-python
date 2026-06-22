@@ -55,8 +55,10 @@ Options:
 - `--tool-type`: optional. Tool type to create; defaults to `CodeEnv`.
 - `--tool-name`: optional. Tool name. If omitted, the CLI generates a name like
   `agentkit-codeenv-<random>`.
-- `--tos-bucket`: optional. TOS bucket mounted at `/home/gem`. If omitted, the
-  tool is created without TOS mount configuration.
+- `--tos-bucket`: optional. TOS bucket to mount. If omitted, the tool is
+  created without TOS mount configuration.
+- `--tos-mount`: optional. Local mount path for `--tos-bucket`; defaults to
+  `/home/gem`.
 - `--cpu`: optional. Sandbox vCPU count; allowed values are `2`, `4`, `8`, and
   `16`. Defaults to `4`. Memory is derived as 2 GiB per vCPU.
 - `--model-provider`: optional. Model provider to use for base URLs, the
@@ -101,7 +103,8 @@ TOS credentials. The command supports the same credential sources as the shared
 Volcengine configuration, including environment variables and global
 `agentkit config --global` settings.
 
-When `--tos-bucket` is set, the generated tool TOS mount uses:
+When `--tos-bucket` is set, the generated tool TOS mount uses
+`LocalMountPath: /home/gem` by default, or the path provided by `--tos-mount`:
 
 ```text
 BucketPath: /sandbox-session/default/default
@@ -366,6 +369,48 @@ with the system default browser, and the response is JSON:
 }
 ```
 
+### Mount
+
+Open a sandbox session's TOS path in TOS Browser.
+
+```bash
+agentkit sandbox mount \
+  --session-id 123456789 \
+  --oauth-url https://example.com/oauth
+agentkit sandbox mount --session-id 123456789
+```
+
+Options:
+
+- `--session-id` / `--sid` / `-s`: required. Sandbox session ID to mount.
+- `--oauth-url`: optional. Base URL used to fetch
+  `/.well-known/agentkit-cli`. If omitted, the CLI uses the newest file under
+  `~/.agentkit/auth/sessions/`, validates the file name matches
+  `agentkit-cli-*volces.com.json`, removes the `.json` suffix, and uses that as
+  the OAuth URL.
+
+The CLI reads `tool_id` from `.agentkit/sandbox/sessions.json` by
+`--session-id`. If the session is not found locally, it syncs sessions for the
+current tool using the same resolution behavior as `agentkit sandbox get`, then
+checks the local session store again. After resolving the tool, the CLI calls
+`GetTool` and reads the bucket from `TosMountConfig.MountPoints[].BucketName`;
+if the tool has no TOS mount, the command exits with an error. The discovery
+document is saved to `.agentkit/sandbox/agentkit-cli`. The CLI extracts
+`role_trn`, `client_id`, and the user pool ID from `issuer`, then runs
+`open "<command>"`, where `command` is the generated `tosbrowser://...` URL.
+The response is JSON:
+
+```json
+{
+  "tool_id": "t-example",
+  "session_id": "123456789",
+  "command": "tosbrowser://open?path=tos://sandbox-bucket/sandbox-session/tool-t-example/session-123456789/&type=oAuthLogin&role=...&userPool=...&clientId=..."
+}
+```
+
+If macOS reports that no application can open the `tosbrowser://` URL, the CLI
+returns JSON with the original `open` error and a TosBrowser install hint.
+
 ### Exec
 
 Open a streaming WebSocket exec session to the sandbox. By default, this connects
@@ -420,6 +465,10 @@ extract it into the directory resolved from `--workspace` and `--dst-dir`. The
 WebSocket exec connection is opened only after the upload and extraction
 complete.
 
+When the resolved tool has `TosMountConfig.MountPoints` in `GetTool`, session
+creation passes those mount points to `CreateSession` and uses each returned
+`LocalMountPath` as-is.
+
 When the remote terminal returns a shell session ID, the CLI prints it and
 stores it in the `terminal_shell_id` list in `.agentkit/sandbox/sessions.json`
 while the connection is active. Multiple live WebSocket connections under the
@@ -435,6 +484,48 @@ available.
 Press `Ctrl-]`, or type `exit` / `exit()`, to detach from the local terminal.
 `Ctrl-C` is forwarded to the remote process, which is useful for interrupting
 Codex or shell commands without closing the local WebSocket client.
+
+### Run
+
+Open a local macOS Terminal tab with a tiled `tmux` layout and run different
+`sandbox exec` commands from a YAML file. For `--terminal 4`, the four exec
+sessions are arranged as a 2x2 grid. The CLI writes short temporary launcher
+scripts and asks Terminal to run the launcher, so long prompts and quoted
+commands are not embedded directly in AppleScript.
+
+```bash
+agentkit sandbox run --terminal 4
+agentkit sandbox run --config sandbox-run.yaml --terminal 4 --dry-run
+```
+
+By default, the command reads `agentkit-sandbox-run.yaml`. The YAML can be a
+top-level list or contain `exec`, `execs`, `tabs`, or `commands`:
+
+```yaml
+exec:
+  - name: agent-a
+    session_id: agent-a
+    tool_id: t-example
+    command: codex
+    src_dir: ./workspace
+    extra_sources:
+      - ./README.md
+    dst_dir: project
+  - name: agent-b
+    args:
+      - --session-id
+      - agent-b
+      - --command
+      - opencode
+```
+
+Mapping entries support the same option names as `sandbox exec`, written with
+underscores, such as `session_id`, `tool_id`, `tool_type`, `command`,
+`shell_id`, `workspace`, `dst_dir`, `git_config`, `model_name`,
+`model_api_key`, and `model_provider`. Use `src_dir` or `src_dirs` for the
+first uploaded source and optional additional source paths; use `extra_sources`
+for additional positional sources. Use `args` when you want to provide raw
+`sandbox exec` arguments directly.
 
 ## Local Store
 
@@ -504,7 +595,7 @@ Example:
 
 ## Module Layout
 
-- `cli.py`: registers the `create`, `get`, `exec`, `shell`, and `file` sandbox subcommands.
+- `cli.py`: registers the sandbox subcommands.
 - `../cli.py`: registers the `sandbox` command group.
 - `session_create.py`: shared session creation and idempotent ensure helpers.
 - `session_sync.py`: shared remote session list/sync helpers.
@@ -513,5 +604,6 @@ Example:
 - `cli_get.py`: get command implementation.
 - `cli_shell.py`: shell command implementation.
 - `cli_exec.py`: streaming exec command implementation.
+- `cli_run.py`: multi-tab exec runner implementation.
 - `cli_file.py`: file upload, download, and list command implementation.
-- `utils.py`: shared store, URL, JSON, and error helpers.
+- `sandbox_client.py`: shared store, URL, JSON, and error helpers.

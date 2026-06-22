@@ -317,6 +317,61 @@ def test_create_command_uses_tos_service_when_bucket_is_set(monkeypatch):
     )
 
 
+def test_create_command_uses_tos_mount_option(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--tos-bucket",
+            "my-bucket",
+            "--tos-mount",
+            "/mnt/workspace",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert _FakeTOSService.instances[0].local_mount_path == "/mnt/workspace"
+    tos_config = _FakeToolsClient.last_request.tos_mount_config
+    assert tos_config is not None
+    assert tos_config.mount_points[0].local_mount_path == "/mnt/workspace"
+
+
+def test_create_command_rejects_tos_mount_without_tos_bucket(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--tos-mount",
+            "/home/gem/tmp",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--tos-mount requires --tos-bucket" in result.output
+    assert _FakeToolsClient.instances == []
+    assert _FakeTOSService.instances == []
+
+
 def test_create_command_uses_cpu_option_for_resource_shape(monkeypatch):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
@@ -394,6 +449,7 @@ def test_create_command_help_omits_model_base_url_option():
     result = runner.invoke(app, ["sandbox", "create", "--help"])
 
     assert result.exit_code == 0
+    assert "--tos-mount" in result.output
     assert "--model-provider" in result.output
     assert "--model-base-url" not in result.output
 
@@ -478,6 +534,26 @@ def test_build_create_tool_request_adds_tos_mount(monkeypatch):
     assert request.network_configuration.enable_private_network is False
     assert request.cpu_milli == 4000
     assert request.memory_mb == 8192
+
+
+def test_build_create_tool_request_uses_custom_tos_mount(monkeypatch):
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    request = cli_create._build_create_tool_request(
+        tool_type="CodeEnv",
+        name="demo-tool",
+        tos_bucket="my-bucket",
+        tos_region="cn-beijing",
+        tos_mount_path="/mnt/workspace",
+    )
+
+    assert _FakeTOSService.instances[0].local_mount_path == "/mnt/workspace"
+    tos_config = request.tos_mount_config
+    assert tos_config is not None
+    assert tos_config.mount_points[0].local_mount_path == "/mnt/workspace"
 
 
 def test_build_create_tool_request_skips_tos_mount_without_bucket(monkeypatch):
@@ -768,6 +844,7 @@ def test_build_create_tool_request_adds_default_model_base_url(monkeypatch):
     from agentkit.toolkit.cli.sandbox import cli_create
 
     _reset_fake_tools_client()
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
     request = cli_create._build_create_tool_request(

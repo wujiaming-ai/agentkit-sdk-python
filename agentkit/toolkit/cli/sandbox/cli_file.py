@@ -33,7 +33,7 @@ from agentkit.sdk.tools.client import AgentkitToolsClient
 from agentkit.toolkit.cli.sandbox.session_create import SANDBOX_TOOL_ID_ENV
 from agentkit.toolkit.cli.sandbox.session_sync import sync_remote_sessions
 from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
-from agentkit.toolkit.cli.sandbox.utils import (
+from agentkit.toolkit.cli.sandbox.sandbox_client import (
     SANDBOX_EXEC_TIMEOUT_SECONDS,
     SANDBOX_FILE_DOWNLOAD_ROUTE,
     SANDBOX_FILE_LIST_ROUTE,

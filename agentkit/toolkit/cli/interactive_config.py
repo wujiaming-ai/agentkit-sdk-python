@@ -534,6 +534,11 @@ class AutoPromptGenerator:
                 )
                 errors.append(msg)
 
+            if rule.get("required") and (
+                not value or (isinstance(value, str) and not value.strip())
+            ):
+                errors.append("This field cannot be empty")
+
             # pattern validation
             if "pattern" in rule:
                 import re
