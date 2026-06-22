@@ -164,6 +164,41 @@ def test_registry_flags_write_agentkit_a2a_section(tmp_path):
     assert data["include_tools_every_turn"] is True
 
 
+def test_registry_disabled_turns_off_registry(tmp_path):
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--registry",
+            "disabled",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads((tmp_path / "h.harness.json").read_text())
+    assert data["registry"] == {"type": ""}
+
+
+def test_registry_off_is_not_supported(tmp_path):
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--registry",
+            "off",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 1
+    assert "`disabled` is supported" in result.output
+
+
 def test_registry_config_maps_to_runtime_env():
     env = to_runtime_env(
         {

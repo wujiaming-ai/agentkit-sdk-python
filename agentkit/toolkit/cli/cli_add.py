@@ -144,7 +144,7 @@ def _parse_registry_int(key: str, value: object) -> object:
 def _parse_registry_uri(value: str) -> dict:
     """Parse the supported AgentKit A2A registry URI into a spec section."""
     raw = value.strip()
-    if raw.lower() in {"", "none", "disabled", "off"}:
+    if raw.lower() == "disabled":
         return {"type": ""}
 
     parsed = urlparse(raw)
@@ -155,7 +155,8 @@ def _parse_registry_uri(value: str) -> dict:
     ):
         raise ValueError(
             "Unsupported registry URI. Currently only "
-            "`agentkit://a2a-registry?space_id=xxx&top_k=3` is supported."
+            "`agentkit://a2a-registry?space_id=xxx&top_k=3` or "
+            "`disabled` is supported."
         )
 
     query = {
