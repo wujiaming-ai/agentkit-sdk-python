@@ -1585,8 +1585,8 @@ def test_cli_mount_open_tosbrowser_passes_url_as_single_argument(
 
     calls = []
 
-    def fake_run(args, *, check):
-        calls.append((args, check))
+    def fake_run(args, *, check, capture_output, text):
+        calls.append((args, check, capture_output, text))
 
     command = (
         "tosbrowser://open?"
@@ -1602,7 +1602,126 @@ def test_cli_mount_open_tosbrowser_passes_url_as_single_argument(
 
     cli_mount._open_tosbrowser(command)
 
-    assert calls == [(["open", command], True)]
+    assert calls == [(["open", command], True, True, True)]
+
+
+def test_cli_mount_returns_install_hint_when_tosbrowser_is_missing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    _write_session_store(
+        store_path,
+        {
+            "session-cli": {
+                "session_id": "session-cli",
+                "tool_id": "tool-from-session",
+                "instance_id": "instance-cli",
+                "endpoint": "https://sandbox.example.com",
+            }
+        },
+    )
+    _FakeToolsClient.get_tool_response = _FakeGetToolResponse(
+        tos_mount_config=_FakeToolTosMountConfig(
+            [_FakeToolMountPoint(bucket_name="sandbox-bucket")]
+        )
+    )
+    monkeypatch.setattr(
+        cli_mount,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    monkeypatch.setattr(
+        cli_mount,
+        "_get_discovery_store_path",
+        lambda: tmp_path / ".agentkit" / "sandbox" / "agentkit-cli",
+    )
+    discovery = {
+        "issuer": (
+            "https://userpool-5513b734-2672-4dce-80b5-47667033bc60"
+            ".userpool.auth.id.cn-beijing.volces.com"
+        ),
+        "client_id": "client-id",
+        "role_trn": "role-trn",
+    }
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(discovery).encode("utf-8")
+
+    original_error = (
+        "No application knows how to open URL "
+        "tosbrowser://open?path=tos://sandbox-bucket/"
+        "(Error Domain=NSOSStatusErrorDomain Code=-10814 "
+        '"kLSApplicationNotFoundErr")'
+    )
+
+    monkeypatch.setattr(cli_mount, "urlopen", lambda _url: FakeResponse())
+    monkeypatch.setattr(
+        cli_mount,
+        "_open_tosbrowser",
+        lambda _command: (_ for _ in ()).throw(
+            cli_mount.TosBrowserNotFoundError(original_error)
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "mount",
+            "--session-id",
+            "session-cli",
+            "--oauth-url",
+            "https://example.com/oauth",
+        ],
+    )
+
+    assert result.exit_code == 1
+    output = json.loads(result.output)
+    assert output["tool_id"] == "tool-from-session"
+    assert output["session_id"] == "session-cli"
+    assert output["error_msg"] == "Failed to open TosBrowser"
+    assert output["original_error"] == original_error
+    assert output["install_hint"] == "请安装 TosBrowser 应用"
+    assert output["download_url"] == cli_mount.TOS_BROWSER_DOWNLOAD_URL
+    assert output["command"].startswith("tosbrowser://open?")
+
+
+def test_open_tosbrowser_detects_missing_tosbrowser_from_open_error(
+    monkeypatch,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.cli_mount as cli_mount
+
+    original_error = (
+        "No application knows how to open URL tosbrowser://open?path=tos://"
+        "sandbox-bucket-cn-beijing/sandbox-session/tool-t-example/session-test/"
+        '&type=oAuthLogin (Error Domain=NSOSStatusErrorDomain Code=-10814 '
+        '"kLSApplicationNotFoundErr")'
+    )
+
+    def fake_run(*_args, **_kwargs):
+        raise cli_mount.subprocess.CalledProcessError(
+            returncode=1,
+            cmd=["open", "tosbrowser://open"],
+            stderr=original_error,
+        )
+
+    monkeypatch.setattr(cli_mount.subprocess, "run", fake_run)
+
+    with pytest.raises(cli_mount.TosBrowserNotFoundError) as exc_info:
+        cli_mount._open_tosbrowser("tosbrowser://open")
+
+    assert str(exc_info.value) == original_error
 
 
 def test_cli_mount_reports_missing_session_after_sync(monkeypatch, tmp_path) -> None:

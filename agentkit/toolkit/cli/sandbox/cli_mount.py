@@ -40,7 +40,17 @@ SANDBOX_DISCOVERY_PATH = Path(".agentkit") / "sandbox" / "agentkit-cli"
 AUTH_SESSION_NAME_PREFIX = "agentkit-cli-"
 AUTH_SESSION_NAME_SUFFIX = "volces.com.json"
 AUTH_SESSION_JSON_SUFFIX = ".json"
+TOS_BROWSER_DOWNLOAD_URL = (
+    "https://lf3-cdn-tos.bytegoofy.com/obj/tron-demo/7605960479860594954/"
+    "releases/328661904/1.12.7/darwin-arm64/"
+    "TOS_Browser_Public-v1.12.7-darwin-arm64.dmg"
+)
+TOS_BROWSER_INSTALL_HINT = "请安装 TosBrowser 应用"
 USER_POOL_PATTERN = re.compile(r"userpool-([^.]+)\.userpool")
+
+
+class TosBrowserNotFoundError(Exception):
+    """Raised when the OS has no handler for the tosbrowser URL scheme."""
 
 
 def _get_discovery_store_path() -> Path:
@@ -253,8 +263,38 @@ def _build_tosbrowser_command(
     )
 
 
+def _called_process_error_output(exc: subprocess.CalledProcessError) -> str:
+    parts = [
+        str(item).strip()
+        for item in (exc.stderr, exc.stdout)
+        if isinstance(item, str) and item.strip()
+    ]
+    if parts:
+        return "\n".join(parts)
+    return str(exc)
+
+
+def _is_tosbrowser_not_found_error(message: str) -> bool:
+    return (
+        "No application knows how to open URL" in message
+        or "kLSApplicationNotFoundErr" in message
+        or "Code=-10814" in message
+    )
+
+
 def _open_tosbrowser(command: str) -> None:
-    subprocess.run(["open", command], check=True)
+    try:
+        subprocess.run(
+            ["open", command],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        output = _called_process_error_output(exc)
+        if _is_tosbrowser_not_found_error(output):
+            raise TosBrowserNotFoundError(output) from exc
+        raise
 
 
 def mount_command(
@@ -294,6 +334,19 @@ def mount_command(
             client_id=client_id,
         )
         _open_tosbrowser(command)
+    except TosBrowserNotFoundError as exc:
+        echo_json(
+            {
+                "tool_id": resolved_tool_id,
+                "session_id": resolved_session_id,
+                "command": command,
+                "error_msg": "Failed to open TosBrowser",
+                "original_error": str(exc),
+                "install_hint": TOS_BROWSER_INSTALL_HINT,
+                "download_url": TOS_BROWSER_DOWNLOAD_URL,
+            }
+        )
+        raise typer.Exit(1)
     except typer.Exit:
         raise
     except Exception as exc:

@@ -408,6 +408,9 @@ The response is JSON:
 }
 ```
 
+If macOS reports that no application can open the `tosbrowser://` URL, the CLI
+returns JSON with the original `open` error and a TosBrowser install hint.
+
 ### Exec
 
 Open a streaming WebSocket exec session to the sandbox. By default, this connects
