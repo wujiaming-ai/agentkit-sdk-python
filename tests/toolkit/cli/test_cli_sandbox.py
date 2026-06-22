@@ -3236,6 +3236,105 @@ def test_cli_exec_runs_command_option(monkeypatch, tmp_path) -> None:
     assert captured["initial_command"] == "codex"
 
 
+def test_cli_exec_tmux_mode_wraps_command(monkeypatch, tmp_path) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    stored_session = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com/?token=abc",
+    }
+    store_path.write_text(
+        json.dumps({"user-1": stored_session}),
+        encoding="utf-8",
+    )
+    _patch_exec_session(monkeypatch, cli_exec, stored_session)
+    captured = {}
+
+    def fake_connect(ws_url, initial_command, on_shell_id=None):
+        captured["ws_url"] = ws_url
+        captured["initial_command"] = initial_command
+
+    monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--session-id",
+            "user-1",
+            "--mode",
+            "tmux",
+            "--command",
+            "codex --dangerously-bypass-approvals-and-sandbox",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["ws_url"] == "ws://sandbox.example.com/v1/shell/ws?token=abc"
+    assert captured["initial_command"] == (
+        "tmux has-session -t user-1 2>/dev/null && tmux a -t user-1 "
+        "|| tmux new -s user-1 codex --dangerously-bypass-approvals-and-sandbox"
+    )
+
+
+def test_cli_exec_empty_mode_keeps_command(monkeypatch, tmp_path) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    stored_session = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com/?token=abc",
+    }
+    store_path.write_text(
+        json.dumps({"user-1": stored_session}),
+        encoding="utf-8",
+    )
+    _patch_exec_session(monkeypatch, cli_exec, stored_session)
+    captured = {}
+
+    def fake_connect(ws_url, initial_command, on_shell_id=None):
+        captured["initial_command"] = initial_command
+
+    monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--session-id",
+            "user-1",
+            "--mode",
+            "",
+            "--command",
+            "codex",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["initial_command"] == "codex"
+
+
+def test_cli_exec_rejects_unknown_mode() -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        ["sandbox", "exec", "--mode", "screen"],
+    )
+
+    assert result.exit_code == 1
+    assert "--mode must be empty or tmux" in result.output
+
+
 def test_cli_sandbox_run_reads_yaml_and_prints_dry_run(tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
 
@@ -3248,6 +3347,7 @@ exec:
     session_id: user-left
     tool_id: tool-1
     command: codex
+    mode: tmux
     src_dir: ./workspace
     extra_sources:
       - ./README.md
@@ -3279,6 +3379,7 @@ exec:
     assert "agentkit sandbox exec" in result.output
     assert "--session-id user-left" in result.output
     assert "--tool-id tool-1" in result.output
+    assert "--mode tmux" in result.output
     assert "--command codex" in result.output
     assert "--src-dir ./workspace ./README.md" in result.output
     assert "--dst-dir project" in result.output

@@ -46,6 +46,7 @@ _OPTION_FIELDS = {
     "tool_id": "--tool-id",
     "tool_type": "--tool-type",
     "command": "--command",
+    "mode": "--mode",
     "shell_id": "--shell-id",
     "workspace": "--workspace",
     "dst_dir": "--dst-dir",
