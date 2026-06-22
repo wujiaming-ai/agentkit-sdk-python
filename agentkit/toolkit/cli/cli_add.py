@@ -68,13 +68,9 @@ _REGISTRY_QUERY_KEYS = {
     "space_id",
     "top_k",
     "endpoint",
-    "version",
-    "service_name",
     "region",
-    "timeout_ms",
-    "poll_interval_ms",
 }
-_REGISTRY_INT_KEYS = {"top_k", "timeout_ms", "poll_interval_ms"}
+_REGISTRY_INT_KEYS = {"top_k"}
 _REGISTER_NETWORK_TYPES = {"public", "private"}
 _REGISTER_DEFAULT_VERSION = "2025-10-30"
 
@@ -191,11 +187,7 @@ def _apply_registry_config(
     registry_space_id: Optional[str],
     registry_top_k: Optional[int],
     registry_endpoint: Optional[str],
-    registry_version: Optional[str],
-    registry_service_name: Optional[str],
     registry_region: Optional[str],
-    registry_timeout_ms: Optional[int],
-    registry_poll_interval_ms: Optional[int],
 ) -> None:
     has_registry_update = any(
         value is not None
@@ -204,11 +196,7 @@ def _apply_registry_config(
             registry_space_id,
             registry_top_k,
             registry_endpoint,
-            registry_version,
-            registry_service_name,
             registry_region,
-            registry_timeout_ms,
-            registry_poll_interval_ms,
         ]
     )
     if not has_registry_update:
@@ -224,11 +212,7 @@ def _apply_registry_config(
     _set_registry_value(section, "space_id", registry_space_id)
     _set_registry_value(section, "top_k", registry_top_k)
     _set_registry_value(section, "endpoint", registry_endpoint)
-    _set_registry_value(section, "version", registry_version)
-    _set_registry_value(section, "service_name", registry_service_name)
     _set_registry_value(section, "region", registry_region)
-    _set_registry_value(section, "timeout_ms", registry_timeout_ms)
-    _set_registry_value(section, "poll_interval_ms", registry_poll_interval_ms)
 
     if section.get("type") != "":
         section["type"] = "agentkit_a2a"
@@ -541,26 +525,8 @@ def harness_command(
     registry_endpoint: Optional[str] = typer.Option(
         None, "--registry-endpoint", help="AgentKit OpenAPI endpoint for A2A registry."
     ),
-    registry_version: Optional[str] = typer.Option(
-        None, "--registry-version", help="AgentKit OpenAPI version for A2A registry."
-    ),
-    registry_service_name: Optional[str] = typer.Option(
-        None,
-        "--registry-service-name",
-        help="AgentKit OpenAPI service name for A2A registry.",
-    ),
     registry_region: Optional[str] = typer.Option(
         None, "--registry-region", help="AgentKit OpenAPI region."
-    ),
-    registry_timeout_ms: Optional[int] = typer.Option(
-        None,
-        "--registry-timeout-ms",
-        help="A2A registry request / polling timeout in milliseconds.",
-    ),
-    registry_poll_interval_ms: Optional[int] = typer.Option(
-        None,
-        "--registry-poll-interval-ms",
-        help="A2A task polling interval in milliseconds.",
     ),
     # --- A2A registry registration action -----------------------------------
     register_self: bool = typer.Option(
@@ -824,11 +790,7 @@ def harness_command(
             registry_space_id,
             registry_top_k,
             registry_endpoint,
-            registry_version,
-            registry_service_name,
             registry_region,
-            registry_timeout_ms,
-            registry_poll_interval_ms,
         )
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
