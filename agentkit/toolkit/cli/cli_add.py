@@ -15,10 +15,10 @@
 """AgentKit CLI - ``add`` commands.
 
 ``agentkit add harness`` writes a harness configuration file
-``<name>.harness.json`` or an existing ``harness.yaml`` describing a deployable
-agent. The schema mirrors the attributes of the VeADK harness (model / tools /
-skills / system prompt / runtime, plus the knowledge-base and memory components
-and an optional OAuth2 auth block), serialized as a layered document::
+``<name>.harness.json`` describing a deployable agent. The schema mirrors the
+attributes of the VeADK harness (model / tools / skills / system prompt /
+runtime, plus the knowledge-base and memory components and an optional OAuth2
+auth block), serialized as a layered JSON document::
 
     {
       "harness_name": "my-harness",
@@ -34,9 +34,7 @@ and an optional OAuth2 auth block), serialized as a layered document::
     }
 
 Re-running ``add harness`` for the same ``--name`` merges the supplied options
-into the existing file, so configuration can be built up incrementally. If a
-``harness.yaml`` already exists in the target directory it is updated in place;
-otherwise the command writes ``<name>.harness.json``.
+into the existing file, so configuration can be built up incrementally.
 """
 
 import json
@@ -47,7 +45,6 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 import typer
-import yaml
 from rich.console import Console
 
 console = Console()
@@ -246,40 +243,13 @@ def _apply_registry_config(
     data["registry"] = section
 
 
-def _resolve_harness_target(directory: str, name: str) -> tuple[Path, str]:
-    """Choose the existing harness spec to update, defaulting to JSON."""
-    root = Path(directory).resolve()
-    json_path = root / f"{name}.harness.json"
-    yaml_path = root / "harness.yaml"
-    yml_path = root / "harness.yml"
-    if json_path.exists():
-        return json_path, "json"
-    if yaml_path.exists():
-        return yaml_path, "yaml"
-    if yml_path.exists():
-        return yml_path, "yaml"
-    return json_path, "json"
-
-
-def _load_spec(path: Path, file_format: str) -> dict:
+def _load_spec(path: Path) -> dict:
     if not path.is_file():
         return {}
-    if file_format == "yaml":
-        return yaml.safe_load(path.read_text()) or {}
     return json.loads(path.read_text())
 
 
-def _write_spec(path: Path, file_format: str, data: dict) -> None:
-    if file_format == "yaml":
-        path.write_text(
-            yaml.safe_dump(
-                data,
-                sort_keys=False,
-                allow_unicode=True,
-                default_flow_style=None,
-            )
-        )
-        return
+def _write_spec(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
@@ -543,7 +513,7 @@ def harness_command(
     name: str = typer.Option(
         ...,
         "--name",
-        help="Harness name; writes <name>.harness.json or updates harness.yaml.",
+        help="Harness name; the config is written to <name>.harness.json.",
     ),
     # --- core agent parameters ----------------------------------------------
     system_prompt: Optional[str] = typer.Option(
@@ -759,16 +729,15 @@ def harness_command(
     directory: str = typer.Option(
         ".",
         "--directory",
-        help="Directory to write <name>.harness.json into, or update harness.yaml in.",
+        help="Directory to write <name>.harness.json into.",
     ),
 ):
-    """Create or update a harness config file.
+    """Create or update a harness config file ``<name>.harness.json``.
 
     Each option SETS its value; ``--tools`` / ``--skills`` / ``--allowed-id``
     take comma-separated lists. Connection params are written under their
     component section alongside its ``type``. Re-running for the same ``--name``
-    merges options into the existing file. Existing ``harness.yaml`` files are
-    updated in place; otherwise ``<name>.harness.json`` is written.
+    merges options into the existing file.
     """
     if not _NAME_RE.match(name):
         console.print(
@@ -786,13 +755,13 @@ def harness_command(
         "--short-term-memory-type", short_term_memory_type, _SHORT_TERM_MEMORY_TYPES
     )
 
-    target, file_format = _resolve_harness_target(directory, name)
+    target = Path(directory).resolve() / f"{name}.harness.json"
     if target.exists() and not target.is_file():
         console.print(f"[red]Error: '{target}' exists but is not a file.[/red]")
         raise typer.Exit(1)
 
     # Start from the existing file (merge) or a minimal default scaffold.
-    data = _load_spec(target, file_format)
+    data = _load_spec(target)
     if not data:
         data = {
             "harness_name": name,
@@ -898,7 +867,7 @@ def harness_command(
         raise typer.Exit(1) from exc
 
     _prune(data)
-    _write_spec(target, file_format, data)
+    _write_spec(target, data)
     console.print(f"[green]✓ Wrote harness config: {target}[/green]")
 
     if register_self:

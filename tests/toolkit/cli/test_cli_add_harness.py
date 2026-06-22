@@ -188,7 +188,7 @@ def test_registry_config_maps_to_runtime_env():
     assert env["INCLUDE_TOOLS_EVERY_TURN"] == "true"
 
 
-def test_add_harness_updates_existing_harness_yaml(tmp_path):
+def test_add_harness_writes_json_even_when_harness_yaml_exists(tmp_path):
     yaml_path = tmp_path / "harness.yaml"
     yaml_path.write_text(
         "harness_name: h\nruntime: adk\nshort_term_memory: {type: local}\n"
@@ -212,7 +212,10 @@ def test_add_harness_updates_existing_harness_yaml(tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    data = yaml.safe_load(yaml_path.read_text())
+    assert yaml_path.read_text() == (
+        "harness_name: h\nruntime: adk\nshort_term_memory: {type: local}\n"
+    )
+    data = json.loads((tmp_path / "h.harness.json").read_text())
     assert data["registry"] == {
         "space_id": "space-test",
         "top_k": 3,
