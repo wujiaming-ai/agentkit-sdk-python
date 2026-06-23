@@ -685,7 +685,12 @@ def test_build_create_tool_request_adds_code_env_config_envs(monkeypatch):
     assert models[0]["slug"] == "deepseek-v4-pro-260425"
     assert models[0]["display_name"] == "deepseek-v4-pro-260425"
     assert "deepseek-v4-flash-260425" in [model["slug"] for model in models]
-    assert "doubao-seed-2-0-pro-260215" in [model["slug"] for model in models]
+    models_by_slug = {model["slug"]: model for model in models}
+    assert "doubao-seed-2-0-pro-260215" in models_by_slug
+    assert (
+        models_by_slug["doubao-seed-2-0-pro-260215"]["max_context_window"]
+        == 200000
+    )
     assert models[0]["truncation_policy"] == {"mode": "tokens", "limit": 10000}
 
 
@@ -728,13 +733,7 @@ def test_build_create_tool_request_uses_model_provider(monkeypatch):
     models = {model["slug"]: model for model in catalog["models"]}
     assert "deepseek-v4-flash" in models
     assert "deepseek-v4-flash-260425" not in models
-    assert models["glm-5.2"]["supports_reasoning_summaries"] is False
-    glm_reasoning_levels = models["glm-5.2"]["supported_reasoning_levels"]
-    assert [level["effort"] for level in glm_reasoning_levels] == [
-        "low",
-        "medium",
-        "high",
-    ]
+    assert "glm-5.2" not in models
 
 
 def test_build_create_tool_request_allows_custom_model_name(monkeypatch):
@@ -764,6 +763,30 @@ def test_build_create_tool_request_allows_custom_model_name(monkeypatch):
     assert catalog["models"][0]["slug"] == "deepseek-v4-flash-260428"
     assert catalog["models"][0]["supports_reasoning_summaries"] is True
     assert catalog["models"][0]["max_context_window"] == 1000000
+
+
+def test_build_codex_model_catalog_infers_custom_model_context_window():
+    from agentkit.toolkit.cli.sandbox.model_config import (
+        build_codex_model_catalog_json,
+    )
+
+    expected_context_windows = {
+        "deepseek-v4-flash-260428": 1000000,
+        "glm-5.2": 1000000,
+        "doubao-seed-2-0-code-preview-260215": 200000,
+        "glm-4-7-251222": 200000,
+        "some-other-model": 200000,
+    }
+
+    for model_name, expected_context_window in expected_context_windows.items():
+        catalog = json.loads(
+            build_codex_model_catalog_json(model_name, "model_square")
+        )
+        assert catalog["models"][0]["slug"] == model_name
+        assert (
+            catalog["models"][0]["max_context_window"]
+            == expected_context_window
+        )
 
 
 def test_build_create_tool_request_uses_model_api_key_env(monkeypatch):
