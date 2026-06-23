@@ -792,6 +792,23 @@ def _merge_harness_registry_overrides(
     return overrides
 
 
+def _enable_harness_registry_intent(overrides: dict[str, Any]) -> None:
+    space_id = overrides.get("registry_space_id")
+    if not space_id:
+        return
+
+    from agentkit.toolkit.cli.cli_add import (
+        _enable_a2a_space_intent,
+        _resolve_agentkit_openapi_target,
+    )
+
+    endpoint, region = _resolve_agentkit_openapi_target(
+        endpoint=overrides.get("registry_endpoint"),
+        region=overrides.get("registry_region"),
+    )
+    _enable_a2a_space_intent(str(space_id), endpoint=endpoint, region=region)
+
+
 # Fixed ADK app name for the run_sse path. The harness loader serves its single
 # agent under any app name, so a stable constant keeps the CLI decoupled from the
 # deployed HARNESS_NAME.
@@ -1073,8 +1090,9 @@ def harness_command(
             registry_endpoint=registry_endpoint,
             registry_region=registry_region,
         )
+        _enable_harness_registry_intent(registry_overrides)
     except _A2ARegisterError as e:
-        console.print(f"[red]Error: failed to resolve A2A space name: {e}[/red]")
+        console.print(f"[red]Error: failed to configure A2A registry: {e}[/red]")
         raise typer.Exit(1)
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")

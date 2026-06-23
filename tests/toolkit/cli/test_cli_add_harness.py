@@ -16,6 +16,7 @@
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from agentkit.toolkit.cli.cli import app
@@ -31,6 +32,16 @@ def _run(args):
 
 def _squash_output(value: str) -> str:
     return " ".join(value.split())
+
+
+@pytest.fixture(autouse=True)
+def _fake_update_a2a_space_intent(monkeypatch):
+    def fake_agentkit_post(*, endpoint, version, region, action, body):
+        if action != "UpdateA2aSpace":
+            raise AssertionError(f"unexpected AgentKit action: {action}")
+        return {"ResponseMetadata": {"RequestId": "req-update"}, "Result": {}}, 1
+
+    monkeypatch.setattr(cli_add, "_agentkit_post", fake_agentkit_post)
 
 
 def test_creates_harness_json_with_layered_structure(tmp_path):
@@ -167,6 +178,51 @@ def test_registry_flags_write_agentkit_a2a_section(tmp_path):
     }
     assert data["structured_tool_calls"] is True
     assert data["include_tools_every_turn"] is True
+
+
+def test_registry_add_enables_a2a_space_intent(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_agentkit_post(*, endpoint, version, region, action, body):
+        calls.append(
+            {
+                "endpoint": endpoint,
+                "version": version,
+                "region": region,
+                "action": action,
+                "body": body,
+            }
+        )
+        return {"ResponseMetadata": {"RequestId": "req-update"}, "Result": {}}, 1
+
+    monkeypatch.setattr(cli_add, "_agentkit_post", fake_agentkit_post)
+
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--registry-space-id",
+            "as-test",
+            "--registry-endpoint",
+            "https://open.volcengineapi.com/?unused=1",
+            "--registry-region",
+            "cn-beijing",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        {
+            "endpoint": "https://open.volcengineapi.com/",
+            "version": "2025-10-30",
+            "region": "cn-beijing",
+            "action": "UpdateA2aSpace",
+            "body": {"Id": "as-test", "IntentEnabled": True},
+        }
+    ]
 
 
 def test_registry_space_name_resolves_to_space_id(tmp_path, monkeypatch):
