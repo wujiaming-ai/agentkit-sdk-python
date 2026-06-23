@@ -64,6 +64,7 @@ class ModelProviderConfig:
 
 
 DEFAULT_MODEL_CONTEXT_WINDOW = 1000000
+LIMITED_MODEL_CONTEXT_WINDOW = 200000
 DEFAULT_MODEL_PROVIDER = ModelProviderType.MODEL_SQUARE.value
 
 MODEL_PROVIDER_CONFIGS: dict[str, ModelProviderConfig] = {
@@ -74,7 +75,7 @@ MODEL_PROVIDER_CONFIGS: dict[str, ModelProviderConfig] = {
         models={
             "doubao-seed-2-0-pro-260215": ModelSpec(
                 supports_reasoning_summaries=True,
-                context_window=256000,
+                context_window=LIMITED_MODEL_CONTEXT_WINDOW,
             ),
             "deepseek-v4-flash-260425": ModelSpec(
                 supports_reasoning_summaries=True,
@@ -83,10 +84,6 @@ MODEL_PROVIDER_CONFIGS: dict[str, ModelProviderConfig] = {
             "deepseek-v4-pro-260425": ModelSpec(
                 supports_reasoning_summaries=True,
                 context_window=DEFAULT_MODEL_CONTEXT_WINDOW,
-            ),
-            "glm-4-7-251222": ModelSpec(
-                supports_reasoning_summaries=False,
-                context_window=200000,
             ),
         },
     ),
@@ -97,7 +94,7 @@ MODEL_PROVIDER_CONFIGS: dict[str, ModelProviderConfig] = {
         models={
             "doubao-seed-2.0-pro": ModelSpec(
                 supports_reasoning_summaries=True,
-                context_window=256000,
+                context_window=LIMITED_MODEL_CONTEXT_WINDOW,
             ),
             "deepseek-v4-flash": ModelSpec(
                 supports_reasoning_summaries=True,
@@ -105,10 +102,6 @@ MODEL_PROVIDER_CONFIGS: dict[str, ModelProviderConfig] = {
             ),
             "deepseek-v4-pro": ModelSpec(
                 supports_reasoning_summaries=True,
-                context_window=DEFAULT_MODEL_CONTEXT_WINDOW,
-            ),
-            "glm-5.2": ModelSpec(
-                supports_reasoning_summaries=False,
                 context_window=DEFAULT_MODEL_CONTEXT_WINDOW,
             ),
         },
@@ -120,7 +113,7 @@ MODEL_PROVIDER_CONFIGS: dict[str, ModelProviderConfig] = {
         models={
             "doubao-seed-2.0-pro": ModelSpec(
                 supports_reasoning_summaries=True,
-                context_window=256000,
+                context_window=LIMITED_MODEL_CONTEXT_WINDOW,
             ),
             "deepseek-v4-flash": ModelSpec(
                 supports_reasoning_summaries=True,
@@ -128,10 +121,6 @@ MODEL_PROVIDER_CONFIGS: dict[str, ModelProviderConfig] = {
             ),
             "deepseek-v4-pro": ModelSpec(
                 supports_reasoning_summaries=True,
-                context_window=DEFAULT_MODEL_CONTEXT_WINDOW,
-            ),
-            "glm-5.2": ModelSpec(
-                supports_reasoning_summaries=False,
                 context_window=DEFAULT_MODEL_CONTEXT_WINDOW,
             ),
         },
@@ -291,6 +280,22 @@ def _build_model_catalog_item(model_name: str, spec: ModelSpec) -> dict:
     }
 
 
+def infer_model_spec(model_name: str) -> ModelSpec:
+    normalized_model_name = model_name.strip().lower()
+    if (
+        normalized_model_name == "glm-5.2"
+        or normalized_model_name.startswith("deepseek-v4")
+    ):
+        context_window = DEFAULT_MODEL_CONTEXT_WINDOW
+    else:
+        context_window = LIMITED_MODEL_CONTEXT_WINDOW
+
+    return ModelSpec(
+        supports_reasoning_summaries=True,
+        context_window=context_window,
+    )
+
+
 def model_catalog_context_window(
     model_name: str,
     model_provider: str | ModelProviderType | None = None,
@@ -299,7 +304,7 @@ def model_catalog_context_window(
     spec = config.models.get(model_name)
     if spec:
         return spec.context_window
-    return DEFAULT_MODEL_CONTEXT_WINDOW
+    return infer_model_spec(model_name).context_window
 
 
 def build_codex_model_catalog_json(
@@ -310,15 +315,11 @@ def build_codex_model_catalog_json(
     config = MODEL_PROVIDER_CONFIGS[resolved_provider]
     resolved_model_name = resolve_model_name(model_name, resolved_provider)
     deduped_model_names = list(dict.fromkeys((resolved_model_name, *config.models)))
-    fallback_spec = ModelSpec(
-        supports_reasoning_summaries=True,
-        context_window=DEFAULT_MODEL_CONTEXT_WINDOW,
-    )
     payload = {
         "models": [
             _build_model_catalog_item(
                 name,
-                config.models.get(name, fallback_spec),
+                config.models.get(name) or infer_model_spec(name),
             )
             for name in deduped_model_names
         ]

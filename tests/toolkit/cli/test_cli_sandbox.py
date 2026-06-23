@@ -4153,13 +4153,7 @@ def test_cli_exec_model_provider_sets_default_model_and_codex_config(
     models = {model["slug"]: model for model in catalog["models"]}
     assert "deepseek-v4-flash" in models
     assert "deepseek-v4-flash-260425" not in models
-    assert models["glm-5.2"]["supports_reasoning_summaries"] is False
-    glm_reasoning_levels = models["glm-5.2"]["supported_reasoning_levels"]
-    assert [level["effort"] for level in glm_reasoning_levels] == [
-        "low",
-        "medium",
-        "high",
-    ]
+    assert "glm-5.2" not in models
 
 
 def test_cli_exec_rejects_model_base_url_option() -> None:
