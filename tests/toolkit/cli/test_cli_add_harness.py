@@ -16,6 +16,7 @@
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from agentkit.toolkit.cli.cli import app
@@ -27,6 +28,20 @@ runner = CliRunner()
 
 def _run(args):
     return runner.invoke(app, ["add", *args])
+
+
+def _squash_output(value: str) -> str:
+    return " ".join(value.split())
+
+
+@pytest.fixture(autouse=True)
+def _fake_update_a2a_space_intent(monkeypatch):
+    def fake_agentkit_post(*, endpoint, version, region, action, body):
+        if action != "UpdateA2aSpace":
+            raise AssertionError(f"unexpected AgentKit action: {action}")
+        return {"ResponseMetadata": {"RequestId": "req-update"}, "Result": {}}, 1
+
+    monkeypatch.setattr(cli_add, "_agentkit_post", fake_agentkit_post)
 
 
 def test_creates_harness_json_with_layered_structure(tmp_path):
@@ -165,6 +180,51 @@ def test_registry_flags_write_agentkit_a2a_section(tmp_path):
     assert data["include_tools_every_turn"] is True
 
 
+def test_registry_add_enables_a2a_space_intent(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_agentkit_post(*, endpoint, version, region, action, body):
+        calls.append(
+            {
+                "endpoint": endpoint,
+                "version": version,
+                "region": region,
+                "action": action,
+                "body": body,
+            }
+        )
+        return {"ResponseMetadata": {"RequestId": "req-update"}, "Result": {}}, 1
+
+    monkeypatch.setattr(cli_add, "_agentkit_post", fake_agentkit_post)
+
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--registry-space-id",
+            "as-test",
+            "--registry-endpoint",
+            "https://open.volcengineapi.com/?unused=1",
+            "--registry-region",
+            "cn-beijing",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        {
+            "endpoint": "https://open.volcengineapi.com/",
+            "version": "2025-10-30",
+            "region": "cn-beijing",
+            "action": "UpdateA2aSpace",
+            "body": {"Id": "as-test", "IntentEnabled": True},
+        }
+    ]
+
+
 def test_registry_space_name_resolves_to_space_id(tmp_path, monkeypatch):
     captured = {}
 
@@ -247,6 +307,99 @@ def test_registry_uri_space_name_uses_uri_endpoint_and_region(tmp_path, monkeypa
     }
 
 
+def test_registry_default_resolves_default_space(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_resolve_space_name(space_name, *, endpoint, region):
+        captured.update({"space_name": space_name, "endpoint": endpoint, "region": region})
+        return "space-default"
+
+    monkeypatch.setattr(
+        "agentkit.toolkit.cli.cli_add._resolve_a2a_space_id_by_name",
+        fake_resolve_space_name,
+    )
+
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--registry",
+            "default",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads((tmp_path / "h.harness.json").read_text())
+    assert data["registry"] == {
+        "type": "agentkit_a2a",
+        "space_id": "space-default",
+        "endpoint": "https://open.volcengineapi.com/",
+        "region": "cn-beijing",
+    }
+    assert captured == {
+        "space_name": "Default",
+        "endpoint": "https://open.volcengineapi.com/",
+        "region": "cn-beijing",
+    }
+
+
+def test_registry_default_overrides_existing_space_id(tmp_path, monkeypatch):
+    (tmp_path / "h.harness.json").write_text(
+        json.dumps(
+            {
+                "harness_name": "h",
+                "runtime": "adk",
+                "short_term_memory": {"type": "local"},
+                "registry": {
+                    "type": "agentkit_a2a",
+                    "space_id": "as-old",
+                    "endpoint": "https://open.volcengineapi.com/",
+                    "region": "cn-beijing",
+                },
+            }
+        )
+    )
+    captured = {}
+
+    def fake_resolve_space_name(space_name, *, endpoint, region):
+        captured.update({"space_name": space_name, "endpoint": endpoint, "region": region})
+        return "as-default"
+
+    monkeypatch.setattr(
+        "agentkit.toolkit.cli.cli_add._resolve_a2a_space_id_by_name",
+        fake_resolve_space_name,
+    )
+
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--registry",
+            "default",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads((tmp_path / "h.harness.json").read_text())
+    assert data["registry"] == {
+        "type": "agentkit_a2a",
+        "endpoint": "https://open.volcengineapi.com/",
+        "region": "cn-beijing",
+        "space_id": "as-default",
+    }
+    assert captured == {
+        "space_name": "Default",
+        "endpoint": "https://open.volcengineapi.com/",
+        "region": "cn-beijing",
+    }
+
+
 def test_resolve_a2a_space_id_by_name_paginates_all_spaces(monkeypatch):
     calls = []
 
@@ -296,7 +449,7 @@ def test_resolve_a2a_space_id_by_name_paginates_all_spaces(monkeypatch):
     ]
 
 
-def test_registry_disabled_turns_off_registry(tmp_path):
+def test_registry_disabled_is_pruned_from_harness_spec(tmp_path):
     result = _run(
         [
             "harness",
@@ -311,7 +464,7 @@ def test_registry_disabled_turns_off_registry(tmp_path):
 
     assert result.exit_code == 0, result.output
     data = json.loads((tmp_path / "h.harness.json").read_text())
-    assert data["registry"] == {"type": ""}
+    assert "registry" not in data
 
 
 def test_registry_off_is_not_supported(tmp_path):
@@ -328,7 +481,7 @@ def test_registry_off_is_not_supported(tmp_path):
     )
 
     assert result.exit_code == 1
-    assert "`disabled` is supported" in result.output
+    assert "`default` / `disabled` is supported" in _squash_output(result.output)
 
 
 def test_registry_config_maps_to_runtime_env():
@@ -479,7 +632,7 @@ def test_add_harness_register_self_requires_harness_json_entry(tmp_path):
     )
 
     assert result.exit_code == 1
-    assert "does not contain an entry for 'h'" in result.output
+    assert "does not contain an entry for 'h'" in _squash_output(result.output)
 
 
 def test_add_harness_register_self_requires_url_and_runtime_id(tmp_path):
@@ -499,7 +652,7 @@ def test_add_harness_register_self_requires_url_and_runtime_id(tmp_path):
     )
 
     assert result.exit_code == 1
-    assert "missing required field(s): runtime_id" in result.output
+    assert "missing required field(s): runtime_id" in _squash_output(result.output)
 
 
 def test_add_harness_register_self_rejects_invalid_network_type(tmp_path):

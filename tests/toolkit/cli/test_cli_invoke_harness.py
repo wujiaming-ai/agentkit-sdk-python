@@ -35,6 +35,14 @@ def _isolate_login_home(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTKIT_HOME", str(tmp_path / "_agentkit_home"))
 
 
+@pytest.fixture(autouse=True)
+def _skip_a2a_space_intent_update(monkeypatch):
+    monkeypatch.setattr(
+        "agentkit.toolkit.cli.cli_add._enable_a2a_space_intent",
+        lambda *args, **kwargs: None,
+    )
+
+
 def _write_registry(directory, mapping):
     """Write the ``harness.json`` registry that ``deploy --harness`` produces."""
     (directory / "harness.json").write_text(json.dumps(mapping))
@@ -177,7 +185,7 @@ def test_harness_invoke_posts_registry_overrides(tmp_path, monkeypatch):
     captured = {}
     _patch_post(monkeypatch, captured)
 
-    result = _run_harness(
+    result = _run_invoke(
         [
             "first",
             "Find a finance expert.",
@@ -201,6 +209,50 @@ def test_harness_invoke_posts_registry_overrides(tmp_path, monkeypatch):
         "registry_endpoint": "https://open.volcengineapi.com/",
         "registry_region": "cn-beijing",
     }
+
+
+def test_harness_invoke_registry_override_enables_space_intent(tmp_path, monkeypatch):
+    _write_registry(
+        tmp_path,
+        {"first": {"url": "https://x", "key": "ak", "runtime_id": "r-1"}},
+    )
+    captured = {}
+    intent_calls = []
+    _patch_post(monkeypatch, captured)
+
+    def fake_enable(space_id, *, endpoint, region):
+        intent_calls.append(
+            {"space_id": space_id, "endpoint": endpoint, "region": region}
+        )
+
+    monkeypatch.setattr(
+        "agentkit.toolkit.cli.cli_add._enable_a2a_space_intent",
+        fake_enable,
+    )
+
+    result = _run_invoke(
+        [
+            "first",
+            "Find a finance expert.",
+            "--directory",
+            str(tmp_path),
+            "--registry-space-id",
+            "space-override",
+            "--registry-endpoint",
+            "https://open.volcengineapi.com/?unused=1",
+            "--registry-region",
+            "cn-beijing",
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert intent_calls == [
+        {
+            "space_id": "space-override",
+            "endpoint": "https://open.volcengineapi.com/",
+            "region": "cn-beijing",
+        }
+    ]
 
 
 def test_harness_invoke_registry_uri_override(tmp_path, monkeypatch):
@@ -314,6 +366,48 @@ def test_harness_invoke_registry_uri_space_name_resolves_to_space_id(tmp_path, m
     }
     assert resolved == {
         "space_name": "space-name",
+        "endpoint": "https://open.volcengineapi.com/",
+        "region": "cn-beijing",
+    }
+
+
+def test_harness_invoke_registry_default_resolves_default_space(tmp_path, monkeypatch):
+    _write_registry(
+        tmp_path,
+        {"first": {"url": "https://x", "key": "ak", "runtime_id": "r-1"}},
+    )
+    captured = {}
+    resolved = {}
+    _patch_post(monkeypatch, captured)
+
+    def fake_resolve_space_name(space_name, *, endpoint, region):
+        resolved.update({"space_name": space_name, "endpoint": endpoint, "region": region})
+        return "space-default"
+
+    monkeypatch.setattr(
+        "agentkit.toolkit.cli.cli_add._resolve_a2a_space_id_by_name",
+        fake_resolve_space_name,
+    )
+
+    result = _run_invoke(
+        [
+            "first",
+            "Find a finance expert.",
+            "--directory",
+            str(tmp_path),
+            "--registry",
+            "default",
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["json"]["harness"] == {
+        "registry_space_id": "space-default",
+        "registry_endpoint": "https://open.volcengineapi.com/",
+        "registry_region": "cn-beijing",
+    }
+    assert resolved == {
+        "space_name": "Default",
         "endpoint": "https://open.volcengineapi.com/",
         "region": "cn-beijing",
     }

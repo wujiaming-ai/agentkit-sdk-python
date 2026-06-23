@@ -42,7 +42,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 import typer
 from rich.console import Console
@@ -74,6 +74,10 @@ _REGISTRY_QUERY_KEYS = {
 _REGISTRY_INT_KEYS = {"top_k"}
 _REGISTER_NETWORK_TYPES = {"public", "private"}
 _REGISTER_DEFAULT_VERSION = "2025-10-30"
+_DEFAULT_A2A_REGISTRY_URI = (
+    "agentkit://a2a-registry?"
+    "space_name=Default&region=cn-beijing&endpoint=https://open.volcengineapi.com/"
+)
 
 
 class _A2ARegisterError(Exception):
@@ -142,9 +146,16 @@ def _parse_registry_int(key: str, value: object) -> object:
         raise ValueError(f"Registry param `{key}` must be an integer, got {value!r}.") from exc
 
 
+def _expand_default_registry_uri(value: str) -> str:
+    raw = value.strip()
+    if raw.lower() == "default":
+        return _DEFAULT_A2A_REGISTRY_URI
+    return raw
+
+
 def _parse_registry_uri(value: str) -> dict:
     """Parse the supported AgentKit A2A registry URI into a spec section."""
-    raw = value.strip()
+    raw = _expand_default_registry_uri(value)
     if raw.lower() == "disabled":
         return {"type": ""}
 
@@ -157,7 +168,7 @@ def _parse_registry_uri(value: str) -> dict:
         raise ValueError(
             "Unsupported registry URI. Currently only "
             "`agentkit://a2a-registry?space_id=xxx&top_k=3` or "
-            "`disabled` is supported."
+            "`default` / `disabled` is supported."
         )
 
     query = {
@@ -211,8 +222,13 @@ def _apply_registry_config(
         section = {}
 
     if registry is not None:
-        section.update(_parse_registry_uri(registry))
+        parsed_registry = _parse_registry_uri(registry)
+        if parsed_registry.get("space_name") and "space_id" not in parsed_registry:
+            section.pop("space_id", None)
+        section.update(parsed_registry)
 
+    if registry_space_name is not None:
+        section.pop("space_id", None)
     _set_registry_value(section, "space_id", registry_space_id)
     _set_registry_value(section, "space_name", registry_space_name)
     _set_registry_value(section, "top_k", registry_top_k)
@@ -253,6 +269,16 @@ def _apply_registry_config(
         )
 
     data["registry"] = section
+    if section.get("type") == "agentkit_a2a":
+        resolved_endpoint, resolved_region = _resolve_agentkit_openapi_target(
+            endpoint=str(section["endpoint"]) if section.get("endpoint") else None,
+            region=str(section["region"]) if section.get("region") else None,
+        )
+        _enable_a2a_space_intent(
+            str(section["space_id"]),
+            endpoint=resolved_endpoint,
+            region=resolved_region,
+        )
 
 
 def _load_spec(path: Path) -> dict:
@@ -292,6 +318,30 @@ def _default_agentkit_endpoint(region: str) -> str:
     if region == "cn-beijing":
         return "https://agentkit.cn-beijing.volcengineapi.com/"
     return f"https://agentkit.{region}.volcengineapi.com/"
+
+
+def _resolve_agentkit_openapi_target(
+    *,
+    endpoint: Optional[str],
+    region: Optional[str],
+) -> tuple[str, str]:
+    resolved_region = (
+        region
+        or os.getenv("AGENTKIT_REGION")
+        or os.getenv("VOLCENGINE_REGION")
+        or "cn-beijing"
+    )
+    resolved_endpoint = endpoint or _default_agentkit_endpoint(str(resolved_region))
+    parsed = urlparse(resolved_endpoint)
+    if (
+        parsed.scheme
+        and parsed.netloc
+        and (parsed.query or parsed.params or parsed.fragment)
+    ):
+        resolved_endpoint = urlunparse(
+            (parsed.scheme, parsed.netloc, parsed.path or "/", "", "", "")
+        )
+    return resolved_endpoint, str(resolved_region)
 
 
 def _request_id(response: dict[str, Any]) -> str | None:
@@ -372,6 +422,25 @@ def _agentkit_post(
     if "Result" not in data:
         raise _A2ARegisterError("AgentKit OpenAPI response missing Result")
     return data, duration_ms
+
+
+def _enable_a2a_space_intent(
+    space_id: str,
+    *,
+    endpoint: str,
+    region: str,
+) -> dict[str, Any]:
+    response, request_duration_ms = _agentkit_post(
+        endpoint=endpoint,
+        version=_REGISTER_DEFAULT_VERSION,
+        region=region,
+        action="UpdateA2aSpace",
+        body={"Id": space_id, "IntentEnabled": True},
+    )
+    return {
+        "request_id": _request_id(response),
+        "request_duration_ms": request_duration_ms,
+    }
 
 
 def _resolve_a2a_space_id_by_name(
@@ -612,7 +681,10 @@ def harness_command(
     registry: Optional[str] = typer.Option(
         None,
         "--registry",
-        help='AgentKit A2A registry URI, e.g. "agentkit://a2a-registry?space_id=xxx&top_k=3".',
+        help=(
+            'AgentKit A2A registry URI, "default", or "disabled", e.g. '
+            '"agentkit://a2a-registry?space_id=xxx&top_k=3".'
+        ),
     ),
     registry_space_id: Optional[str] = typer.Option(
         None, "--registry-space-id", help="AgentKit A2A SpaceId."
@@ -904,7 +976,9 @@ def harness_command(
             registry_region,
         )
     except _A2ARegisterError as exc:
-        console.print(f"[red]Error: failed to resolve A2A space name: {exc.message}[/red]")
+        console.print(
+            f"[red]Error: failed to configure A2A registry: {exc.message}[/red]"
+        )
         if exc.diagnostics:
             console.print(json.dumps(exc.diagnostics, ensure_ascii=False, indent=2))
         raise typer.Exit(1) from exc
