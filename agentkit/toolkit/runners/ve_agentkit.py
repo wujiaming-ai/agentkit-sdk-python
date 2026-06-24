@@ -585,8 +585,11 @@ class VeAgentkitRuntimeRunner(Runner):
                     f"Generated role name: {config.runtime_role_name}"
                 )
 
-            # Generate API key name if not provided
-            if (
+            # Generate API key name if not provided. Skipped for custom_jwt: the
+            # gateway authorizes via JWT and never uses an API key (see
+            # _build_authorizer_config_for_create), so generating one here only
+            # produced a misleading "Generated API key name" line.
+            if config.runtime_auth_type != AUTH_TYPE_CUSTOM_JWT and (
                 config.runtime_apikey_name == AUTO_CREATE_VE
                 or not config.runtime_apikey_name
             ):
