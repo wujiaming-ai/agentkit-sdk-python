@@ -26,6 +26,7 @@ auth block), serialized as a layered JSON document::
       "tools": ["web_search"],
       "skills": [],
       "system_prompt": "You are a helpful assistant.",
+      "description": "A helpful assistant.",
       "runtime": "adk",
       "knowledgebase": {"type": "viking", "project": "...", "region": "..."},
       "long_term_memory": {"type": ""},
@@ -98,6 +99,17 @@ def _split_csv(value: Optional[str]) -> Optional[list[str]]:
 
 def _is_blank(value: object) -> bool:
     return value is None or value == "" or value == [] or value == {}
+
+
+def _derive_agent_name(harness_name: str) -> str:
+    """ADK agent name derived from a harness name.
+
+    Must mirror veadk's ``harness_app/utils.py::agent_name_from_harness``.
+    """
+    name = re.sub(r"[^0-9A-Za-z_]", "_", harness_name or "")
+    if not name or name[0].isdigit():
+        name = f"_{name}"
+    return f"{name}_" if name == "user" else name
 
 
 def _prune(data: dict) -> None:
@@ -656,6 +668,12 @@ def harness_command(
     system_prompt: Optional[str] = typer.Option(
         None, "--system-prompt", help="Agent system prompt / instruction."
     ),
+    description: Optional[str] = typer.Option(
+        None,
+        "--description",
+        "--desc",
+        help="Agent description (used at agent init, e.g. for A2A discovery).",
+    ),
     model_name: Optional[str] = typer.Option(
         None, "--model-name", help="Reasoning model name."
     ),
@@ -862,6 +880,13 @@ def harness_command(
         )
         raise typer.Exit(1)
 
+    agent_name = _derive_agent_name(name)
+    if agent_name != name:
+        console.print(
+            f"[yellow]ℹ Once deployed, the agent will be named "
+            f"'{agent_name}' instead of '{name}'.[/yellow]"
+        )
+
     _validate_choice("--runtime", runtime, _RUNTIMES)
     _validate_choice("--knowledgebase-type", knowledgebase_type, _KNOWLEDGEBASE_TYPES)
     _validate_choice(
@@ -892,6 +917,8 @@ def harness_command(
         data["model"]["name"] = model_name
     if system_prompt is not None:
         data["system_prompt"] = system_prompt
+    if description is not None:
+        data["description"] = description
     if runtime is not None:
         data["runtime"] = runtime
     if structured_tool_calls is not None:

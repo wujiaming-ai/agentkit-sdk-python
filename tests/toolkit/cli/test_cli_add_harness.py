@@ -86,6 +86,27 @@ def test_creates_harness_json_with_layered_structure(tmp_path):
     }
 
 
+def test_description_written_and_flattens_to_env(tmp_path):
+    # `--desc` is an alias for `--description`; the value lands in the spec and
+    # flattens to the DESCRIPTION env var the veadk harness reads at agent init.
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--desc",
+            "A travel planning assistant.",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads((tmp_path / "h.harness.json").read_text())
+    assert data["description"] == "A travel planning assistant."
+    assert to_runtime_env(data)["DESCRIPTION"] == "A travel planning assistant."
+
+
 def test_rerun_merges_into_existing_file(tmp_path):
     assert _run(["harness", "--name", "h", "--directory", str(tmp_path)]).exit_code == 0
     result = _run(
@@ -147,6 +168,23 @@ def test_invalid_runtime_fails(tmp_path):
 def test_invalid_name_fails(tmp_path):
     result = _run(["harness", "--name", "bad name", "--directory", str(tmp_path)])
     assert result.exit_code == 1
+
+
+def test_name_normalization_notice_shown_for_non_identifier_name(tmp_path):
+    result = _run(
+        ["harness", "--name", "oauth-test", "--directory", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "oauth_test" in _squash_output(result.output)
+
+
+def test_no_normalization_notice_for_clean_identifier_name(tmp_path):
+    result = _run(["harness", "--name", "myagent", "--directory", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    output = _squash_output(result.output)
+    assert "instead of" not in output
 
 
 def test_registry_flags_write_agentkit_a2a_section(tmp_path):
