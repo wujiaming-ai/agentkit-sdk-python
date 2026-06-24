@@ -170,6 +170,23 @@ def test_invalid_name_fails(tmp_path):
     assert result.exit_code == 1
 
 
+def test_name_normalization_notice_shown_for_non_identifier_name(tmp_path):
+    result = _run(
+        ["harness", "--name", "oauth-test", "--directory", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "oauth_test" in _squash_output(result.output)
+
+
+def test_no_normalization_notice_for_clean_identifier_name(tmp_path):
+    result = _run(["harness", "--name", "myagent", "--directory", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    output = _squash_output(result.output)
+    assert "instead of" not in output
+
+
 def test_registry_flags_write_agentkit_a2a_section(tmp_path):
     result = _run(
         [
