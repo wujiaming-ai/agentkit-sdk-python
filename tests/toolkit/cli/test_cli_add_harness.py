@@ -86,6 +86,27 @@ def test_creates_harness_json_with_layered_structure(tmp_path):
     }
 
 
+def test_description_written_and_flattens_to_env(tmp_path):
+    # `--desc` is an alias for `--description`; the value lands in the spec and
+    # flattens to the DESCRIPTION env var the veadk harness reads at agent init.
+    result = _run(
+        [
+            "harness",
+            "--name",
+            "h",
+            "--desc",
+            "A travel planning assistant.",
+            "--directory",
+            str(tmp_path),
+        ]
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads((tmp_path / "h.harness.json").read_text())
+    assert data["description"] == "A travel planning assistant."
+    assert to_runtime_env(data)["DESCRIPTION"] == "A travel planning assistant."
+
+
 def test_rerun_merges_into_existing_file(tmp_path):
     assert _run(["harness", "--name", "h", "--directory", str(tmp_path)]).exit_code == 0
     result = _run(

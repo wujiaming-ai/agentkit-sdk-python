@@ -26,6 +26,7 @@ auth block), serialized as a layered JSON document::
       "tools": ["web_search"],
       "skills": [],
       "system_prompt": "You are a helpful assistant.",
+      "description": "A helpful assistant.",
       "runtime": "adk",
       "knowledgebase": {"type": "viking", "project": "...", "region": "..."},
       "long_term_memory": {"type": ""},
@@ -656,6 +657,12 @@ def harness_command(
     system_prompt: Optional[str] = typer.Option(
         None, "--system-prompt", help="Agent system prompt / instruction."
     ),
+    description: Optional[str] = typer.Option(
+        None,
+        "--description",
+        "--desc",
+        help="Agent description (used at agent init, e.g. for A2A discovery).",
+    ),
     model_name: Optional[str] = typer.Option(
         None, "--model-name", help="Reasoning model name."
     ),
@@ -892,6 +899,8 @@ def harness_command(
         data["model"]["name"] = model_name
     if system_prompt is not None:
         data["system_prompt"] = system_prompt
+    if description is not None:
+        data["description"] = description
     if runtime is not None:
         data["runtime"] = runtime
     if structured_tool_calls is not None:
