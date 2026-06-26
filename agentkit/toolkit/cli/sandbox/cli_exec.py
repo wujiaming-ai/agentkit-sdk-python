@@ -35,7 +35,6 @@ import typer
 from agentkit.sdk.tools.client import AgentkitToolsClient
 from agentkit.toolkit.cli.sandbox.cli_file import (
     _build_remote_extract_command,
-    _create_upload_archive,
     _create_sources_upload_archive,
     _exec_shell_command,
     _new_remote_archive_path,
@@ -310,13 +309,7 @@ def _upload_source_before_exec(
         dst_dir=dst_dir,
     )
     resolved_sources = _resolve_exec_upload_sources(src_dirs)
-    if len(resolved_sources) == 1 and resolved_sources[0].is_dir():
-        archive_path = _create_upload_archive(
-            upload_dir=resolved_sources[0],
-            upload_files=[],
-        )
-    else:
-        archive_path = _create_sources_upload_archive(resolved_sources)
+    archive_path = _create_sources_upload_archive(resolved_sources)
     remote_archive_path = _new_remote_archive_path("agentkit-upload")
     try:
         _upload_remote_file(

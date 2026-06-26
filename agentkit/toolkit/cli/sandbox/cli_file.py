@@ -358,17 +358,23 @@ def _add_directory_contents(tar: tarfile.TarFile, directory: Path) -> None:
         )
 
 
+def _archive_source_name(source: Path) -> str:
+    return source.name or source.resolve().name
+
+
 def _add_source_to_archive(tar: tarfile.TarFile, source: Path) -> None:
+    source_name = _archive_source_name(source)
     if source.is_dir():
+        tar.add(source, arcname=source_name, recursive=False)
         for path in sorted(source.rglob("*")):
             relative_path = path.relative_to(source).as_posix()
             tar.add(
                 path,
-                arcname=posixpath.join(source.name, relative_path),
+                arcname=posixpath.join(source_name, relative_path),
                 recursive=False,
             )
         return
-    tar.add(source, arcname=source.name, recursive=False)
+    tar.add(source, arcname=source_name, recursive=False)
 
 
 def _create_sources_upload_archive(sources: list[Path]) -> Path:

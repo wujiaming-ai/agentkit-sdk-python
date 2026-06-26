@@ -337,7 +337,9 @@ CLI renames it to `data.shell_id`.
 
 When `--src-dir` is provided, `shell` uses the same upload flow as
 `sandbox exec`: archive local sources, upload the archive to the session,
-extract it under `--workspace` plus `--dst-dir`, then execute `--command`.
+extract it under `--workspace` plus `--dst-dir`, then execute `--command`. A
+directory source is extracted as that directory under the destination; its
+contents are not flattened into the destination.
 
 ### Web
 
@@ -472,7 +474,8 @@ When `--src-dir` is provided, the command first reuses the sandbox file upload
 flow to archive the local file or directory, upload it to the session, and
 extract it into the directory resolved from `--workspace` and `--dst-dir`. The
 WebSocket exec connection is opened only after the upload and extraction
-complete.
+complete. A directory source is extracted as that directory under the
+destination; its contents are not flattened into the destination.
 
 When the resolved tool has `TosMountConfig.MountPoints` in `GetTool`, session
 creation passes those mount points to `CreateSession` and uses each returned
