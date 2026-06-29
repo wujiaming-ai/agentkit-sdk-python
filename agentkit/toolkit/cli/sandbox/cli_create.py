@@ -73,6 +73,10 @@ DEFAULT_BROWSER_EXTRA_ARGS = (
     "--enable-unsafe-swiftshader --use-gl=angle "
     "--use-angle=swiftshader-webgl --ignore-gpu-blocklist"
 )
+WEB_SEARCH_API_KEY_ENV = "WEB_SEARCH_API_KEY"
+SKILL_ROLE_TYPE_EXISTED = "existed"
+SKILL_ROLE_TYPE_NEW = "new"
+VALID_SKILL_ROLE_TYPES = (SKILL_ROLE_TYPE_EXISTED, SKILL_ROLE_TYPE_NEW)
 TOOL_READY_STATUS = "Ready"
 TOOL_FAILED_STATUSES = {"Error", "Failed", "CreateFailed", "Deleting", "Deleted"}
 TOOL_WAIT_INTERVAL_SECONDS = 5
@@ -171,6 +175,7 @@ def _build_tool_model_envs(
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
     model_provider: str | ModelProviderType | None = DEFAULT_MODEL_PROVIDER,
+    websearch_apikey: Optional[str] = None,
 ) -> list[tools_types.EnvsItemForCreateTool] | None:
     envs: list[tools_types.EnvsItemForCreateTool] = []
     provider_config = get_model_provider_config(model_provider)
@@ -192,6 +197,7 @@ def _build_tool_model_envs(
     )
     _append_tool_envs(envs, DISABLED_SERVICE_ENV_KEYS, "true")
     _append_tool_envs(envs, (BROWSER_EXTRA_ARGS_ENV,), DEFAULT_BROWSER_EXTRA_ARGS)
+    _append_tool_envs(envs, (WEB_SEARCH_API_KEY_ENV,), websearch_apikey)
     if tool_type.strip() == DEFAULT_CREATE_TOOL_TYPE:
         _append_code_env_tool_envs(envs, resolved_model_name, model_provider)
     return envs or None
@@ -208,6 +214,8 @@ def _build_create_tool_request(
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
     model_provider: str | ModelProviderType | None = DEFAULT_MODEL_PROVIDER,
+    role_name: Optional[str] = None,
+    websearch_apikey: Optional[str] = None,
 ) -> tools_types.CreateToolRequest:
     resolved_tool_type = tool_type.strip() or DEFAULT_CREATE_TOOL_TYPE
     resolved_name = (name or "").strip() or _generate_tool_name(resolved_tool_type)
@@ -225,6 +233,7 @@ def _build_create_tool_request(
         ToolType=resolved_tool_type,
         CpuMilli=cpu_milli,
         MemoryMb=memory_mb,
+        RoleName=role_name,
         AuthorizerConfiguration=tools_types.AuthorizerForCreateTool(
             KeyAuth=tools_types.AuthorizerKeyAuthForCreateTool(
                 ApiKeyName=generate_apikey_name(),
@@ -241,6 +250,7 @@ def _build_create_tool_request(
             model_name=model_name,
             model_api_key=model_api_key,
             model_provider=model_provider,
+            websearch_apikey=websearch_apikey,
         ),
     )
 
@@ -301,6 +311,81 @@ def _wait_for_tool_ready(
         time.sleep(interval_seconds)
 
 
+def _ensure_sandbox_role(
+    role_name: str,
+    region: str,
+) -> str:
+    import json as _json
+    from agentkit.toolkit.volcengine.iam import VeIAM
+
+    iam = VeIAM(region=region)
+    existing = iam.get_role(role_name)
+    if existing is not None:
+        return role_name
+
+    agentkit_service_code = (
+        (
+            os.getenv("VOLCENGINE_AGENTKIT_SERVICE")
+            or os.getenv("VOLC_AGENTKIT_SERVICE")
+            or os.getenv("BYTEPLUS_AGENTKIT_SERVICE")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    service = "vefaas"
+    if "stg" in agentkit_service_code:
+        service = "vefaas_dev"
+    trust_policy = _json.dumps(
+        {
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": ["sts:AssumeRole"],
+                    "Principal": {"Service": [service]},
+                }
+            ]
+        }
+    )
+    iam.create_role(role_name, trust_policy)
+    iam.attach_role_policy(
+        role_name,
+        policy_name="AgentKitSkillsSandboxAccess",
+        policy_type="System",
+    )
+    return role_name
+
+
+def _generate_default_role_name() -> str:
+    return f"agentkit-sandbox-{generate_random_id(8)}"
+
+
+def _resolve_skill_role(
+    skill_role_type: Optional[str],
+    skill_role_name: Optional[str],
+    region: str,
+) -> Optional[str]:
+    if not skill_role_type:
+        return None
+    resolved_type = skill_role_type.strip().lower()
+    if resolved_type not in VALID_SKILL_ROLE_TYPES:
+        allowed = ", ".join(VALID_SKILL_ROLE_TYPES)
+        raise typer.BadParameter(
+            f"--skill-role-type must be one of: {allowed}"
+        )
+    resolved_name = (skill_role_name or "").strip()
+    if not resolved_name:
+        if resolved_type == SKILL_ROLE_TYPE_NEW:
+            resolved_name = _generate_default_role_name()
+        else:
+            raise typer.BadParameter(
+                "--skill-role-name is required when --skill-role-type=existed"
+            )
+    if resolved_type == SKILL_ROLE_TYPE_NEW:
+        _ensure_sandbox_role(resolved_name, region)
+    return resolved_name
+
+
 def create_tool(
     *,
     tool_type: str = DEFAULT_CREATE_TOOL_TYPE,
@@ -311,10 +396,20 @@ def create_tool(
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
     model_provider: str | ModelProviderType | None = DEFAULT_MODEL_PROVIDER,
+    skill_role_type: Optional[str] = None,
+    skill_role_name: Optional[str] = None,
+    websearch_apikey: Optional[str] = None,
 ) -> dict[str, object]:
     resolved_model_provider = normalize_model_provider(model_provider)
     region = _resolve_region(SANDBOX_REGION_ENV, "agentkit")
     tos_region = _resolve_region(SANDBOX_TOS_REGION_ENV, "tos")
+
+    if skill_role_type and websearch_apikey:
+        error("--skill-role-type and --websearch-apikey are mutually exclusive")
+
+    resolved_role_name = _resolve_skill_role(skill_role_type, skill_role_name, region)
+    resolved_websearch_apikey = (websearch_apikey or "").strip() or None
+
     request = _build_create_tool_request(
         tool_type=tool_type,
         name=tool_name,
@@ -325,6 +420,8 @@ def create_tool(
         model_name=model_name,
         model_api_key=model_api_key,
         model_provider=resolved_model_provider,
+        role_name=resolved_role_name,
+        websearch_apikey=resolved_websearch_apikey,
     )
     client = AgentkitToolsClient(
         region=region,
@@ -340,6 +437,9 @@ def create_tool(
         "name": final_tool.name or request.name,
         "status": final_tool.status or TOOL_READY_STATUS,
         "model_provider": resolved_model_provider,
+        "role_name": resolved_role_name,
+        "skill_role_type": skill_role_type,
+        "websearch_apikey_set": bool(resolved_websearch_apikey),
     }
 
 
@@ -397,8 +497,34 @@ def create_command(
         "--model-provider",
         help="Model provider to use for base URLs, defaults, and model catalog.",
     ),
+    skill_role_type: Optional[str] = typer.Option(
+        None,
+        "--skill-role-type",
+        help=(
+            "Skill role type: 'existed' to use an existing role, "
+            "'new' to create one. Mutually exclusive with --websearch-apikey."
+        ),
+    ),
+    skill_role_name: Optional[str] = typer.Option(
+        None,
+        "--skill-role-name",
+        help=(
+            "IAM role name. Required when --skill-role-type=existed; "
+            "auto-generated when --skill-role-type=new and omitted."
+        ),
+    ),
+    websearch_apikey: Optional[str] = typer.Option(
+        None,
+        "--websearch-apikey",
+        help=(
+            "Web search API key to inject as WEB_SEARCH_API_KEY env. "
+            "Mutually exclusive with --skill-role-type. "
+            "Use --enable-websearch-apikey in exec to toggle per session."
+        ),
+    ),
 ) -> None:
     """Create an AgentKit Tool with optional TOS mount."""
+    result = None
     try:
         if tos_mount is not None and not (tos_bucket or "").strip():
             error("--tos-mount requires --tos-bucket")
@@ -411,6 +537,9 @@ def create_command(
             model_name=model_name,
             model_api_key=model_api_key,
             model_provider=model_provider.value,
+            skill_role_type=skill_role_type,
+            skill_role_name=skill_role_name,
+            websearch_apikey=websearch_apikey,
         )
         save_tool_result(str(result["tool_type"]), result)
     except (typer.Abort, typer.Exit):
@@ -421,3 +550,7 @@ def create_command(
     typer.echo("工具创建成功")
     typer.echo(f"工具ID：{result['tool_id']}")
     typer.echo(f"状态：{result['status']}")
+    if result.get("role_name"):
+        typer.echo(f"角色名：{result['role_name']}")
+    if not result.get("role_name") and not result.get("websearch_apikey_set"):
+        typer.echo("提示：未配置 WebSearch（可通过 --skill-role-type 配置 Role 或 --websearch-apikey 配置 API Key 来启用）")

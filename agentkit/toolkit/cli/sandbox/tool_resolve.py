@@ -119,7 +119,7 @@ def _build_tool_record(tool: object, tool_type: str) -> dict[str, object] | None
     tool_id = _get_string_field(payload, "ToolId", "tool_id")
     if not isinstance(tool_id, str) or not tool_id.strip():
         return None
-    record = {
+    record: dict[str, object] = {
         "ToolId": tool_id.strip(),
         "ToolType": _get_field_value(payload, "ToolType", "tool_type") or tool_type,
         "Name": _get_field_value(payload, "Name", "name"),
@@ -128,6 +128,18 @@ def _build_tool_record(tool: object, tool_type: str) -> dict[str, object] | None
     model_provider = _get_tool_model_provider(payload)
     if model_provider:
         record["ModelProvider"] = model_provider
+    role_name = _get_string_field(payload, "RoleName", "role_name")
+    if isinstance(role_name, str) and role_name.strip():
+        record["RoleName"] = role_name.strip()
+    envs = _get_field_value(payload, "Envs", "envs")
+    if isinstance(envs, list):
+        for env_item in envs:
+            key = _get_field_value(env_item, "Key", "key") or ""
+            if key == "WEB_SEARCH_API_KEY":
+                val = _get_field_value(env_item, "Value", "value") or ""
+                if isinstance(val, str) and val.strip():
+                    record["WebSearchApiKeySet"] = True
+                break
     return record
 
 
@@ -230,7 +242,7 @@ def _normalize_tool_record(
     if not tool_id:
         error("Tool result missing ToolId")
 
-    stored = {
+    stored: dict[str, object] = {
         "ToolId": tool_id,
         "Name": _get_string_value(result, "Name", "name") or "",
         "Status": _get_string_value(result, "Status", "status") or "",
@@ -241,6 +253,17 @@ def _normalize_tool_record(
     )
     if model_provider:
         stored["ModelProvider"] = model_provider
+    role_name = _get_string_value(result, "RoleName", "role_name")
+    if role_name:
+        stored["RoleName"] = role_name
+    skill_role_type = _get_string_value(result, "SkillRoleType", "skill_role_type")
+    if skill_role_type:
+        stored["SkillRoleType"] = skill_role_type
+    websearch_set = result.get("WebSearchApiKeySet") or result.get(
+        "websearch_apikey_set"
+    )
+    if websearch_set:
+        stored["WebSearchApiKeySet"] = True
     return stored
 
 
@@ -286,6 +309,43 @@ def find_tool_model_provider(
     return model_provider_from_env_value(
         _get_string_value(result, "ModelProvider", "model_provider")
     )
+
+
+def get_tool_websearch_config(
+    *,
+    tool_id: Optional[str],
+    tool_type: str | SandboxToolType | None,
+) -> dict[str, object] | None:
+    resolved_tool_type = normalize_tool_type(tool_type)
+    result = find_tool_result(resolved_tool_type)
+
+    if result:
+        cached_tool_id = _get_string_value(result, "ToolId", "tool_id")
+        if not tool_id or cached_tool_id == tool_id:
+            return {
+                "has_role": bool(_get_string_value(result, "RoleName", "role_name")),
+                "websearch_apikey_set": bool(result.get("WebSearchApiKeySet")),
+                "role_name": _get_string_value(result, "RoleName", "role_name"),
+            }
+
+    if not tool_id:
+        return None
+
+    try:
+        client = AgentkitToolsClient()
+        response = client.get_tool(tools_types.GetToolRequest(tool_id=tool_id))
+    except Exception:
+        return None
+
+    record = _build_tool_record(response, resolved_tool_type)
+    if not record:
+        return None
+    save_tool_result(resolved_tool_type, record)
+    return {
+        "has_role": bool(_get_string_value(record, "RoleName", "role_name")),
+        "websearch_apikey_set": bool(record.get("WebSearchApiKeySet")),
+        "role_name": _get_string_value(record, "RoleName", "role_name"),
+    }
 
 
 def get_remote_tool_model_provider(
