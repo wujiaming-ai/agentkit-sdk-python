@@ -59,6 +59,7 @@ from agentkit.toolkit.cli.sandbox.tool_resolve import (
     find_tool_model_provider,
     get_remote_tool_model_base_urls,
     get_remote_tool_model_provider,
+    get_tool_websearch_config,
 )
 from agentkit.toolkit.cli.sandbox.sandbox_client import (
     add_session_terminal_shell_id,
@@ -577,6 +578,14 @@ def exec_command(
             "when creating a sandbox session."
         ),
     ),
+    disable_websearch_apikey: bool = typer.Option(
+        False,
+        "--disable-websearch-apikey",
+        help=(
+            "Disable WEB_SEARCH_API_KEY for this session. "
+            "Omit this option to keep the default enabled behavior."
+        ),
+    ),
 ) -> None:
     """Open a streaming sandbox exec session. Press Ctrl-] or type exit/exit()."""
     exec_mode = _normalize_exec_mode(mode)
@@ -599,6 +608,22 @@ def exec_command(
                 model_provider=resolved_model_provider,
                 model_base_url=model_base_url,
             )
+
+        resolved_tool_id = (tool_id or "").strip()
+        ws_config = get_tool_websearch_config(
+            tool_id=resolved_tool_id or None,
+            tool_type=tool_type,
+        )
+        has_role = bool(ws_config and ws_config.get("has_role"))
+
+        disable_websearch = disable_websearch_apikey
+        if disable_websearch_apikey and has_role:
+            disable_websearch = False
+            typer.echo(
+                "警告：当前工具使用 IAM Role 模式，--disable-websearch-apikey 不会生效（WebSearch 权限由角色策略控制）。",
+                err=True,
+            )
+
         session = ensure_sandbox_session(
             session_id=session_id,
             tool_id=tool_id,
@@ -613,6 +638,7 @@ def exec_command(
                     normalize_model_base_url(model_base_url)
                 ),
                 include_codex_config=tool_type == SandboxToolType.CODE_ENV,
+                disable_websearch_apikey=disable_websearch,
             ),
         )
     except typer.Exit:

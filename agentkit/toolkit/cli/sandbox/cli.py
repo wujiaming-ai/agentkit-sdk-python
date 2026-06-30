@@ -33,7 +33,10 @@ sandbox_app = typer.Typer(
     no_args_is_help=True,
 )
 
-sandbox_app.command(name="create")(create_command)
+sandbox_app.command(
+    name="create",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)(create_command)
 sandbox_app.command(name="get")(get_command)
 sandbox_app.command(name="mount")(mount_command)
 sandbox_app.command(

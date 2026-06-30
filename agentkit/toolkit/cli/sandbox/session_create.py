@@ -61,6 +61,7 @@ from agentkit.toolkit.cli.sandbox.sandbox_client import (
 DEFAULT_SANDBOX_TTL = 28800
 SANDBOX_TOOL_ID_ENV = "AGENTKIT_SANDBOX_TOOL_ID"
 SANDBOX_TTL_ENV = "AGENTKIT_SANDBOX_TTL"
+WEB_SEARCH_API_KEY_ENV = "WEB_SEARCH_API_KEY"
 CREATE_SESSION_START_FAIL_CODE = "ErrCreateSessionFail"
 CREATE_SESSION_CONFIRM_ATTEMPTS = 6
 CREATE_SESSION_CONFIRM_INTERVAL_SECONDS = 5
@@ -119,6 +120,7 @@ def build_model_envs(
     model_provider_was_provided: Optional[bool] = None,
     model_base_url_was_provided: Optional[bool] = None,
     include_codex_config: bool = False,
+    disable_websearch_apikey: bool = False,
 ) -> list[tools_types.EnvsItemForCreateSession] | None:
     envs: list[tools_types.EnvsItemForCreateSession] = []
     validate_model_provider_base_url(
@@ -170,6 +172,12 @@ def build_model_envs(
             resolved_model_provider,
         )
     _append_envs(envs, MODEL_API_KEY_ENV_KEYS, resolved_model_api_key)
+    if disable_websearch_apikey:
+        envs.append(
+            tools_types.EnvsItemForCreateSession(
+                key=WEB_SEARCH_API_KEY_ENV, value=""
+            )
+        )
     return envs or None
 
 
@@ -418,12 +426,13 @@ def ensure_sandbox_session_with_status(
                 save_session_result(result)
                 return result, False
 
+    session_envs = envs
     result = _create_session(
         client,
         resolved_session_id,
         resolved_tool_id,
         _resolve_ttl(ttl),
-        envs=envs,
+        envs=session_envs,
     )
     save_session_result(result)
     return result, True

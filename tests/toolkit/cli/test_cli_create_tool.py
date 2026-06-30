@@ -436,7 +436,7 @@ def test_create_command_rejects_region_option(monkeypatch):
     )
 
     assert result.exit_code != 0
-    assert "No such option: --region" in result.output
+    assert "Unknown arguments: --region cn-shanghai" in result.output
     assert _FakeToolsClient.instances == []
     assert _FakeTOSService.instances == []
 
