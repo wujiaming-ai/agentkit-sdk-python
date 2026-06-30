@@ -16,8 +16,10 @@
 
 from __future__ import annotations
 
+from agentkit.errors import AgentKitError
 
-class AuthError(Exception):
+
+class AuthError(AgentKitError):
     """Base class for all authentication failures.
 
     Carries an optional ``hint`` with an actionable next step that CLIs can

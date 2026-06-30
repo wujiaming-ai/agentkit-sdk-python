@@ -1136,7 +1136,7 @@ def test_cli_mount_uses_stored_session_tool_and_opens_tosbrowser(
         def read(self):
             return json.dumps(discovery).encode("utf-8")
 
-    def fake_urlopen(url):
+    def fake_urlopen(url, *args, **kwargs):
         captured["url"] = url
         return FakeResponse()
 
@@ -1235,7 +1235,7 @@ def test_cli_mount_uses_tool_tos_bucket_when_option_omitted(
             return json.dumps(discovery).encode("utf-8")
 
     opened = {}
-    monkeypatch.setattr(cli_mount, "urlopen", lambda _url: FakeResponse())
+    monkeypatch.setattr(cli_mount, "urlopen", lambda _url, *a, **k: FakeResponse())
     monkeypatch.setattr(
         cli_mount,
         "_open_tosbrowser",
@@ -1335,7 +1335,7 @@ def test_cli_mount_uses_latest_auth_session_when_oauth_url_omitted(
         def read(self):
             return json.dumps(discovery).encode("utf-8")
 
-    def fake_urlopen(url):
+    def fake_urlopen(url, *args, **kwargs):
         captured["url"] = url
         return FakeResponse()
 
@@ -1546,7 +1546,7 @@ def test_cli_mount_syncs_current_tool_sessions_when_session_not_cached(
             return json.dumps(discovery).encode("utf-8")
 
     opened = {}
-    monkeypatch.setattr(cli_mount, "urlopen", lambda _url: FakeResponse())
+    monkeypatch.setattr(cli_mount, "urlopen", lambda _url, *a, **k: FakeResponse())
     monkeypatch.setattr(
         cli_mount,
         "_open_tosbrowser",
@@ -1665,7 +1665,7 @@ def test_cli_mount_returns_install_hint_when_tosbrowser_is_missing(
         '"kLSApplicationNotFoundErr")'
     )
 
-    monkeypatch.setattr(cli_mount, "urlopen", lambda _url: FakeResponse())
+    monkeypatch.setattr(cli_mount, "urlopen", lambda _url, *a, **k: FakeResponse())
     monkeypatch.setattr(
         cli_mount,
         "_open_tosbrowser",

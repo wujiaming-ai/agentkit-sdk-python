@@ -27,6 +27,7 @@ from urllib.request import urlopen
 import typer
 
 from agentkit.sdk.tools.client import AgentkitToolsClient
+from agentkit.utils.http_defaults import http_timeout
 from agentkit.sdk.tools import types as tools_types
 from agentkit.toolkit.cli.sandbox.session_create import SANDBOX_TOOL_ID_ENV
 from agentkit.toolkit.cli.sandbox.session_sync import sync_remote_sessions
@@ -212,7 +213,7 @@ def _download_discovery(oauth_url: str) -> dict[str, object]:
     path = _get_discovery_store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with urlopen(discovery_url) as response:
+    with urlopen(discovery_url, timeout=http_timeout()) as response:
         content = response.read()
     path.write_bytes(content)
 

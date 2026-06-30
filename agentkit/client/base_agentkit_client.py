@@ -70,8 +70,13 @@ class BaseAgentkitClient(BaseServiceClient):
 
     def _get(self, api_action: str, params: Dict[str, Any] = None) -> str:
         """Legacy method for GET requests."""
+        # Imported lazily: ``agentkit.toolkit`` pulls in ``sdk`` which imports
+        # back into ``agentkit.client``, so a module-level import would cycle
+        # (mirrors ``BaseServiceClient._invoke_api``).
+        from agentkit.toolkit.errors import ApiError
+
         try:
             resp = self.get(api_action, params)
             return resp
         except Exception as e:
-            raise Exception(f"Failed to {api_action}: {str(e)}")
+            raise ApiError(f"Failed to {api_action}: {e}") from e

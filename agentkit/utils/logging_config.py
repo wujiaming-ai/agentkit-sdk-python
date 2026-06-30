@@ -23,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 import contextvars
 
+from agentkit.utils.redact import redact
+
 # Context for request/session/user tracing
 request_id_var = contextvars.ContextVar("request_id", default=None)
 session_id_var = contextvars.ContextVar("session_id", default=None)
@@ -64,6 +66,16 @@ class ContextFilter(logging.Filter):
         record.request_id = request_id_var.get()
         record.session_id = session_id_var.get()
         record.user_id = user_id_var.get()
+        return True
+
+
+class RedactionFilter(logging.Filter):
+    """Scrub credential-looking substrings from records before they are emitted."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Replace the record's rendered message with a redacted copy."""
+        record.msg = redact(record.getMessage())
+        record.args = ()
         return True
 
 
@@ -195,12 +207,16 @@ def setup_logging(
     # Context filter
     context_filter = ContextFilter()
 
+    # Redaction filter
+    redaction_filter = RedactionFilter()
+
     # Console handler
     if console_out:
         console_handler = logging.StreamHandler(sys.stderr)
         console_handler.setLevel(numeric_level)
         console_handler.setFormatter(formatter)
         console_handler.addFilter(context_filter)
+        console_handler.addFilter(redaction_filter)
         root_logger.addHandler(console_handler)
 
     # File handler
@@ -214,6 +230,7 @@ def setup_logging(
             file_handler.setLevel(numeric_level)
             file_handler.setFormatter(formatter)
             file_handler.addFilter(context_filter)
+            file_handler.addFilter(redaction_filter)
             root_logger.addHandler(file_handler)
         except Exception as e:
             print(f"Warning: Failed to create log file handler: {e}", file=sys.stderr)
@@ -308,6 +325,9 @@ def _setup_dual_level_logging(
     # Context filter
     context_filter = ContextFilter()
 
+    # Redaction filter
+    redaction_filter = RedactionFilter()
+
     # Console handler
     if console_enabled:
         console_handler = logging.StreamHandler(sys.stderr)
@@ -321,6 +341,7 @@ def _setup_dual_level_logging(
         console_handler.setLevel(console_numeric_level)
         console_handler.setFormatter(formatter)
         console_handler.addFilter(context_filter)
+        console_handler.addFilter(redaction_filter)
         root_logger.addHandler(console_handler)
 
     # File handler
@@ -341,6 +362,7 @@ def _setup_dual_level_logging(
             file_handler.setLevel(file_numeric_level)
             file_handler.setFormatter(formatter)
             file_handler.addFilter(context_filter)
+            file_handler.addFilter(redaction_filter)
             root_logger.addHandler(file_handler)
         except Exception as e:
             print(f"Warning: Failed to create log file handler: {e}", file=sys.stderr)

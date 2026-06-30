@@ -12,14 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Backward-compatible shim.
+"""Top-level exception root for AgentKit.
 
-The redaction helpers now live in :mod:`agentkit.utils.redact`; this module
-re-exports them so existing importers keep working.
+This module is a stdlib-only leaf: it has no intra-package imports so that any
+subpackage (``agentkit.auth``, ``agentkit.toolkit``, ...) can subclass the
+single root without creating dependency cycles.
 """
 
-from __future__ import annotations
 
-from agentkit.utils.redact import mask, redact
+class AgentKitError(Exception):
+    """The single root of the AgentKit exception hierarchy.
 
-__all__ = ["redact", "mask"]
+    Every domain-specific AgentKit exception (auth, toolkit, API, ...) ultimately
+    inherits from this class so callers can ``except AgentKitError`` to catch any
+    AgentKit-originated failure.
+    """
+
+
+__all__ = ["AgentKitError"]

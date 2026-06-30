@@ -207,7 +207,8 @@ class AuthSession:
                             self._refresh_token = sibling._refresh_token or self._refresh_token
                             return self._sts
                 self._renew_locked()
-            assert self._sts is not None
+            if self._sts is None:
+                raise AuthError("internal: STS credentials not populated after renew")
             return self._sts
 
     # -- data-plane JWT (id_token) --------------------------------------------
@@ -238,7 +239,8 @@ class AuthSession:
                         self._access_token = sibling._access_token or self._access_token
                         return self._id_token
                 self._refresh_id_token_locked()
-            assert self._id_token is not None
+            if self._id_token is None:
+                raise AuthError("internal: id_token not populated after renew")
             return self._id_token
 
     def _refresh_id_token_locked(self) -> None:

@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-
+from agentkit.utils.logging_config import get_logger
 from agentkit.utils.ve_sign import ve_request
 
-logger = logging.getLogger("agentkit." + __name__)
+logger = get_logger(__name__)
 
 
 def request(
@@ -56,4 +55,5 @@ def request(
                 response = getattr(response, key, None)
         return response
     except Exception as e:
-        logger.error(f"Request {name} failed {e}. Response from volcengine: {response}")
+        logger.error("Request %s failed: %s", name, e, exc_info=True)
+        raise

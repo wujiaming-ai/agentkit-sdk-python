@@ -22,6 +22,8 @@ handling, monitoring, and internationalization.
 
 from enum import Enum
 
+from agentkit.errors import AgentKitError as _RootAgentKitError
+
 
 class ErrorCode(str, Enum):
     """
@@ -78,7 +80,7 @@ class ErrorCode(str, Enum):
     UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
 
-class AgentKitError(Exception):
+class AgentKitError(_RootAgentKitError):
     """
     Base exception class for all AgentKit errors.
 
@@ -134,6 +136,18 @@ class InvokeError(AgentKitError):
         super().__init__(message, ErrorCode.INVOKE_FAILED)
 
 
+class ApiError(AgentKitError):
+    """Raised when a backend API call fails.
+
+    Carries an optional ``error_code`` extracted from the API response metadata
+    (distinct from the :class:`ErrorCode` enum used by the other domain errors).
+    """
+
+    def __init__(self, message: str, *, error_code: str | None = None):
+        super().__init__(message)
+        self.error_code = error_code
+
+
 __all__ = [
     "ErrorCode",
     "AgentKitError",
@@ -142,4 +156,5 @@ __all__ = [
     "BuildError",
     "DeployError",
     "InvokeError",
+    "ApiError",
 ]
