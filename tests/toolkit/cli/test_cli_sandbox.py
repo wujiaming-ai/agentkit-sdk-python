@@ -736,6 +736,101 @@ def test_build_model_envs_option_overrides_model_api_key_env(monkeypatch) -> Non
     ]
 
 
+def test_build_model_envs_uses_model_base_url_and_skips_codex_config() -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    envs = session_create.build_model_envs(
+        model_name="custom-model",
+        model_provider="agent_plan",
+        model_base_url="https://models.example.com/v1",
+        include_codex_config=True,
+    )
+
+    assert [(item.key, item.value) for item in envs] == [
+        ("AGENTKIT_SANDBOX_MODEL_PROVIDER", "agent_plan"),
+        ("OPENCODE_MODEL", "custom-model"),
+        ("CODEX_MODEL", "custom-model"),
+        ("ANTHROPIC_MODEL", "custom-model"),
+        ("OPENCODE_BASE_URL", "https://models.example.com/v1"),
+        ("CODEX_BASE_URL", "https://models.example.com/v1"),
+        ("MODEL_BASE_URL", "https://models.example.com/v1"),
+        ("ANTHROPIC_BASE_URL", "https://models.example.com/v1"),
+    ]
+
+
+def test_build_model_envs_allows_arbitrary_model_provider_with_base_url() -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    envs = session_create.build_model_envs(
+        model_name="custom-model",
+        model_provider="agent_plan_experimental",
+        model_base_url="https://models.example.com/v1",
+        include_codex_config=True,
+    )
+
+    assert [(item.key, item.value) for item in envs] == [
+        ("AGENTKIT_SANDBOX_MODEL_PROVIDER", "agent_plan_experimental"),
+        ("OPENCODE_MODEL", "custom-model"),
+        ("CODEX_MODEL", "custom-model"),
+        ("ANTHROPIC_MODEL", "custom-model"),
+        ("OPENCODE_BASE_URL", "https://models.example.com/v1"),
+        ("CODEX_BASE_URL", "https://models.example.com/v1"),
+        ("MODEL_BASE_URL", "https://models.example.com/v1"),
+        ("ANTHROPIC_BASE_URL", "https://models.example.com/v1"),
+    ]
+
+
+def test_build_model_envs_requires_base_url_with_arbitrary_model_provider() -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    with pytest.raises(
+        ValueError,
+        match="--model-provider requires --model-base-url for custom providers",
+    ):
+        session_create.build_model_envs(
+            model_name="custom-model",
+            model_provider="agent_plan_experimental",
+        )
+
+
+def test_build_model_envs_allows_model_base_url_without_model_name() -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    envs = session_create.build_model_envs(
+        model_provider="custom_provider",
+        model_base_url="https://models.example.com/v1",
+        include_codex_config=True,
+    )
+
+    assert [(item.key, item.value) for item in envs] == [
+        ("AGENTKIT_SANDBOX_MODEL_PROVIDER", "custom_provider"),
+        ("OPENCODE_BASE_URL", "https://models.example.com/v1"),
+        ("CODEX_BASE_URL", "https://models.example.com/v1"),
+        ("MODEL_BASE_URL", "https://models.example.com/v1"),
+        ("ANTHROPIC_BASE_URL", "https://models.example.com/v1"),
+    ]
+
+
+def test_build_model_envs_infers_provider_from_builtin_model_base_url() -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    envs = session_create.build_model_envs(
+        model_base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
+        include_codex_config=True,
+    )
+
+    assert [(item.key, item.value) for item in envs] == [
+        ("AGENTKIT_SANDBOX_MODEL_PROVIDER", "coding_plan"),
+        ("OPENCODE_MODEL", "deepseek-v4-flash"),
+        ("CODEX_MODEL", "deepseek-v4-flash"),
+        ("ANTHROPIC_MODEL", "deepseek-v4-flash"),
+        ("OPENCODE_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
+        ("CODEX_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
+        ("MODEL_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
+        ("ANTHROPIC_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
+    ]
+
+
 def test_ensure_sandbox_session_skips_tos_mount_when_tool_has_none(
     monkeypatch,
     tmp_path,
@@ -3562,6 +3657,55 @@ exec:
     assert "agentkit sandbox exec --session-id user-right" in pane_2
 
 
+def test_cli_sandbox_run_executes_single_entry_inline_on_non_macos(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_run as cli_run
+
+    config_path = tmp_path / "sandbox-run.yaml"
+    config_path.write_text(
+        """
+exec:
+  - session_id: run-model-base-url
+    model_name: run-model
+    model_base_url: https://run.example.com/v1
+    command: "printenv CODEX_MODEL; exit"
+""",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_run(args, check):
+        captured["args"] = args
+        captured["check"] = check
+
+    monkeypatch.setattr(cli_run.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(cli_run.subprocess, "run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "run",
+            "--config",
+            str(config_path),
+            "--terminal",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["check"] is True
+    assert captured["args"][:2] == ["/bin/sh", "-c"]
+    command = captured["args"][2]
+    assert "agentkit sandbox exec" in command
+    assert "--session-id run-model-base-url" in command
+    assert "--model-name run-model" in command
+    assert "--model-base-url https://run.example.com/v1" in command
+
+
 def test_cli_exec_git_config_file_does_not_reuse_shell_exec_id_for_ws(
     monkeypatch,
     tmp_path,
@@ -4168,6 +4312,146 @@ def test_cli_exec_model_name_uses_cached_tool_model_provider(
     )
 
 
+def test_cli_exec_model_name_inherits_cached_custom_model_base_url(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    tool_store_path = _patch_tool_store_path(monkeypatch, tmp_path)
+    tool_store_path.parent.mkdir(parents=True, exist_ok=True)
+    tool_store_path.write_text(
+        json.dumps(
+            {
+                "CodeEnv": {
+                    "ToolId": "tool-1",
+                    "ToolType": "CodeEnv",
+                    "Name": "custom-url-tool",
+                    "Status": "Ready",
+                    "ModelProvider": "model_square",
+                    "ModelBaseUrl": "https://models.example.com/v1",
+                    "AnthropicBaseUrl": "https://models.example.com/v1",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    stored_session = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com/?token=abc",
+    }
+    store_path.write_text(
+        json.dumps({"user-1": stored_session}),
+        encoding="utf-8",
+    )
+    captured_session = {}
+    _patch_exec_session(
+        monkeypatch,
+        cli_exec,
+        stored_session,
+        capture=captured_session,
+    )
+    monkeypatch.setattr(
+        cli_exec,
+        "_connect_terminal",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--tool-id",
+            "tool-1",
+            "--session-id",
+            "user-1",
+            "--model-name",
+            "custom-model",
+        ],
+    )
+
+    assert result.exit_code == 0
+    envs = {item.key: item.value for item in captured_session["envs"]}
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "model_square"
+    assert envs["CODEX_MODEL"] == "custom-model"
+    assert envs["CODEX_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["ANTHROPIC_BASE_URL"] == "https://models.example.com/v1"
+    assert "CODEX_CONFIG_TOML" not in envs
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
+
+
+def test_cli_exec_model_name_inherits_default_cached_custom_model_base_url(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    _patch_store_path(monkeypatch, tmp_path)
+    tool_store_path = _patch_tool_store_path(monkeypatch, tmp_path)
+    tool_store_path.parent.mkdir(parents=True, exist_ok=True)
+    tool_store_path.write_text(
+        json.dumps(
+            {
+                "CodeEnv": {
+                    "ToolId": "tool-1",
+                    "ToolType": "CodeEnv",
+                    "Name": "custom-url-tool",
+                    "Status": "Ready",
+                    "ModelProvider": "model_square",
+                    "ModelBaseUrl": "https://models.example.com/v1",
+                    "AnthropicBaseUrl": "https://models.example.com/v1",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured_session = {}
+    _patch_exec_session(
+        monkeypatch,
+        cli_exec,
+        {
+            "session_id": "generated-1",
+            "tool_id": "tool-1",
+            "instance_id": "session-1",
+            "endpoint": "https://sandbox.example.com/?token=abc",
+        },
+        capture=captured_session,
+    )
+    monkeypatch.setattr(
+        cli_exec,
+        "_connect_terminal",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--model-name",
+            "custom-model",
+        ],
+    )
+
+    assert result.exit_code == 0
+    envs = {item.key: item.value for item in captured_session["envs"]}
+    assert captured_session["tool_id"] is None
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "model_square"
+    assert envs["CODEX_MODEL"] == "custom-model"
+    assert envs["CODEX_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["ANTHROPIC_BASE_URL"] == "https://models.example.com/v1"
+    assert "CODEX_CONFIG_TOML" not in envs
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
+
+
 def test_cli_exec_model_provider_sets_default_model_and_codex_config(
     monkeypatch,
     tmp_path,
@@ -4232,7 +4516,7 @@ def test_cli_exec_model_provider_sets_default_model_and_codex_config(
     assert "glm-5.2" not in models
 
 
-def test_cli_exec_rejects_model_base_url_option() -> None:
+def test_cli_exec_rejects_model_base_url_without_model_provider() -> None:
     from agentkit.toolkit.cli.cli import app
 
     result = runner.invoke(
@@ -4246,7 +4530,109 @@ def test_cli_exec_rejects_model_base_url_option() -> None:
     )
 
     assert result.exit_code != 0
-    assert "No such option" in result.output
+    assert "--model-base-url requires --model-provider for non-Ark base URLs" in result.output
+
+
+def test_cli_exec_rejects_non_ark_model_base_url_without_model_provider() -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--model-name",
+            "custom-model",
+            "--model-base-url",
+            "https://models.example.com/v1",
+            "--command",
+            "echo should-not-run; exit",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--model-base-url requires --model-provider for non-Ark base URLs" in result.output
+
+
+def test_cli_exec_rejects_arbitrary_model_provider_without_base_url() -> None:
+    from agentkit.toolkit.cli.cli import app
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--model-provider",
+            "custom_provider",
+            "--model-name",
+            "custom-model",
+            "--command",
+            "echo should-not-run; exit",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--model-provider requires --model-base-url for custom providers" in result.output
+
+
+def test_cli_exec_model_base_url_overrides_provider_and_skips_codex_config(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    stored_session = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com/?token=abc",
+    }
+    store_path.write_text(
+        json.dumps({"user-1": stored_session}),
+        encoding="utf-8",
+    )
+    captured_session = {}
+    _patch_exec_session(
+        monkeypatch,
+        cli_exec,
+        stored_session,
+        capture=captured_session,
+    )
+    monkeypatch.setattr(
+        cli_exec,
+        "_connect_terminal",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--session-id",
+            "user-1",
+            "--model-provider",
+            "agent_plan",
+            "--model-name",
+            "custom-model",
+            "--model-base-url",
+            "https://models.example.com/v1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    envs = {item.key: item.value for item in captured_session["envs"]}
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "agent_plan"
+    assert envs["CODEX_MODEL"] == "custom-model"
+    assert envs["OPENCODE_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["CODEX_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["MODEL_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["ANTHROPIC_BASE_URL"] == "https://models.example.com/v1"
+    assert "CODEX_CONFIG_TOML" not in envs
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
 
 
 def test_cli_exec_supports_empty_command(

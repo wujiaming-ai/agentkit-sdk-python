@@ -127,9 +127,7 @@ MODEL_PROVIDER_CONFIGS: dict[str, ModelProviderConfig] = {
     ),
 }
 
-DEFAULT_MODEL_NAME = MODEL_PROVIDER_CONFIGS[
-    DEFAULT_MODEL_PROVIDER
-].default_model_name
+DEFAULT_MODEL_NAME = MODEL_PROVIDER_CONFIGS[DEFAULT_MODEL_PROVIDER].default_model_name
 DEFAULT_MODEL_NAME_LIST = tuple(
     dict.fromkeys(
         (
@@ -138,12 +136,17 @@ DEFAULT_MODEL_NAME_LIST = tuple(
         )
     )
 )
-DEFAULT_MODEL_BASE_URL = MODEL_PROVIDER_CONFIGS[
-    DEFAULT_MODEL_PROVIDER
-].model_base_url
+DEFAULT_MODEL_BASE_URL = MODEL_PROVIDER_CONFIGS[DEFAULT_MODEL_PROVIDER].model_base_url
 DEFAULT_ANTHROPIC_BASE_URL = MODEL_PROVIDER_CONFIGS[
     DEFAULT_MODEL_PROVIDER
 ].anthropic_base_url
+BUILTIN_MODEL_BASE_URL_PROVIDERS = {
+    config.model_base_url: provider
+    for provider, config in MODEL_PROVIDER_CONFIGS.items()
+}
+BUILTIN_MODEL_BASE_URLS = tuple(
+    BUILTIN_MODEL_BASE_URL_PROVIDERS,
+)
 
 
 def _model_provider_value(
@@ -158,16 +161,88 @@ def normalize_model_provider(
     model_provider: str | ModelProviderType | None,
 ) -> str:
     resolved = (_model_provider_value(model_provider) or DEFAULT_MODEL_PROVIDER).strip()
-    if resolved not in MODEL_PROVIDER_CONFIGS:
-        allowed = ", ".join(MODEL_PROVIDER_CONFIGS)
-        raise ValueError(f"--model-provider must be one of: {allowed}")
     return resolved
+
+
+def normalize_optional_model_provider(
+    model_provider: str | ModelProviderType | None,
+) -> str | None:
+    resolved = (_model_provider_value(model_provider) or "").strip()
+    return resolved or None
+
+
+def normalize_model_base_url(model_base_url: Optional[str]) -> str | None:
+    resolved = (model_base_url or "").strip()
+    return resolved or None
+
+
+def is_builtin_model_base_url(model_base_url: Optional[str]) -> bool:
+    resolved = normalize_model_base_url(model_base_url)
+    return bool(resolved and resolved in BUILTIN_MODEL_BASE_URLS)
+
+
+def infer_model_provider_from_base_url(model_base_url: Optional[str]) -> str | None:
+    resolved = normalize_model_base_url(model_base_url)
+    if not resolved:
+        return None
+    return BUILTIN_MODEL_BASE_URL_PROVIDERS.get(resolved)
+
+
+def validate_model_provider_base_url(
+    *,
+    model_provider: str | ModelProviderType | None,
+    model_base_url: Optional[str],
+    model_provider_was_provided: Optional[bool] = None,
+    model_base_url_was_provided: Optional[bool] = None,
+) -> None:
+    resolved_model_provider = normalize_optional_model_provider(model_provider)
+    resolved_model_base_url = normalize_model_base_url(model_base_url)
+    provider_was_provided = (
+        bool(resolved_model_provider)
+        if model_provider_was_provided is None
+        else model_provider_was_provided
+    )
+    base_url_was_provided = (
+        bool(resolved_model_base_url)
+        if model_base_url_was_provided is None
+        else model_base_url_was_provided
+    )
+
+    if (
+        provider_was_provided
+        and resolved_model_provider
+        and resolved_model_provider not in MODEL_PROVIDER_CONFIGS
+        and not resolved_model_base_url
+    ):
+        raise ValueError("--model-provider requires --model-base-url for custom providers")
+
+    if (
+        base_url_was_provided
+        and resolved_model_base_url
+        and not is_builtin_model_base_url(resolved_model_base_url)
+        and not provider_was_provided
+    ):
+        raise ValueError(
+            "--model-base-url requires --model-provider for non-Ark base URLs"
+        )
+
+
+def get_model_provider_config_if_known(
+    model_provider: str | ModelProviderType | None,
+) -> ModelProviderConfig | None:
+    return MODEL_PROVIDER_CONFIGS.get(normalize_model_provider(model_provider))
 
 
 def get_model_provider_config(
     model_provider: str | ModelProviderType | None,
 ) -> ModelProviderConfig:
-    return MODEL_PROVIDER_CONFIGS[normalize_model_provider(model_provider)]
+    resolved_provider = normalize_model_provider(model_provider)
+    config = MODEL_PROVIDER_CONFIGS.get(resolved_provider)
+    if config is None:
+        raise ValueError(
+            f"--model-provider has no built-in configuration: {resolved_provider}"
+        )
+    return config
 
 
 def model_provider_from_env_value(value: object) -> str | None:
@@ -177,11 +252,7 @@ def model_provider_from_env_value(value: object) -> str | None:
     resolved = value.strip()
     if not resolved:
         return None
-
-    try:
-        return normalize_model_provider(resolved)
-    except ValueError:
-        return None
+    return resolved
 
 
 def resolve_model_name(
@@ -189,9 +260,65 @@ def resolve_model_name(
     model_provider: str | ModelProviderType | None,
 ) -> str:
     resolved_provider = normalize_model_provider(model_provider)
-    config = MODEL_PROVIDER_CONFIGS[resolved_provider]
-    resolved_model_name = (model_name or "").strip() or config.default_model_name
-    return resolved_model_name
+    config = MODEL_PROVIDER_CONFIGS.get(resolved_provider)
+    resolved_model_name = (model_name or "").strip()
+    if resolved_model_name:
+        return resolved_model_name
+    if config:
+        return config.default_model_name
+    return ""
+
+
+def resolve_model_base_urls(
+    *,
+    model_provider: str | ModelProviderType | None,
+    model_base_url: Optional[str] = None,
+) -> tuple[str | None, str | None]:
+    resolved_model_base_url = normalize_model_base_url(model_base_url)
+    if resolved_model_base_url:
+        return resolved_model_base_url, resolved_model_base_url
+
+    config = get_model_provider_config_if_known(model_provider)
+    if not config:
+        return None, None
+    return config.model_base_url, config.anthropic_base_url
+
+
+def should_emit_codex_model_config(
+    *,
+    model_provider: str | ModelProviderType | None,
+    model_base_url: Optional[str] = None,
+) -> bool:
+    if normalize_model_base_url(model_base_url):
+        return False
+
+    resolved_provider = normalize_optional_model_provider(model_provider)
+    return resolved_provider is None or resolved_provider in MODEL_PROVIDER_CONFIGS
+
+
+def is_custom_model_base_url(
+    *,
+    model_provider: str | ModelProviderType | None,
+    model_base_url: Optional[str],
+    anthropic_base_url: Optional[str] = None,
+) -> bool:
+    resolved_model_base_url = normalize_model_base_url(model_base_url)
+    if not resolved_model_base_url:
+        return False
+
+    config = get_model_provider_config_if_known(model_provider)
+    if not config:
+        return True
+
+    resolved_anthropic_base_url = normalize_model_base_url(anthropic_base_url)
+    if resolved_model_base_url != config.model_base_url:
+        return True
+    if (
+        resolved_anthropic_base_url
+        and resolved_anthropic_base_url != config.anthropic_base_url
+    ):
+        return True
+    return False
 
 
 def _toml_quote(value: str) -> str:
@@ -203,7 +330,7 @@ def build_codex_config_toml(
     model_provider: str | ModelProviderType | None = None,
 ) -> str:
     resolved_provider = normalize_model_provider(model_provider)
-    config = MODEL_PROVIDER_CONFIGS[resolved_provider]
+    config = get_model_provider_config(resolved_provider)
     resolved_model_name = resolve_model_name(model_name, resolved_provider)
     quoted_model = _toml_quote(resolved_model_name)
     return "\n".join(
@@ -282,9 +409,8 @@ def _build_model_catalog_item(model_name: str, spec: ModelSpec) -> dict:
 
 def infer_model_spec(model_name: str) -> ModelSpec:
     normalized_model_name = model_name.strip().lower()
-    if (
-        normalized_model_name == "glm-5.2"
-        or normalized_model_name.startswith("deepseek-v4")
+    if normalized_model_name == "glm-5.2" or normalized_model_name.startswith(
+        "deepseek-v4"
     ):
         context_window = DEFAULT_MODEL_CONTEXT_WINDOW
     else:
@@ -300,8 +426,8 @@ def model_catalog_context_window(
     model_name: str,
     model_provider: str | ModelProviderType | None = None,
 ) -> int:
-    config = get_model_provider_config(model_provider)
-    spec = config.models.get(model_name)
+    config = get_model_provider_config_if_known(model_provider)
+    spec = config.models.get(model_name) if config else None
     if spec:
         return spec.context_window
     return infer_model_spec(model_name).context_window
@@ -312,7 +438,7 @@ def build_codex_model_catalog_json(
     model_provider: str | ModelProviderType | None = None,
 ) -> str:
     resolved_provider = normalize_model_provider(model_provider)
-    config = MODEL_PROVIDER_CONFIGS[resolved_provider]
+    config = get_model_provider_config(resolved_provider)
     resolved_model_name = resolve_model_name(model_name, resolved_provider)
     deduped_model_names = list(dict.fromkeys((resolved_model_name, *config.models)))
     payload = {

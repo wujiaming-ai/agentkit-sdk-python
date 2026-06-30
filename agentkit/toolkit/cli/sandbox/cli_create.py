@@ -32,16 +32,19 @@ from agentkit.toolkit.cli.sandbox.model_config import (
     CODE_ENV_HOME,
     CODEX_CONFIG_TOML_ENV,
     CODEX_MODEL_CATALOG_JSON_ENV,
-    DEFAULT_MODEL_PROVIDER,
     ModelProviderType,
     MODEL_API_KEY_ENV,
     MODEL_API_KEY_ENV_KEYS,
     MODEL_BASE_URL_ENV_KEYS,
     MODEL_NAME_ENV_KEYS,
     MODEL_PROVIDER_ENV,
-    get_model_provider_config,
+    infer_model_provider_from_base_url,
+    normalize_model_base_url,
     normalize_model_provider,
+    resolve_model_base_urls,
     resolve_model_name,
+    should_emit_codex_model_config,
+    validate_model_provider_base_url,
     build_codex_config_toml as _shared_build_codex_config_toml,
     build_codex_model_catalog_json as _shared_build_codex_model_catalog_json,
 )
@@ -115,8 +118,7 @@ def _append_tool_envs(
         return
 
     envs.extend(
-        tools_types.EnvsItemForCreateTool(Key=key, Value=resolved)
-        for key in keys
+        tools_types.EnvsItemForCreateTool(Key=key, Value=resolved) for key in keys
     )
 
 
@@ -138,31 +140,37 @@ def _append_code_env_tool_envs(
     envs: list[tools_types.EnvsItemForCreateTool],
     model_name: str,
     model_provider: str | ModelProviderType | None,
+    *,
+    include_codex_model_config: bool = True,
 ) -> None:
-    envs.extend(
-        [
-            tools_types.EnvsItemForCreateTool(
-                Key="OPENCODE_DISABLE_AUTOUPDATE",
-                Value="1",
-            ),
-            tools_types.EnvsItemForCreateTool(
-                Key="HOME",
-                Value=CODE_ENV_HOME,
-            ),
-            tools_types.EnvsItemForCreateTool(
-                Key="CODEX_HOME",
-                Value=CODE_ENV_CODEX_HOME,
-            ),
-            tools_types.EnvsItemForCreateTool(
-                Key=CODEX_CONFIG_TOML_ENV,
-                Value=_build_codex_config_toml(model_name, model_provider),
-            ),
-            tools_types.EnvsItemForCreateTool(
-                Key=CODEX_MODEL_CATALOG_JSON_ENV,
-                Value=_build_codex_model_catalog_json(model_name, model_provider),
-            ),
-        ]
-    )
+    code_envs = [
+        tools_types.EnvsItemForCreateTool(
+            Key="OPENCODE_DISABLE_AUTOUPDATE",
+            Value="1",
+        ),
+        tools_types.EnvsItemForCreateTool(
+            Key="HOME",
+            Value=CODE_ENV_HOME,
+        ),
+        tools_types.EnvsItemForCreateTool(
+            Key="CODEX_HOME",
+            Value=CODE_ENV_CODEX_HOME,
+        ),
+    ]
+    if include_codex_model_config:
+        code_envs.extend(
+            [
+                tools_types.EnvsItemForCreateTool(
+                    Key=CODEX_CONFIG_TOML_ENV,
+                    Value=_build_codex_config_toml(model_name, model_provider),
+                ),
+                tools_types.EnvsItemForCreateTool(
+                    Key=CODEX_MODEL_CATALOG_JSON_ENV,
+                    Value=_build_codex_model_catalog_json(model_name, model_provider),
+                ),
+            ]
+        )
+    envs.extend(code_envs)
 
 
 def _build_tool_model_envs(
@@ -170,12 +178,28 @@ def _build_tool_model_envs(
     tool_type: str,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
-    model_provider: str | ModelProviderType | None = DEFAULT_MODEL_PROVIDER,
+    model_provider: str | ModelProviderType | None = None,
+    model_base_url: Optional[str] = None,
+    model_provider_was_provided: Optional[bool] = None,
+    model_base_url_was_provided: Optional[bool] = None,
 ) -> list[tools_types.EnvsItemForCreateTool] | None:
     envs: list[tools_types.EnvsItemForCreateTool] = []
-    provider_config = get_model_provider_config(model_provider)
-    resolved_model_provider = normalize_model_provider(model_provider)
-    resolved_model_name = resolve_model_name(model_name, model_provider)
+    validate_model_provider_base_url(
+        model_provider=model_provider,
+        model_base_url=model_base_url,
+        model_provider_was_provided=model_provider_was_provided,
+        model_base_url_was_provided=model_base_url_was_provided,
+    )
+    resolved_model_base_url = normalize_model_base_url(model_base_url)
+    effective_model_provider = model_provider or infer_model_provider_from_base_url(
+        resolved_model_base_url
+    )
+    resolved_model_provider = normalize_model_provider(effective_model_provider)
+    resolved_model_name = resolve_model_name(model_name, resolved_model_provider)
+    resolved_base_url, resolved_anthropic_base_url = resolve_model_base_urls(
+        model_provider=resolved_model_provider,
+        model_base_url=resolved_model_base_url,
+    )
     resolved_model_api_key = model_api_key or os.getenv(MODEL_API_KEY_ENV)
     _append_tool_envs(envs, (MODEL_PROVIDER_ENV,), resolved_model_provider)
     _append_tool_envs(envs, MODEL_NAME_ENV_KEYS, resolved_model_name)
@@ -183,17 +207,28 @@ def _build_tool_model_envs(
     _append_tool_envs(
         envs,
         MODEL_BASE_URL_ENV_KEYS,
-        provider_config.model_base_url,
+        resolved_base_url,
     )
     _append_tool_envs(
         envs,
         ANTHROPIC_BASE_URL_ENV_KEYS,
-        provider_config.anthropic_base_url,
+        resolved_anthropic_base_url,
     )
     _append_tool_envs(envs, DISABLED_SERVICE_ENV_KEYS, "true")
     _append_tool_envs(envs, (BROWSER_EXTRA_ARGS_ENV,), DEFAULT_BROWSER_EXTRA_ARGS)
     if tool_type.strip() == DEFAULT_CREATE_TOOL_TYPE:
-        _append_code_env_tool_envs(envs, resolved_model_name, model_provider)
+        _append_code_env_tool_envs(
+            envs,
+            resolved_model_name,
+            resolved_model_provider,
+            include_codex_model_config=(
+                bool(resolved_model_name)
+                and should_emit_codex_model_config(
+                    model_provider=resolved_model_provider,
+                    model_base_url=resolved_model_base_url,
+                )
+            ),
+        )
     return envs or None
 
 
@@ -207,7 +242,10 @@ def _build_create_tool_request(
     cpu: int = DEFAULT_CPU,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
-    model_provider: str | ModelProviderType | None = DEFAULT_MODEL_PROVIDER,
+    model_provider: str | ModelProviderType | None = None,
+    model_base_url: Optional[str] = None,
+    model_provider_was_provided: Optional[bool] = None,
+    model_base_url_was_provided: Optional[bool] = None,
 ) -> tools_types.CreateToolRequest:
     resolved_tool_type = tool_type.strip() or DEFAULT_CREATE_TOOL_TYPE
     resolved_name = (name or "").strip() or _generate_tool_name(resolved_tool_type)
@@ -241,6 +279,9 @@ def _build_create_tool_request(
             model_name=model_name,
             model_api_key=model_api_key,
             model_provider=model_provider,
+            model_base_url=model_base_url,
+            model_provider_was_provided=model_provider_was_provided,
+            model_base_url_was_provided=model_base_url_was_provided,
         ),
     )
 
@@ -310,9 +351,17 @@ def create_tool(
     cpu: int = DEFAULT_CPU,
     model_name: Optional[str] = None,
     model_api_key: Optional[str] = None,
-    model_provider: str | ModelProviderType | None = DEFAULT_MODEL_PROVIDER,
+    model_provider: str | ModelProviderType | None = None,
+    model_base_url: Optional[str] = None,
 ) -> dict[str, object]:
-    resolved_model_provider = normalize_model_provider(model_provider)
+    resolved_model_base_url = normalize_model_base_url(model_base_url)
+    raw_model_provider = (
+        model_provider.value if isinstance(model_provider, ModelProviderType) else model_provider
+    )
+    effective_model_provider = raw_model_provider or infer_model_provider_from_base_url(
+        resolved_model_base_url
+    )
+    resolved_model_provider = normalize_model_provider(effective_model_provider)
     region = _resolve_region(SANDBOX_REGION_ENV, "agentkit")
     tos_region = _resolve_region(SANDBOX_TOS_REGION_ENV, "tos")
     request = _build_create_tool_request(
@@ -324,7 +373,10 @@ def create_tool(
         cpu=cpu,
         model_name=model_name,
         model_api_key=model_api_key,
-        model_provider=resolved_model_provider,
+        model_provider=effective_model_provider,
+        model_base_url=resolved_model_base_url,
+        model_provider_was_provided=bool((raw_model_provider or "").strip()),
+        model_base_url_was_provided=bool(resolved_model_base_url),
     )
     client = AgentkitToolsClient(
         region=region,
@@ -340,6 +392,7 @@ def create_tool(
         "name": final_tool.name or request.name,
         "status": final_tool.status or TOOL_READY_STATUS,
         "model_provider": resolved_model_provider,
+        "model_base_url": resolved_model_base_url,
     }
 
 
@@ -357,10 +410,7 @@ def create_command(
     tos_bucket: Optional[str] = typer.Option(
         None,
         "--tos-bucket",
-        help=(
-            "TOS bucket to mount. "
-            "Omit to create the tool without a TOS mount."
-        ),
+        help=("TOS bucket to mount. Omit to create the tool without a TOS mount."),
     ),
     tos_mount: Optional[str] = typer.Option(
         None,
@@ -392,10 +442,18 @@ def create_command(
             "and ANTHROPIC_AUTH_TOKEN when creating a tool."
         ),
     ),
-    model_provider: ModelProviderType = typer.Option(
-        ModelProviderType.MODEL_SQUARE,
+    model_provider: Optional[str] = typer.Option(
+        None,
         "--model-provider",
         help="Model provider to use for base URLs, defaults, and model catalog.",
+    ),
+    model_base_url: Optional[str] = typer.Option(
+        None,
+        "--model-base-url",
+        help=(
+            "Custom model base URL to inject into OPENCODE_BASE_URL, "
+            "CODEX_BASE_URL, MODEL_BASE_URL, and ANTHROPIC_BASE_URL."
+        ),
     ),
 ) -> None:
     """Create an AgentKit Tool with optional TOS mount."""
@@ -410,7 +468,8 @@ def create_command(
             cpu=cpu,
             model_name=model_name,
             model_api_key=model_api_key,
-            model_provider=model_provider.value,
+            model_provider=model_provider,
+            model_base_url=model_base_url,
         )
         save_tool_result(str(result["tool_type"]), result)
     except (typer.Abort, typer.Exit):

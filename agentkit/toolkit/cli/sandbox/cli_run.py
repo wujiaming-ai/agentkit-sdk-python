@@ -54,6 +54,7 @@ _OPTION_FIELDS = {
     "model_name": "--model-name",
     "model_api_key": "--model-api-key",
     "model_provider": "--model-provider",
+    "model_base_url": "--model-base-url",
 }
 
 
@@ -158,10 +159,7 @@ def _build_exec_args(entry: dict[str, Any], *, entry_index: int) -> list[str]:
     )
     unknown_keys = sorted(key for key in entry if key not in consumed_keys)
     if unknown_keys:
-        error(
-            f"Unknown key(s) in exec entry #{entry_index}: "
-            f"{', '.join(unknown_keys)}"
-        )
+        error(f"Unknown key(s) in exec entry #{entry_index}: {', '.join(unknown_keys)}")
 
     for field_name, option_name in _OPTION_FIELDS.items():
         if field_name == "command":
@@ -177,9 +175,13 @@ def _build_exec_args(entry: dict[str, Any], *, entry_index: int) -> list[str]:
         args.extend(src_dirs[1:])
 
     for source_key in _SOURCE_KEYS:
-        args.extend(_string_list(entry.get(source_key), f"exec[{entry_index}].{source_key}"))
+        args.extend(
+            _string_list(entry.get(source_key), f"exec[{entry_index}].{source_key}")
+        )
     for extra_key in _EXTRA_ARG_KEYS:
-        args.extend(_string_list(entry.get(extra_key), f"exec[{entry_index}].{extra_key}"))
+        args.extend(
+            _string_list(entry.get(extra_key), f"exec[{entry_index}].{extra_key}")
+        )
 
     _append_option(args, "--command", entry.get("command"))
 
@@ -229,8 +231,7 @@ def _build_tmux_grid_script(
     scripts_dir: Path,
 ) -> str:
     pane_scripts = [
-        scripts_dir / f"pane-{index}.zsh"
-        for index in range(1, len(commands) + 1)
+        scripts_dir / f"pane-{index}.zsh" for index in range(1, len(commands) + 1)
     ]
     for command, pane_script in zip(commands, pane_scripts):
         _write_executable_script(pane_script, _build_pane_script(command))
@@ -253,12 +254,12 @@ def _build_tmux_grid_script(
         "trap pause_on_error EXIT",
         f"TMUX_BIN={quoted_tmux}",
         f"SESSION_NAME={quoted_session}",
-        '"${TMUX_BIN}" new-session -d -s "${SESSION_NAME}" ' f"{first_pane}",
+        f'"${{TMUX_BIN}}" new-session -d -s "${{SESSION_NAME}}" {first_pane}',
     ]
     for pane_script in pane_scripts[1:]:
         pane_command = shlex.quote(shlex.join(["/bin/zsh", str(pane_script)]))
         lines.append(
-            '"${TMUX_BIN}" split-window -t "${SESSION_NAME}" ' f"{pane_command}"
+            f'"${{TMUX_BIN}}" split-window -t "${{SESSION_NAME}}" {pane_command}'
         )
     lines.extend(
         [
@@ -329,6 +330,15 @@ def _open_terminal_tabs(commands: list[str]) -> None:
     _open_macos_terminal_tabs(commands)
 
 
+def _run_single_command_inline(command: str) -> None:
+    try:
+        subprocess.run(["/bin/sh", "-c", command], check=True)
+    except FileNotFoundError:
+        error("/bin/sh is required to run sandbox exec commands inline")
+    except subprocess.CalledProcessError as exc:
+        raise typer.Exit(exc.returncode) from exc
+
+
 def run_command(
     config: Path = typer.Option(
         DEFAULT_RUN_CONFIG,
@@ -360,6 +370,10 @@ def run_command(
     if dry_run:
         for command in commands:
             typer.echo(command)
+        return
+
+    if platform.system() != "Darwin" and len(commands) == 1:
+        _run_single_command_inline(commands[0])
         return
 
     _open_terminal_tabs(commands)

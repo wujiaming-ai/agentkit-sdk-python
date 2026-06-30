@@ -48,11 +48,16 @@ from agentkit.toolkit.cli.sandbox.session_create import (
     ensure_sandbox_session,
 )
 from agentkit.toolkit.cli.sandbox.git_config import apply_git_config_to_session
-from agentkit.toolkit.cli.sandbox.model_config import ModelProviderType
+from agentkit.toolkit.cli.sandbox.model_config import (
+    is_custom_model_base_url,
+    normalize_model_base_url,
+)
 from agentkit.toolkit.cli.sandbox.tos_config import DEFAULT_SANDBOX_WORKSPACE
 from agentkit.toolkit.cli.sandbox.tool_resolve import (
     SandboxToolType,
+    find_tool_model_base_urls,
     find_tool_model_provider,
+    get_remote_tool_model_base_urls,
     get_remote_tool_model_provider,
 )
 from agentkit.toolkit.cli.sandbox.sandbox_client import (
@@ -329,17 +334,14 @@ def _upload_source_before_exec(
     return resolved_dst_dir
 
 
-def _resolve_exec_model_provider(
+def _resolve_exec_model_tool_id(
     *,
     session_id: Optional[str],
     tool_id: Optional[str],
-    tool_type: SandboxToolType,
     model_name: Optional[str],
-    model_provider: Optional[ModelProviderType],
-) -> str | ModelProviderType | None:
-    if model_provider or not (model_name or "").strip():
-        return model_provider
-
+) -> str | None:
+    if not (model_name or "").strip():
+        return None
     resolved_tool_id = (tool_id or "").strip()
     if not resolved_tool_id and session_id:
         existing = find_session_result(session_id)
@@ -348,9 +350,30 @@ def _resolve_exec_model_provider(
             if isinstance(existing_tool_id, str):
                 resolved_tool_id = existing_tool_id.strip()
 
-    if not resolved_tool_id:
-        return None
+    return resolved_tool_id or None
 
+
+def _resolve_exec_model_provider(
+    *,
+    session_id: Optional[str],
+    tool_id: Optional[str],
+    tool_type: SandboxToolType,
+    model_name: Optional[str],
+    model_provider: Optional[str],
+) -> str | None:
+    if model_provider or not (model_name or "").strip():
+        return model_provider
+
+    resolved_tool_id = _resolve_exec_model_tool_id(
+        session_id=session_id,
+        tool_id=tool_id,
+        model_name=model_name,
+    )
+    if not resolved_tool_id:
+        return find_tool_model_provider(
+            tool_id=None,
+            tool_type=tool_type,
+        )
     cached_model_provider = find_tool_model_provider(
         tool_id=resolved_tool_id,
         tool_type=tool_type,
@@ -369,6 +392,60 @@ def _resolve_exec_model_provider(
         )
     except Exception:
         return None
+
+
+def _resolve_exec_inherited_model_base_url(
+    *,
+    session_id: Optional[str],
+    tool_id: Optional[str],
+    tool_type: SandboxToolType,
+    model_name: Optional[str],
+    model_provider: Optional[str],
+    model_base_url: Optional[str],
+) -> str | None:
+    if normalize_model_base_url(model_base_url) or not (model_name or "").strip():
+        return None
+
+    resolved_tool_id = _resolve_exec_model_tool_id(
+        session_id=session_id,
+        tool_id=tool_id,
+        model_name=model_name,
+    )
+    cached_model_base_url, cached_anthropic_base_url = find_tool_model_base_urls(
+        tool_id=resolved_tool_id,
+        tool_type=tool_type,
+    )
+    if cached_model_base_url and is_custom_model_base_url(
+        model_provider=model_provider,
+        model_base_url=cached_model_base_url,
+        anthropic_base_url=cached_anthropic_base_url,
+    ):
+        return cached_model_base_url
+
+    if not resolved_tool_id:
+        return None
+
+    if not (tool_id or "").strip():
+        return None
+
+    try:
+        remote_model_base_url, remote_anthropic_base_url = (
+            get_remote_tool_model_base_urls(
+                AgentkitToolsClient(),
+                resolved_tool_id,
+                tool_type=tool_type,
+            )
+        )
+    except Exception:
+        return None
+
+    if remote_model_base_url and is_custom_model_base_url(
+        model_provider=model_provider,
+        model_base_url=remote_model_base_url,
+        anthropic_base_url=remote_anthropic_base_url,
+    ):
+        return remote_model_base_url
+    return None
 
 
 def _normalize_exec_mode(mode: Optional[str]) -> Optional[str]:
@@ -483,11 +560,20 @@ def exec_command(
             "and ANTHROPIC_AUTH_TOKEN when creating a sandbox session."
         ),
     ),
-    model_provider: Optional[ModelProviderType] = typer.Option(
+    model_provider: Optional[str] = typer.Option(
         None,
         "--model-provider",
         help=(
             "Model provider to use for base URLs, defaults, and model catalog "
+            "when creating a sandbox session."
+        ),
+    ),
+    model_base_url: Optional[str] = typer.Option(
+        None,
+        "--model-base-url",
+        help=(
+            "Custom model base URL to inject into OPENCODE_BASE_URL, "
+            "CODEX_BASE_URL, MODEL_BASE_URL, and ANTHROPIC_BASE_URL "
             "when creating a sandbox session."
         ),
     ),
@@ -502,6 +588,17 @@ def exec_command(
             model_name=model_name,
             model_provider=model_provider,
         )
+        explicit_model_provider = bool((model_provider or "").strip())
+        resolved_model_base_url = normalize_model_base_url(model_base_url)
+        if not resolved_model_base_url and not explicit_model_provider:
+            resolved_model_base_url = _resolve_exec_inherited_model_base_url(
+                session_id=session_id,
+                tool_id=tool_id,
+                tool_type=tool_type,
+                model_name=model_name,
+                model_provider=resolved_model_provider,
+                model_base_url=model_base_url,
+            )
         session = ensure_sandbox_session(
             session_id=session_id,
             tool_id=tool_id,
@@ -510,6 +607,11 @@ def exec_command(
                 model_name=model_name,
                 model_api_key=model_api_key,
                 model_provider=resolved_model_provider,
+                model_base_url=resolved_model_base_url,
+                model_provider_was_provided=explicit_model_provider,
+                model_base_url_was_provided=bool(
+                    normalize_model_base_url(model_base_url)
+                ),
                 include_codex_config=tool_type == SandboxToolType.CODE_ENV,
             ),
         )
