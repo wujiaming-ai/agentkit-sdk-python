@@ -22,6 +22,7 @@ from agentkit.toolkit.cli.sandbox.cli_create import create_command
 from agentkit.toolkit.cli.sandbox.cli_exec import exec_command
 from agentkit.toolkit.cli.sandbox.cli_file import file_command
 from agentkit.toolkit.cli.sandbox.cli_get import get_command
+from agentkit.toolkit.cli.sandbox.cli_model_login import codex_login_command
 from agentkit.toolkit.cli.sandbox.cli_mount import mount_command
 from agentkit.toolkit.cli.sandbox.cli_run import run_command
 from agentkit.toolkit.cli.sandbox.cli_shell import shell_command
@@ -46,4 +47,6 @@ sandbox_app.command(
     context_settings={"allow_extra_args": True},
 )(shell_command)
 sandbox_app.command(name="web")(web_command)
+sandbox_app.command(name="codex-login")(codex_login_command)
+sandbox_app.command(name="model-login")(codex_login_command)  # provider-agnostic alias
 sandbox_app.add_typer(file_command, name="file")
