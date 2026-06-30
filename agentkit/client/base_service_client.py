@@ -18,9 +18,12 @@ This is the top-level base class for all service clients.
 """
 
 import json
+import os
 from typing import Any, Dict, Type, TypeVar, Union, Optional
 from dataclasses import dataclass
 
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from volcengine.ApiInfo import ApiInfo
 from volcengine.base.Service import Service
 from volcengine.Credentials import Credentials as VolcCredentials
@@ -173,6 +176,41 @@ class BaseServiceClient(Service):
         self.set_sk(self.secret_key)
         if self.session_token:
             self.set_session_token(self.session_token)
+
+        self._install_retry_adapter()
+
+    def _install_retry_adapter(self) -> None:
+        """Retry transient overload responses (429/503) and connection failures
+        with exponential backoff on the shared ``Service`` session.
+
+        Scoped to cases that mean the request was not processed, so
+        non-idempotent ``Create*`` actions are never double-executed: read
+        timeouts are not retried (``read=0``) and only 429/503 are status-
+        retried. Honors ``Retry-After``. Disabled with AGENTKIT_HTTP_RETRIES=0.
+        """
+        try:
+            retries = max(0, int(os.getenv("AGENTKIT_HTTP_RETRIES", "2")))
+        except ValueError:
+            retries = 2
+        if retries <= 0:
+            return
+        session = getattr(self, "session", None)
+        if session is None:
+            return
+        retry = Retry(
+            total=retries,
+            connect=retries,
+            read=0,
+            status=retries,
+            status_forcelist=(429, 503),
+            allowed_methods=None,  # OpenAPI calls are POST; gate by status only
+            backoff_factor=0.5,
+            respect_retry_after_header=True,
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
 
     def _should_auto_refresh_vefaas_credentials(self) -> bool:
         if self._explicit_credentials:

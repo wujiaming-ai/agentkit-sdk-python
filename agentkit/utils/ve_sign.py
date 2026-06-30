@@ -31,6 +31,7 @@ import hashlib
 import hmac
 import os
 import platform
+import time
 import requests
 from urllib.parse import quote
 
@@ -44,6 +45,79 @@ Scheme = "https"
 
 
 MAX_X_CUSTOM_SOURCE_LENGTH = 256
+
+
+# Transient-failure handling for signed OpenAPI calls. Historically this used a
+# single timeout-less ``requests.request`` — a stalled connection could hang
+# forever, and a transient overload (429/503) or connection error failed the
+# call outright with no retry. Both are now bounded and conservatively retried.
+# Tunable via env; AGENTKIT_HTTP_RETRIES=0 disables retries.
+_RETRYABLE_STATUS = frozenset({429, 503})
+
+
+def _http_timeout() -> float:
+    try:
+        return max(1.0, float(os.getenv("AGENTKIT_HTTP_TIMEOUT", "30")))
+    except ValueError:
+        return 30.0
+
+
+def _http_retries() -> int:
+    try:
+        return max(0, int(os.getenv("AGENTKIT_HTTP_RETRIES", "2")))
+    except ValueError:
+        return 2
+
+
+def _backoff_seconds(attempt: int) -> float:
+    return min(8.0, 0.5 * (2**attempt))
+
+
+def _retry_after_seconds(resp: requests.Response) -> float | None:
+    raw = resp.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return None
+
+
+def _signed_request(method, url, headers, params, data) -> requests.Response:
+    """Issue a signed HTTP request with a bounded timeout and conservative
+    transient-retry.
+
+    Only retries failures that almost certainly mean the request was not
+    processed — connection errors (incl. connect timeouts) and HTTP 429/503 —
+    so non-idempotent ``Create*`` actions are never double-executed. Read
+    timeouts and other 5xx are surfaced, not retried. Honors ``Retry-After``.
+    """
+    retries = _http_retries()
+    timeout = _http_timeout()
+    resp: requests.Response | None = None
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                data=data,
+                timeout=timeout,
+            )
+        except requests.ConnectionError:
+            # Not delivered (connection failed/reset before completion), so a
+            # retry cannot double-execute the request.
+            if attempt < retries:
+                time.sleep(_backoff_seconds(attempt))
+                continue
+            raise
+        if resp.status_code in _RETRYABLE_STATUS and attempt < retries:
+            time.sleep(_retry_after_seconds(resp) or _backoff_seconds(attempt))
+            continue
+        return resp
+    assert resp is not None  # loop always returns or raises before here
+    return resp
 
 
 def _get_os_tag() -> str:
@@ -221,7 +295,7 @@ def request(method, date, query, header, ak, sk, action, body):
     header = {**header, **sign_result}
     # header = {**header, **{"X-Security-Token": SessionToken}}
     # 第六步：将 Signature 签名写入 HTTP Header 中，并发送 HTTP 请求。
-    r = requests.request(
+    r = _signed_request(
         method=method,
         url=f"{Scheme}://{request_param['host']}{request_param['path']}",
         headers=header,
