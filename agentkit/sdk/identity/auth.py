@@ -21,6 +21,7 @@ from agentkit.platform import (
     resolve_credentials,
     resolve_endpoint,
 )
+from agentkit.toolkit.errors import ApiError
 
 
 def requires_api_key(*, provider_name: str, into: str = "api_key"):
@@ -59,8 +60,8 @@ def requires_api_key(*, provider_name: str, into: str = "api_key"):
 
             try:
                 return response["Result"]["ApiKey"]
-            except Exception as _:
-                raise RuntimeError(f"Get api key failed: {response}")
+            except Exception as e:
+                raise ApiError("GetResourceApiKey did not return an ApiKey") from e
 
         @wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:

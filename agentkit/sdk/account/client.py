@@ -66,9 +66,7 @@ class AgentkitAccountClient(BaseAgentkitClient):
         Returns:
             The status string ('Enabled' or 'Disabled'), or None if service not found.
         """
-        print(1)
         response = self.list_account_linked_services(ListAccountLinkedServicesRequest())
-        print(2)
         if not response.service_statuses:
             return None
         for svc in response.service_statuses:

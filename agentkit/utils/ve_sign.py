@@ -35,6 +35,11 @@ import time
 import requests
 from urllib.parse import quote
 
+from agentkit.utils.http_defaults import http_timeout, http_retries
+from agentkit.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 Service = ""
 Version = ""
@@ -53,20 +58,6 @@ MAX_X_CUSTOM_SOURCE_LENGTH = 256
 # call outright with no retry. Both are now bounded and conservatively retried.
 # Tunable via env; AGENTKIT_HTTP_RETRIES=0 disables retries.
 _RETRYABLE_STATUS = frozenset({429, 503})
-
-
-def _http_timeout() -> float:
-    try:
-        return max(1.0, float(os.getenv("AGENTKIT_HTTP_TIMEOUT", "30")))
-    except ValueError:
-        return 30.0
-
-
-def _http_retries() -> int:
-    try:
-        return max(0, int(os.getenv("AGENTKIT_HTTP_RETRIES", "2")))
-    except ValueError:
-        return 2
 
 
 def _backoff_seconds(attempt: int) -> float:
@@ -92,8 +83,10 @@ def _signed_request(method, url, headers, params, data) -> requests.Response:
     so non-idempotent ``Create*`` actions are never double-executed. Read
     timeouts and other 5xx are surfaced, not retried. Honors ``Retry-After``.
     """
-    retries = _http_retries()
-    timeout = _http_timeout()
+    from agentkit.auth.errors import NetworkError
+
+    retries = http_retries()
+    timeout = http_timeout()
     resp: requests.Response | None = None
     for attempt in range(retries + 1):
         try:
@@ -105,15 +98,40 @@ def _signed_request(method, url, headers, params, data) -> requests.Response:
                 data=data,
                 timeout=timeout,
             )
-        except requests.ConnectionError:
+        except requests.ConnectionError as e:
             # Not delivered (connection failed/reset before completion), so a
             # retry cannot double-execute the request.
             if attempt < retries:
-                time.sleep(_backoff_seconds(attempt))
+                sleep = _backoff_seconds(attempt)
+                logger.debug(
+                    "signed request connection error on attempt %d/%d; "
+                    "retrying in %.2fs",
+                    attempt + 1,
+                    retries + 1,
+                    sleep,
+                )
+                time.sleep(sleep)
                 continue
-            raise
+            raise NetworkError(
+                "signed request failed: connection error after "
+                f"{retries + 1} attempt(s)"
+            ) from e
+        except (requests.Timeout, requests.HTTPError, requests.RequestException) as e:
+            # Read timeouts and other transport errors are not retried (a
+            # non-idempotent action may already have been processed); surface
+            # them as a domain error with the original cause chained.
+            raise NetworkError(f"signed request failed: {type(e).__name__}") from e
         if resp.status_code in _RETRYABLE_STATUS and attempt < retries:
-            time.sleep(_retry_after_seconds(resp) or _backoff_seconds(attempt))
+            sleep = _retry_after_seconds(resp) or _backoff_seconds(attempt)
+            logger.debug(
+                "signed request got retryable status %d on attempt %d/%d; "
+                "retrying in %.2fs",
+                resp.status_code,
+                attempt + 1,
+                retries + 1,
+                sleep,
+            )
+            time.sleep(sleep)
             continue
         return resp
     assert resp is not None  # loop always returns or raises before here
@@ -343,14 +361,11 @@ def ve_request(
     # response_body = request("GET", now, {"Limit": "2"}, {}, AK, SK, "ListUsers", None)
     import json
 
-    try:
-        response_body = request(
-            "POST", now, {}, header or {}, AK, SK, action, json.dumps(request_body)
-        )
-        check_error(response_body)
-        return response_body
-    except Exception as e:
-        raise e
+    response_body = request(
+        "POST", now, {}, header or {}, AK, SK, action, json.dumps(request_body)
+    )
+    check_error(response_body)
+    return response_body
 
 
 def check_error(response: dict) -> None:
@@ -361,5 +376,5 @@ def check_error(response: dict) -> None:
         error_message = response["ResponseMetadata"]["Error"]["Message"]
         action = response["ResponseMetadata"]["Action"]
         raise ValueError(
-            f"Error when ve_request {action}: {error_code} {error_message}, res: {response}"
+            f"Error when ve_request {action}: {error_code} {error_message}"
         )

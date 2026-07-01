@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import time
 
 from agentkit.platform import resolve_endpoint, VolcConfiguration
+from agentkit.utils.logging_config import get_logger
 from agentkit.utils.ve_sign import ve_request
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 DEFAULT_CR_INSTANCE_NAME = "agentkit-platform-instance"
 DEFAULT_CR_NAMESPACE_NAME = "agenkit-platform-namespace"
@@ -268,7 +268,7 @@ class VeCR:
             host=self.host,
             scheme=self.scheme,
         )
-        logger.debug(f"get cr authorization token: {response}")
+        logger.debug("got cr authorization token")
 
         if "Error" in response["ResponseMetadata"]:
             error_code = response["ResponseMetadata"]["Error"]["Code"]

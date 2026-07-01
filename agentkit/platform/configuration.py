@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import threading
 import time
@@ -42,8 +41,9 @@ from agentkit.utils.global_config_io import (
     get_global_config_value,
     read_global_config_dict,
 )
+from agentkit.utils.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 VEFAAS_IAM_CREDENTIAL_PATH = "/var/run/secrets/iam/credential"
 VEFAAS_IAM_CREDENTIAL_FALLBACK_TTL_SECONDS = 60

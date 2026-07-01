@@ -232,7 +232,7 @@ class VeIAM(BaseIAMClient):
             # If role not found, return None
             if "RoleNotExist" in str(e) or "NotFound" in str(e) or "404" in str(e):
                 return None
-            raise e
+            raise
 
     def create_role(
         self, role_name: str, trust_policy_document: str

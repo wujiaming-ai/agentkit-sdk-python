@@ -18,10 +18,10 @@ This is the top-level base class for all service clients.
 """
 
 import json
-import os
 from typing import Any, Dict, Type, TypeVar, Union, Optional
 from dataclasses import dataclass
 
+import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from volcengine.ApiInfo import ApiInfo
@@ -29,6 +29,7 @@ from volcengine.base.Service import Service
 from volcengine.Credentials import Credentials as VolcCredentials
 from volcengine.ServiceInfo import ServiceInfo
 
+from agentkit.auth.errors import NetworkError
 from agentkit.platform import (
     VolcConfiguration,
     resolve_credentials,
@@ -36,7 +37,11 @@ from agentkit.platform import (
 )
 from agentkit.platform.configuration import Credentials as PlatformCredentials
 from agentkit.platform.provider import CloudProvider
+from agentkit.utils.http_defaults import http_retries, http_timeout
+from agentkit.utils.logging_config import get_logger
 from agentkit.utils.ve_sign import ensure_x_custom_source_header
+
+logger = get_logger(__name__)
 
 T = TypeVar("T")
 _CREDENTIAL_ERROR_TOKENS = frozenset(
@@ -161,8 +166,8 @@ class BaseServiceClient(Service):
                 region=self.region,
                 session_token=self.session_token or "",
             ),
-            connection_timeout=30,
-            socket_timeout=30,
+            connection_timeout=int(http_timeout()),
+            socket_timeout=int(http_timeout()),
             scheme=self.scheme,
         )
 
@@ -188,10 +193,7 @@ class BaseServiceClient(Service):
         timeouts are not retried (``read=0``) and only 429/503 are status-
         retried. Honors ``Retry-After``. Disabled with AGENTKIT_HTTP_RETRIES=0.
         """
-        try:
-            retries = max(0, int(os.getenv("AGENTKIT_HTTP_RETRIES", "2")))
-        except ValueError:
-            retries = 2
+        retries = http_retries()
         if retries <= 0:
             return
         session = getattr(self, "session", None)
@@ -251,7 +253,14 @@ class BaseServiceClient(Service):
         creds = self._platform_config.get_vefaas_iam_credentials(force=force)
         if not creds:
             return False
-        return self._apply_credentials(creds)
+        applied = self._apply_credentials(creds)
+        if applied:
+            logger.info(
+                "Refreshed vefaas credentials (force=%s) for service %s",
+                force,
+                self.service,
+            )
+        return applied
 
     def _is_probable_credential_error_code(self, code: str) -> bool:
         c = (code or "").lower()
@@ -319,12 +328,18 @@ class BaseServiceClient(Service):
             Typed response object
 
         Raises:
-            Exception: If API call fails or returns an error
+            ApiError: If the API call fails or returns an error response.
+            NetworkError: If a transport-level failure occurs.
         """
+        # Imported lazily: ``agentkit.toolkit`` pulls in ``sdk`` which imports
+        # back into ``agentkit.client``, so a module-level import would cycle.
+        from agentkit.toolkit.errors import ApiError
+
         self._refresh_credentials_if_needed()
         last_error: Optional[BaseException] = None
 
         for attempt in (0, 1):
+            logger.debug("Invoking API %s (attempt %d)", api_action, attempt)
             if attempt == 1:
                 self._refresh_credentials_if_needed(force=True)
 
@@ -336,16 +351,34 @@ class BaseServiceClient(Service):
                         request.model_dump(by_alias=True, exclude_none=True)
                     ),
                 )
+            except (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.HTTPError,
+                requests.exceptions.RequestException,
+            ) as e:
+                # Transport-level failure: not a credential issue, surface as
+                # a typed network error so callers can distinguish it.
+                raise NetworkError(f"Failed to {api_action}: network error") from e
             except Exception as e:
                 last_error = e
                 if attempt == 0 and self._is_probable_credential_error_text(str(e)):
+                    logger.debug(
+                        "Retrying %s after probable credential error", api_action
+                    )
                     continue
-                raise Exception(f"Failed to {api_action}: {str(e)}") from e
+                raise ApiError(f"Failed to {api_action}: {str(e)}") from e
 
             if not res:
-                raise Exception(f"Empty response from {api_action} request.")
+                raise ApiError(f"Empty response from {api_action} request.")
 
-            response_data = json.loads(res)
+            try:
+                response_data = json.loads(res)
+            except (ValueError, TypeError) as e:
+                raise ApiError(
+                    f"Failed to {api_action}: malformed response body"
+                ) from e
+
             metadata = response_data.get("ResponseMetadata", {})
             if metadata.get("Error"):
                 err = metadata.get("Error", {}) or {}
@@ -355,13 +388,21 @@ class BaseServiceClient(Service):
                     self._is_probable_credential_error_code(error_code)
                     or self._is_probable_credential_error_text(error_msg)
                 ):
+                    logger.debug(
+                        "Retrying %s after credential error code %s",
+                        api_action,
+                        error_code or "<none>",
+                    )
                     continue
-                raise Exception(f"Failed to {api_action}: {error_msg}")
+                raise ApiError(
+                    f"Failed to {api_action}: {error_msg}",
+                    error_code=error_code or None,
+                )
 
             return response_type(**response_data.get("Result", {}))
 
         if last_error is not None:
-            raise Exception(
+            raise ApiError(
                 f"Failed to {api_action}: {str(last_error)}"
             ) from last_error
-        raise Exception(f"Failed to {api_action}: Unknown error")
+        raise ApiError(f"Failed to {api_action}: Unknown error")

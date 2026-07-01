@@ -52,9 +52,10 @@ class AgentkitSimpleApp(BaseAgentkitApp, Starlette):
         return func
 
     def ping(self, func: Callable) -> Callable:
-        assert len(list(inspect.signature(func).parameters.keys())) == 0, (
-            f"Health check function `{func.__name__}` should not receive any arguments."
-        )
+        if len(inspect.signature(func).parameters) != 0:
+            raise TypeError(
+                f"Health check function `{func.__name__}` should not receive any arguments."
+            )
 
         self.ping_handler.func = func
         return func
