@@ -830,17 +830,33 @@ def test_build_model_envs_renames_reserved_codex_provider(monkeypatch) -> None:
     assert "CODEX_MODEL_CATALOG_JSON" not in env_map
 
 
-def test_build_model_envs_requires_base_url_with_arbitrary_model_provider() -> None:
+def test_build_model_envs_allows_arbitrary_model_provider_without_base_url(
+    monkeypatch,
+) -> None:
     import agentkit.toolkit.cli.sandbox.session_create as session_create
 
-    with pytest.raises(
-        ValueError,
-        match="--model-provider requires --model-base-url for custom providers",
-    ):
-        session_create.build_model_envs(
-            model_name="custom-model",
-            model_provider="agent_plan_experimental",
-        )
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+
+    envs = session_create.build_model_envs(
+        model_name="custom-model",
+        model_provider="agent_plan_experimental",
+        include_codex_config=True,
+    )
+
+    assert [(item.key, item.value) for item in envs] == [
+        ("AGENTKIT_SANDBOX_MODEL_PROVIDER", "agent_plan_experimental"),
+        ("OPENCODE_MODEL", "custom-model"),
+        ("CODEX_MODEL", "custom-model"),
+        ("ANTHROPIC_MODEL", "custom-model"),
+        (
+            "CODEX_CONFIG_TOML",
+            envs[4].value,
+        ),
+    ]
+    assert 'model_provider = "agent_plan_experimental"' in envs[4].value
+    assert 'model = "custom-model"' in envs[4].value
+    assert 'base_url = "https://ark.cn-beijing.volces.com/api/v3"' in envs[4].value
+    assert "model_catalog_json" not in envs[4].value
 
 
 def test_build_model_envs_allows_model_base_url_without_model_name(monkeypatch) -> None:
@@ -856,11 +872,22 @@ def test_build_model_envs_allows_model_base_url_without_model_name(monkeypatch) 
 
     assert [(item.key, item.value) for item in envs] == [
         ("AGENTKIT_SANDBOX_MODEL_PROVIDER", "custom_provider"),
+        ("OPENCODE_MODEL", "deepseek-v4-flash-260425"),
+        ("CODEX_MODEL", "deepseek-v4-flash-260425"),
+        ("ANTHROPIC_MODEL", "deepseek-v4-flash-260425"),
         ("OPENCODE_BASE_URL", "https://models.example.com/v1"),
         ("CODEX_BASE_URL", "https://models.example.com/v1"),
         ("MODEL_BASE_URL", "https://models.example.com/v1"),
         ("ANTHROPIC_BASE_URL", "https://models.example.com/v1"),
+        (
+            "CODEX_CONFIG_TOML",
+            envs[8].value,
+        ),
     ]
+    assert 'model_provider = "custom_provider"' in envs[8].value
+    assert 'model = "deepseek-v4-flash-260425"' in envs[8].value
+    assert 'base_url = "https://models.example.com/v1"' in envs[8].value
+    assert "model_catalog_json" not in envs[8].value
 
 
 def test_build_model_envs_infers_provider_from_builtin_model_base_url(
@@ -4632,8 +4659,37 @@ def test_cli_exec_rejects_non_ark_model_base_url_without_model_provider() -> Non
     )
 
 
-def test_cli_exec_rejects_arbitrary_model_provider_without_base_url() -> None:
+def test_cli_exec_allows_arbitrary_model_provider_without_base_url(
+    monkeypatch,
+    tmp_path,
+) -> None:
     from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    stored_session = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com/?token=abc",
+    }
+    store_path.write_text(
+        json.dumps({"user-1": stored_session}),
+        encoding="utf-8",
+    )
+    captured_session = {}
+    _patch_exec_session(
+        monkeypatch,
+        cli_exec,
+        stored_session,
+        capture=captured_session,
+    )
+    monkeypatch.setattr(
+        cli_exec,
+        "_connect_terminal",
+        lambda *_args, **_kwargs: None,
+    )
 
     result = runner.invoke(
         app,
@@ -4644,16 +4700,25 @@ def test_cli_exec_rejects_arbitrary_model_provider_without_base_url() -> None:
             "custom_provider",
             "--model-name",
             "custom-model",
-            "--command",
-            "echo should-not-run; exit",
+            "--session-id",
+            "user-1",
         ],
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 0
+    envs = {item.key: item.value for item in captured_session["envs"]}
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "custom_provider"
+    assert envs["CODEX_MODEL"] == "custom-model"
+    assert "CODEX_BASE_URL" not in envs
+    assert "ANTHROPIC_BASE_URL" not in envs
+    assert 'model_provider = "custom_provider"' in envs["CODEX_CONFIG_TOML"]
+    assert 'model = "custom-model"' in envs["CODEX_CONFIG_TOML"]
     assert (
-        "--model-provider requires --model-base-url for custom providers"
-        in result.output
+        'base_url = "https://ark.cn-beijing.volces.com/api/v3"'
+        in envs["CODEX_CONFIG_TOML"]
     )
+    assert "model_catalog_json" not in envs["CODEX_CONFIG_TOML"]
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
 
 
 def test_cli_exec_custom_provider_base_url_emits_codex_config_without_catalog(

@@ -210,16 +210,6 @@ def validate_model_provider_base_url(
     )
 
     if (
-        provider_was_provided
-        and resolved_model_provider
-        and resolved_model_provider not in MODEL_PROVIDER_CONFIGS
-        and not resolved_model_base_url
-    ):
-        raise ValueError(
-            "--model-provider requires --model-base-url for custom providers"
-        )
-
-    if (
         base_url_was_provided
         and resolved_model_base_url
         and not is_builtin_model_base_url(resolved_model_base_url)
@@ -269,7 +259,7 @@ def resolve_model_name(
         return resolved_model_name
     if config:
         return config.default_model_name
-    return ""
+    return DEFAULT_MODEL_NAME
 
 
 def resolve_model_base_urls(
@@ -292,12 +282,7 @@ def should_emit_codex_model_config(
     model_provider: str | ModelProviderType | None,
     model_base_url: Optional[str] = None,
 ) -> bool:
-    resolved_provider = normalize_optional_model_provider(model_provider)
-    if resolved_provider is None:
-        return normalize_model_base_url(model_base_url) is None
-    return resolved_provider in MODEL_PROVIDER_CONFIGS or bool(
-        normalize_model_base_url(model_base_url)
-    )
+    return True
 
 
 def should_emit_codex_model_catalog(
@@ -356,12 +341,10 @@ def build_codex_config_toml(
     config = get_model_provider_config_if_known(resolved_provider)
     resolved_model_base_url = normalize_model_base_url(model_base_url)
     provider_base_url = resolved_model_base_url or (
-        config.model_base_url if config else None
+        config.model_base_url
+        if config
+        else MODEL_PROVIDER_CONFIGS[DEFAULT_MODEL_PROVIDER].model_base_url
     )
-    if not provider_base_url:
-        raise ValueError(
-            f"--model-provider has no built-in configuration: {resolved_provider}"
-        )
     resolved_model_name = resolve_model_name(model_name, resolved_provider)
     resolved_codex_provider = codex_model_provider_id(resolved_provider)
     quoted_model = _toml_quote(resolved_model_name)

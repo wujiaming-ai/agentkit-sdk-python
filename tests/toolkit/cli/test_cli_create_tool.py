@@ -819,7 +819,7 @@ def test_build_create_tool_request_renames_reserved_codex_provider(monkeypatch):
     assert "CODEX_MODEL_CATALOG_JSON" not in envs
 
 
-def test_build_create_tool_request_rejects_arbitrary_model_provider_without_base_url(
+def test_build_create_tool_request_allows_arbitrary_model_provider_without_base_url(
     monkeypatch,
 ):
     from agentkit.toolkit.cli.sandbox import cli_create
@@ -827,18 +827,28 @@ def test_build_create_tool_request_rejects_arbitrary_model_provider_without_base
     _reset_fake_tools_client()
     monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
 
-    with pytest.raises(
-        ValueError,
-        match="--model-provider requires --model-base-url for custom providers",
-    ):
-        cli_create._build_create_tool_request(
-            tool_type="CodeEnv",
-            name="demo-tool",
-            tos_bucket="my-bucket",
-            tos_region="cn-beijing",
-            model_provider="model-square-experimental",
-            model_name="custom-model",
-        )
+    request = cli_create._build_create_tool_request(
+        tool_type="CodeEnv",
+        name="demo-tool",
+        tos_bucket="my-bucket",
+        tos_region="cn-beijing",
+        model_provider="model-square-experimental",
+        model_name="custom-model",
+    )
+
+    envs = {item.key: item.value for item in request.envs}
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "model-square-experimental"
+    assert envs["CODEX_MODEL"] == "custom-model"
+    assert "CODEX_BASE_URL" not in envs
+    assert "ANTHROPIC_BASE_URL" not in envs
+    assert 'model_provider = "model-square-experimental"' in envs["CODEX_CONFIG_TOML"]
+    assert 'model = "custom-model"' in envs["CODEX_CONFIG_TOML"]
+    assert (
+        'base_url = "https://ark.cn-beijing.volces.com/api/v3"'
+        in envs["CODEX_CONFIG_TOML"]
+    )
+    assert "model_catalog_json" not in envs["CODEX_CONFIG_TOML"]
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
 
 
 def test_build_create_tool_request_allows_custom_model_name(monkeypatch):
@@ -963,8 +973,11 @@ def test_create_command_accepts_model_base_url_without_model_name(monkeypatch):
     envs = {item.key: item.value for item in _FakeToolsClient.last_request.envs}
     assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "custom_provider"
     assert envs["CODEX_BASE_URL"] == "https://models.example.com"
-    assert "CODEX_MODEL" not in envs
-    assert "CODEX_CONFIG_TOML" not in envs
+    assert envs["CODEX_MODEL"] == "deepseek-v4-flash-260425"
+    assert 'model_provider = "custom_provider"' in envs["CODEX_CONFIG_TOML"]
+    assert 'model = "deepseek-v4-flash-260425"' in envs["CODEX_CONFIG_TOML"]
+    assert 'base_url = "https://models.example.com"' in envs["CODEX_CONFIG_TOML"]
+    assert "model_catalog_json" not in envs["CODEX_CONFIG_TOML"]
     assert "CODEX_MODEL_CATALOG_JSON" not in envs
 
 

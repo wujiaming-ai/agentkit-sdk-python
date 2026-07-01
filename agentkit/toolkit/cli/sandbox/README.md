@@ -65,8 +65,7 @@ Options:
   `AGENTKIT_SANDBOX_MODEL_PROVIDER`; defaults to `model_square`. The built-in
   providers `model_square`, `coding_plan`, and `agent_plan` also provide base
   URLs, default models, and Codex model catalog entries. Other provider strings
-  are passed through without built-in URL or catalog handling and require
-  `--model-base-url`.
+  are passed through without built-in URL or catalog handling.
 - `--model-name`: optional. Injected into the tool as `OPENCODE_MODEL`,
   `CODEX_MODEL`, and `ANTHROPIC_MODEL`. If omitted for a built-in provider,
   that provider's default model is used. Custom model names are allowed and are
@@ -472,7 +471,7 @@ Options:
   `agent_plan` also provide default models, base URL envs, and
   `CODEX_CONFIG_TOML` / `CODEX_MODEL_CATALOG_JSON` updates for `CodeEnv`
   sessions. Other provider strings are passed through without built-in URL or
-  catalog handling and require `--model-base-url`.
+  catalog handling.
 - `--model-base-url`: optional. When creating a sandbox session, injects the
   value into `OPENCODE_BASE_URL`, `CODEX_BASE_URL`, `MODEL_BASE_URL`, and
   `ANTHROPIC_BASE_URL`. When provided, it takes precedence over provider base
