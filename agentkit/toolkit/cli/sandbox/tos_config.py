@@ -27,7 +27,8 @@ from agentkit.toolkit.volcengine.services.tos_service import (
 )
 
 DEFAULT_TOS_BUCKET_PATH = "/sandbox-session/default/default"
-DEFAULT_TOS_LOCAL_PATH = "/home/gem"
+DEFAULT_TOS_LOCAL_PATH = "/home/gem/workspace"
+DEFAULT_SANDBOX_WORKSPACE = "/home/gem"
 
 
 def resolve_tos_bucket(tos_bucket: Optional[str]) -> str:

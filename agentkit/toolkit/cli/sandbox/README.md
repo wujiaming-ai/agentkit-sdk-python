@@ -58,16 +58,24 @@ Options:
 - `--tos-bucket`: optional. TOS bucket to mount. If omitted, the tool is
   created without TOS mount configuration.
 - `--tos-mount`: optional. Local mount path for `--tos-bucket`; defaults to
-  `/home/gem`.
+  `/home/gem/workspace`.
 - `--cpu`: optional. Sandbox vCPU count; allowed values are `2`, `4`, `8`, and
   `16`. Defaults to `4`. Memory is derived as 2 GiB per vCPU.
-- `--model-provider`: optional. Model provider to use for base URLs, the
-  default model, and the Codex model catalog. Supported values are
-  `model_square`, `coding_plan`, and `agent_plan`; defaults to `model_square`.
+- `--model-provider`: optional. Model provider marker to inject into
+  `AGENTKIT_SANDBOX_MODEL_PROVIDER`; defaults to `model_square`. The built-in
+  providers `model_square`, `coding_plan`, and `agent_plan` also provide base
+  URLs, default models, and Codex model catalog entries. Other provider strings
+  are passed through without built-in URL or catalog handling and require
+  `--model-base-url`.
 - `--model-name`: optional. Injected into the tool as `OPENCODE_MODEL`,
-  `CODEX_MODEL`, and `ANTHROPIC_MODEL`. If omitted, the provider's default
-  model is used. Custom model names are allowed and are added to the Codex
-  model catalog with default capabilities.
+  `CODEX_MODEL`, and `ANTHROPIC_MODEL`. If omitted for a built-in provider,
+  that provider's default model is used. Custom model names are allowed and are
+  added to the Codex model catalog with default capabilities.
+- `--model-base-url`: optional. Injected into `OPENCODE_BASE_URL`,
+  `CODEX_BASE_URL`, `MODEL_BASE_URL`, and `ANTHROPIC_BASE_URL`. When provided,
+  it takes precedence over provider base URLs and the CLI skips
+  `CODEX_CONFIG_TOML` and `CODEX_MODEL_CATALOG_JSON`. Non-Ark custom URLs
+  require `--model-provider`.
 - `--model-api-key`: optional. Injected into the tool as `OPENCODE_API_KEY`,
   `CODEX_API_KEY`, and `ANTHROPIC_AUTH_TOKEN`. If omitted, the CLI uses
   `MODEL_API_KEY` when that environment variable is set.
@@ -75,19 +83,18 @@ Options:
 The sandbox create request maps `--cpu` to `CpuMilli=<cpu * 1000>` and
 `MemoryMb=<cpu * 2048>`, so the default shape is 4 vCPU / 8 GiB.
 
-The tool injects the selected provider's Volcengine Ark compatible endpoints
-into `OPENCODE_BASE_URL`, `CODEX_BASE_URL`, `MODEL_BASE_URL`, and
+The tool injects the selected built-in provider's Volcengine Ark compatible
+endpoints into `OPENCODE_BASE_URL`, `CODEX_BASE_URL`, `MODEL_BASE_URL`, and
 `ANTHROPIC_BASE_URL`, and stores the selected provider in
-`AGENTKIT_SANDBOX_MODEL_PROVIDER`. The same provider ID and base URL are written
-into `CODEX_CONFIG_TOML`, and provider-supported models are written into
-`CODEX_MODEL_CATALOG_JSON`. The create request also injects
+`AGENTKIT_SANDBOX_MODEL_PROVIDER`. For built-in provider URLs, the same provider
+ID and base URL are written into `CODEX_CONFIG_TOML`, and provider-supported
+models are written into `CODEX_MODEL_CATALOG_JSON`. The create request also
+injects
 `BROWSER_EXTRA_ARGS` for browser startup inside the sandbox:
 
 ```sh
 --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader-webgl --ignore-gpu-blocklist
 ```
-
-Custom `--model-base-url` is intentionally not exposed.
 
 Provider defaults:
 
@@ -104,11 +111,12 @@ Volcengine configuration, including environment variables and global
 `agentkit config --global` settings.
 
 When `--tos-bucket` is set, the generated tool TOS mount uses
-`LocalMountPath: /home/gem` by default, or the path provided by `--tos-mount`:
+`LocalMountPath: /home/gem/workspace` by default, or the path provided by
+`--tos-mount`:
 
 ```text
 BucketPath: /sandbox-session/default/default
-LocalMountPath: /home/gem
+LocalMountPath: /home/gem/workspace
 Endpoint: http://tos-<region>.ivolces.com
 ```
 
@@ -336,7 +344,9 @@ CLI renames it to `data.shell_id`.
 
 When `--src-dir` is provided, `shell` uses the same upload flow as
 `sandbox exec`: archive local sources, upload the archive to the session,
-extract it under `--workspace` plus `--dst-dir`, then execute `--command`.
+extract it under `--workspace` plus `--dst-dir`, then execute `--command`. A
+directory source is extracted as that directory under the destination; its
+contents are not flattened into the destination.
 
 ### Web
 
@@ -454,11 +464,17 @@ Options:
 - `--model-name`: optional. When creating a sandbox session, injects the value
   as `OPENCODE_MODEL`, `CODEX_MODEL`, and `ANTHROPIC_MODEL`. Custom model names
   are allowed.
-- `--model-provider`: optional. When creating a sandbox session, uses the
-  provider's default model if `--model-name` is omitted, injects provider base
-  URL envs, and updates `CODEX_CONFIG_TOML` / `CODEX_MODEL_CATALOG_JSON` for
-  `CodeEnv` sessions. Supported values are `model_square`, `coding_plan`, and
-  `agent_plan`.
+- `--model-provider`: optional. When creating a sandbox session, injects the
+  provider marker. The built-in providers `model_square`, `coding_plan`, and
+  `agent_plan` also provide default models, base URL envs, and
+  `CODEX_CONFIG_TOML` / `CODEX_MODEL_CATALOG_JSON` updates for `CodeEnv`
+  sessions. Other provider strings are passed through without built-in URL or
+  catalog handling and require `--model-base-url`.
+- `--model-base-url`: optional. When creating a sandbox session, injects the
+  value into `OPENCODE_BASE_URL`, `CODEX_BASE_URL`, `MODEL_BASE_URL`, and
+  `ANTHROPIC_BASE_URL`. When provided, it takes precedence over provider base
+  URLs and skips `CODEX_CONFIG_TOML` / `CODEX_MODEL_CATALOG_JSON`. Non-Ark
+  custom URLs require `--model-provider`.
 - `--model-api-key`: optional. When creating a sandbox session, injects the
   value as `OPENCODE_API_KEY`, `CODEX_API_KEY`, and `ANTHROPIC_AUTH_TOKEN`. If
   omitted, the CLI uses `MODEL_API_KEY` when that environment variable is set.
@@ -471,7 +487,8 @@ When `--src-dir` is provided, the command first reuses the sandbox file upload
 flow to archive the local file or directory, upload it to the session, and
 extract it into the directory resolved from `--workspace` and `--dst-dir`. The
 WebSocket exec connection is opened only after the upload and extraction
-complete.
+complete. A directory source is extracted as that directory under the
+destination; its contents are not flattened into the destination.
 
 When the resolved tool has `TosMountConfig.MountPoints` in `GetTool`, session
 creation passes those mount points to `CreateSession` and uses each returned
@@ -483,11 +500,12 @@ while the connection is active. Multiple live WebSocket connections under the
 same sandbox `session_id` are tracked in the same list. The CLI removes only the
 current shell ID from the list when that connection is detached or closed.
 
-When `--model-name` is provided without `--model-provider`, `exec` still updates
-`CODEX_CONFIG_TOML` / `CODEX_MODEL_CATALOG_JSON` for `CodeEnv` sessions. It
-first tries to reuse `AGENTKIT_SANDBOX_MODEL_PROVIDER` from the cached or remote
-tool configuration, then falls back to `model_square` when no marker is
-available.
+When `--model-name` is provided without `--model-provider`, `exec` first tries
+to reuse `AGENTKIT_SANDBOX_MODEL_PROVIDER` from the cached or remote tool
+configuration, then falls back to `model_square` when no marker is available.
+For built-in provider URLs, it updates `CODEX_CONFIG_TOML` /
+`CODEX_MODEL_CATALOG_JSON` for `CodeEnv` sessions. If the tool carries a custom
+model base URL, exec inherits that URL and skips those Codex config envs.
 
 Press `Ctrl-]`, or type `exit` / `exit()`, to detach from the local terminal.
 `Ctrl-C` is forwarded to the remote process, which is useful for interrupting
@@ -530,7 +548,8 @@ exec:
 Mapping entries support the same option names as `sandbox exec`, written with
 underscores, such as `session_id`, `tool_id`, `tool_type`, `command`, `mode`,
 `shell_id`, `workspace`, `dst_dir`, `git_config`, `model_name`,
-`model_api_key`, and `model_provider`. Use `src_dir` or `src_dirs` for the
+`model_api_key`, `model_provider`, and `model_base_url`. Use `src_dir` or
+`src_dirs` for the
 first uploaded source and optional additional source paths; use `extra_sources`
 for additional positional sources. Use `args` when you want to provide raw
 `sandbox exec` arguments directly.

@@ -308,13 +308,11 @@ def test_create_command_uses_tos_service_when_bucket_is_set(monkeypatch):
     assert len(_FakeTOSService.instances) == 1
     assert _FakeTOSService.instances[0].config.bucket == "my-bucket"
     assert _FakeTOSService.instances[0].config.region == "cn-beijing"
+    assert _FakeTOSService.instances[0].local_mount_path == "/home/gem/workspace"
     tos_config = _FakeToolsClient.last_request.tos_mount_config
     assert tos_config is not None
     assert tos_config.mount_points[0].bucket_name == "my-bucket"
-    assert (
-        tos_config.mount_points[0].bucket_path
-        == "/sandbox-session/default/default"
-    )
+    assert tos_config.mount_points[0].bucket_path == "/sandbox-session/default/default"
 
 
 def test_create_command_uses_tos_mount_option(monkeypatch):
@@ -438,20 +436,21 @@ def test_create_command_rejects_region_option(monkeypatch):
     )
 
     assert result.exit_code != 0
-    assert "No such option: --region" in result.output
+    assert "Unknown arguments: --region cn-shanghai" in result.output
     assert _FakeToolsClient.instances == []
     assert _FakeTOSService.instances == []
 
 
-def test_create_command_help_omits_model_base_url_option():
+def test_create_command_help_includes_model_base_url_option():
     from agentkit.toolkit.cli.cli import app
 
     result = runner.invoke(app, ["sandbox", "create", "--help"])
 
     assert result.exit_code == 0
     assert "--tos-mount" in result.output
+    assert "/home/gem/workspace" in result.output
     assert "--model-provider" in result.output
-    assert "--model-base-url" not in result.output
+    assert "--model-base-url" in result.output
 
 
 def test_create_command_waits_until_tool_ready(monkeypatch):
@@ -518,7 +517,7 @@ def test_build_create_tool_request_adds_tos_mount(monkeypatch):
     assert mount_point.bucket_name == "my-bucket"
     assert mount_point.bucket_path == "/sandbox-session/default/default"
     assert mount_point.endpoint == "http://tos-cn-beijing.ivolces.com"
-    assert mount_point.local_mount_path == "/home/gem"
+    assert mount_point.local_mount_path == "/home/gem/workspace"
     assert mount_point.read_only is False
     assert fake_service.created_directories == [
         "sandbox-session/",
@@ -651,10 +650,7 @@ def test_build_create_tool_request_adds_code_env_config_envs(monkeypatch):
     assert 'model = "deepseek-v4-pro-260425"' in config_toml
     assert 'review_model = "deepseek-v4-pro-260425"' in config_toml
     assert 'model = "deepseek-v4-flash-260425"' not in config_toml
-    assert (
-        'model_catalog_json = "/home/gem/.codex/model-catalog.json"'
-        in config_toml
-    )
+    assert 'model_catalog_json = "/home/gem/.codex/model-catalog.json"' in config_toml
     assert "model_availability_nux" not in config_toml
     assert "gpt-5.5" not in config_toml
     assert 'web_search = "disabled"' in config_toml
@@ -687,10 +683,7 @@ def test_build_create_tool_request_adds_code_env_config_envs(monkeypatch):
     assert "deepseek-v4-flash-260425" in [model["slug"] for model in models]
     models_by_slug = {model["slug"]: model for model in models}
     assert "doubao-seed-2-0-pro-260215" in models_by_slug
-    assert (
-        models_by_slug["doubao-seed-2-0-pro-260215"]["max_context_window"]
-        == 200000
-    )
+    assert models_by_slug["doubao-seed-2-0-pro-260215"]["max_context_window"] == 200000
     assert models[0]["truncation_policy"] == {"mode": "tokens", "limit": 10000}
 
 
@@ -715,12 +708,8 @@ def test_build_create_tool_request_uses_model_provider(monkeypatch):
     assert envs["OPENCODE_BASE_URL"] == (
         "https://ark.cn-beijing.volces.com/api/coding/v3"
     )
-    assert envs["CODEX_BASE_URL"] == (
-        "https://ark.cn-beijing.volces.com/api/coding/v3"
-    )
-    assert envs["MODEL_BASE_URL"] == (
-        "https://ark.cn-beijing.volces.com/api/coding/v3"
-    )
+    assert envs["CODEX_BASE_URL"] == ("https://ark.cn-beijing.volces.com/api/coding/v3")
+    assert envs["MODEL_BASE_URL"] == ("https://ark.cn-beijing.volces.com/api/coding/v3")
     assert envs["ANTHROPIC_BASE_URL"] == (
         "https://ark.cn-beijing.volces.com/api/coding"
     )
@@ -734,6 +723,87 @@ def test_build_create_tool_request_uses_model_provider(monkeypatch):
     assert "deepseek-v4-flash" in models
     assert "deepseek-v4-flash-260425" not in models
     assert "glm-5.2" not in models
+
+
+def test_build_create_tool_request_uses_model_base_url_over_provider(monkeypatch):
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    request = cli_create._build_create_tool_request(
+        tool_type="CodeEnv",
+        name="demo-tool",
+        tos_bucket="my-bucket",
+        tos_region="cn-beijing",
+        model_provider="agent_plan",
+        model_name="custom-model",
+        model_base_url="https://models.example.com/v1",
+    )
+
+    envs = {item.key: item.value for item in request.envs}
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "agent_plan"
+    assert envs["OPENCODE_MODEL"] == "custom-model"
+    assert envs["CODEX_MODEL"] == "custom-model"
+    assert envs["ANTHROPIC_MODEL"] == "custom-model"
+    assert envs["OPENCODE_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["CODEX_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["MODEL_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["ANTHROPIC_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    assert envs["HOME"] == "/home/gem"
+    assert envs["CODEX_HOME"] == "/home/gem/.codex"
+    assert "CODEX_CONFIG_TOML" not in envs
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
+
+
+def test_build_create_tool_request_allows_arbitrary_model_provider_with_base_url(
+    monkeypatch,
+):
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    request = cli_create._build_create_tool_request(
+        tool_type="CodeEnv",
+        name="demo-tool",
+        tos_bucket="my-bucket",
+        tos_region="cn-beijing",
+        model_provider="model-square-experimental",
+        model_name="custom-model",
+        model_base_url="https://models.example.com/v1",
+    )
+
+    envs = {item.key: item.value for item in request.envs}
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "model-square-experimental"
+    assert envs["CODEX_MODEL"] == "custom-model"
+    assert envs["CODEX_BASE_URL"] == "https://models.example.com/v1"
+    assert envs["ANTHROPIC_BASE_URL"] == "https://models.example.com/v1"
+    assert "CODEX_CONFIG_TOML" not in envs
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
+
+
+def test_build_create_tool_request_rejects_arbitrary_model_provider_without_base_url(
+    monkeypatch,
+):
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    with pytest.raises(
+        ValueError,
+        match="--model-provider requires --model-base-url for custom providers",
+    ):
+        cli_create._build_create_tool_request(
+            tool_type="CodeEnv",
+            name="demo-tool",
+            tos_bucket="my-bucket",
+            tos_region="cn-beijing",
+            model_provider="model-square-experimental",
+            model_name="custom-model",
+        )
 
 
 def test_build_create_tool_request_allows_custom_model_name(monkeypatch):
@@ -779,14 +849,9 @@ def test_build_codex_model_catalog_infers_custom_model_context_window():
     }
 
     for model_name, expected_context_window in expected_context_windows.items():
-        catalog = json.loads(
-            build_codex_model_catalog_json(model_name, "model_square")
-        )
+        catalog = json.loads(build_codex_model_catalog_json(model_name, "model_square"))
         assert catalog["models"][0]["slug"] == model_name
-        assert (
-            catalog["models"][0]["max_context_window"]
-            == expected_context_window
-        )
+        assert catalog["models"][0]["max_context_window"] == expected_context_window
 
 
 def test_build_create_tool_request_uses_model_api_key_env(monkeypatch):
@@ -839,7 +904,7 @@ def test_build_create_tool_request_model_api_key_option_overrides_env(
     ]
 
 
-def test_create_command_rejects_model_base_url_option(monkeypatch):
+def test_create_command_accepts_model_base_url_without_model_name(monkeypatch):
     from agentkit.toolkit.cli.cli import app
     from agentkit.toolkit.cli.sandbox import cli_create
 
@@ -852,15 +917,104 @@ def test_create_command_rejects_model_base_url_option(monkeypatch):
         [
             "sandbox",
             "create",
+            "--model-provider",
+            "custom_provider",
             "--model-base-url",
             "https://models.example.com",
         ],
     )
 
+    assert result.exit_code == 0
+    envs = {item.key: item.value for item in _FakeToolsClient.last_request.envs}
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "custom_provider"
+    assert envs["CODEX_BASE_URL"] == "https://models.example.com"
+    assert "CODEX_MODEL" not in envs
+    assert "CODEX_CONFIG_TOML" not in envs
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
+
+
+def test_build_create_tool_request_infers_provider_from_builtin_model_base_url(
+    monkeypatch,
+):
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    request = cli_create._build_create_tool_request(
+        tool_type="CodeEnv",
+        name="demo-tool",
+        tos_bucket="my-bucket",
+        tos_region="cn-beijing",
+        model_base_url="https://ark.cn-beijing.volces.com/api/plan/v3",
+    )
+
+    envs = {item.key: item.value for item in request.envs}
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "agent_plan"
+    assert envs["CODEX_MODEL"] == "deepseek-v4-flash"
+    assert envs["CODEX_BASE_URL"] == "https://ark.cn-beijing.volces.com/api/plan/v3"
+    assert "CODEX_CONFIG_TOML" not in envs
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
+
+
+def test_create_command_rejects_non_ark_model_base_url_without_model_provider(
+    monkeypatch,
+):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--model-name",
+            "custom-model",
+            "--model-base-url",
+            "https://models.example.com/v1",
+        ],
+    )
+
     assert result.exit_code != 0
-    assert "No such option: --model-base-url" in result.output
+    assert "--model-base-url requires --model-provider for non-Ark base URLs" in result.output
     assert _FakeToolsClient.instances == []
-    assert _FakeTOSService.instances == []
+
+
+def test_create_command_accepts_model_base_url_with_model_name_and_provider(monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "create",
+            "--tool-name",
+            "demo-tool",
+            "--model-name",
+            "custom-model",
+            "--model-provider",
+            "custom_provider",
+            "--model-base-url",
+            "https://models.example.com/v1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    envs = {item.key: item.value for item in _FakeToolsClient.last_request.envs}
+    assert envs["CODEX_BASE_URL"] == "https://models.example.com/v1"
+    assert "CODEX_CONFIG_TOML" not in envs
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
 
 
 def test_build_create_tool_request_adds_default_model_base_url(monkeypatch):

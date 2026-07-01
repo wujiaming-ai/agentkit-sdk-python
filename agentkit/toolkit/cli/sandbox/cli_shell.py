@@ -31,7 +31,7 @@ from agentkit.toolkit.cli.sandbox.session_create import (
     ensure_sandbox_session,
 )
 from agentkit.toolkit.cli.sandbox.git_config import apply_git_config_to_session
-from agentkit.toolkit.cli.sandbox.tos_config import DEFAULT_TOS_LOCAL_PATH
+from agentkit.toolkit.cli.sandbox.tos_config import DEFAULT_SANDBOX_WORKSPACE
 from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
 from agentkit.toolkit.cli.sandbox.sandbox_client import (
     SANDBOX_EXEC_TIMEOUT_SECONDS,
@@ -75,7 +75,7 @@ def shell_command(
         help="Execution directory.",
     ),
     workspace: str = typer.Option(
-        DEFAULT_TOS_LOCAL_PATH,
+        DEFAULT_SANDBOX_WORKSPACE,
         "--workspace",
         help=(
             "Sandbox workspace root. Relative --dst-dir values are "
@@ -85,9 +85,7 @@ def shell_command(
     src_dir: Optional[Path] = typer.Option(
         None,
         "--src-dir",
-        help=(
-            "Local file or directory to upload before executing the command."
-        ),
+        help=("Local file or directory to upload before executing the command."),
     ),
     dst_dir: Optional[str] = typer.Option(
         None,
