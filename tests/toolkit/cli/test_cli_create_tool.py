@@ -817,6 +817,34 @@ def test_build_create_tool_request_renames_reserved_codex_provider(monkeypatch):
     assert "[model_providers.openai]" not in envs["CODEX_CONFIG_TOML"]
     assert "model_catalog_json" not in envs["CODEX_CONFIG_TOML"]
     assert "CODEX_MODEL_CATALOG_JSON" not in envs
+    # OAuth (ChatGPT) provider: authenticates with the injected auth.json, never an API key,
+    # and passes model-name / base-url through.
+    assert "requires_openai_auth = true" in envs["CODEX_CONFIG_TOML"]
+    assert "env_key" not in envs["CODEX_CONFIG_TOML"]
+    assert 'base_url = "https://models.example.com/v1"' in envs["CODEX_CONFIG_TOML"]
+    assert 'model = "custom-model"' in envs["CODEX_CONFIG_TOML"]
+
+
+def test_build_codex_config_toml_openai_auth_defaults():
+    from agentkit.toolkit.cli.sandbox import model_config
+
+    # openai provider, no --model-name / --model-base-url -> ChatGPT defaults, OAuth auth
+    toml = model_config.build_codex_config_toml("", model_provider="openai")
+    assert "requires_openai_auth = true" in toml
+    assert 'env_key = "CODEX_API_KEY"' not in toml
+    assert f'base_url = "{model_config.CODEX_CHATGPT_BASE_URL}"' in toml
+    assert f'model = "{model_config.DEFAULT_OPENAI_AUTH_MODEL}"' in toml
+    assert model_config.provider_requires_openai_auth("openai") is True
+
+
+def test_build_codex_config_toml_volc_provider_keeps_api_key():
+    from agentkit.toolkit.cli.sandbox import model_config
+
+    # a built-in Ark provider still authenticates with the CODEX_API_KEY env, unchanged
+    toml = model_config.build_codex_config_toml("", model_provider="agent_plan")
+    assert 'env_key = "CODEX_API_KEY"' in toml
+    assert "requires_openai_auth" not in toml
+    assert model_config.provider_requires_openai_auth("agent_plan") is False
 
 
 def test_build_create_tool_request_allows_arbitrary_model_provider_without_base_url(
