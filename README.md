@@ -85,6 +85,11 @@ pip install agentkit-sdk-python==1.0.0.dev1
 
 **Note**: Development versions may contain bugs and are not recommended for production use.
 
+## Security and privacy
+
+This project takes security seriously.
+For vulnerability reporting and supported versions, see [SECURITY.md](SECURITY.md).
+
 ## License
 
 This project is licensed under the [Apache 2.0 License](./LICENSE).
