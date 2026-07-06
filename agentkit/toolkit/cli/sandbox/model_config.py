@@ -41,15 +41,15 @@ CODE_ENV_CODEX_HOME = "/home/gem/.codex"
 CODEX_CONFIG_TOML_ENV = "CODEX_CONFIG_TOML"
 CODEX_MODEL_CATALOG_JSON_ENV = "CODEX_MODEL_CATALOG_JSON"
 CODEX_MODEL_CATALOG_PATH = f"{CODE_ENV_CODEX_HOME}/model-catalog.json"
-# Reserved provider ids that authenticate with the user's ChatGPT OAuth login (auth.json,
-# injected by `agentkit sandbox codex-login`) instead of an API key. codex uses this via the
-# `requires_openai_auth` provider field, so the config carries no `env_key` for these.
+# Provider ids reserved by Codex itself. Generated custom providers with these names are renamed
+# so user-supplied API-key providers do not collide with Codex built-ins.
 CODEX_RESERVED_MODEL_PROVIDER_IDS = {"openai"}
-# codex's built-in ChatGPT-subscription endpoint - the default base_url for an openai-auth provider
-# when the caller does not pass --model-base-url (e.g. a regional proxy in front of OpenAI).
+CODEX_LOGIN_MODEL_PROVIDER_ID = "codex_login"
+# codex's ChatGPT-subscription endpoint - the default base_url for a codex_login provider when
+# the caller does not pass --model-base-url (e.g. a regional proxy in front of OpenAI).
 CODEX_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/codex"
-# Default model for an openai-auth provider when --model-name is omitted.
-DEFAULT_OPENAI_AUTH_MODEL = "gpt-5-codex"
+# Default model for a codex_login provider when --model-name is omitted.
+DEFAULT_CODEX_LOGIN_MODEL = "gpt-5.5"
 
 
 class ModelProviderType(str, Enum):
@@ -325,6 +325,8 @@ def resolve_model_name(
     resolved_model_name = (model_name or "").strip()
     if resolved_model_name:
         return resolved_model_name
+    if provider_requires_openai_auth(resolved_provider):
+        return DEFAULT_CODEX_LOGIN_MODEL
     if config:
         return config.default_model_name
     return DEFAULT_MODEL_NAME
@@ -375,9 +377,9 @@ def provider_requires_openai_auth(
     model_provider: str | ModelProviderType | None,
 ) -> bool:
     """Whether this provider authenticates with the user's ChatGPT OAuth login (auth.json)
-    instead of an API key. True for the reserved ``openai`` provider - codex then uses the token
-    injected by ``agentkit sandbox codex-login`` and the config carries no ``env_key``."""
-    return normalize_model_provider(model_provider) in CODEX_RESERVED_MODEL_PROVIDER_IDS
+    instead of an API key. True for ``codex_login`` - codex then uses the token injected by
+    ``agentkit sandbox codex-login`` and the config carries no ``env_key``."""
+    return normalize_model_provider(model_provider) == CODEX_LOGIN_MODEL_PROVIDER_ID
 
 
 def _toml_quote(value: str) -> str:
@@ -393,12 +395,16 @@ def build_codex_config_toml(
     requires_openai_auth = provider_requires_openai_auth(resolved_provider)
     config = get_model_provider_config_if_known(resolved_provider)
     resolved_model_base_url = normalize_model_base_url(model_base_url)
-    provider_base_url = resolved_model_base_url or (
-        config.model_base_url
-        if config
-        else MODEL_PROVIDER_CONFIGS[default_model_provider()].model_base_url
-    )
-    resolved_model_name = resolve_model_name(model_name, resolved_provider)
+    if requires_openai_auth:
+        provider_base_url = resolved_model_base_url or CODEX_CHATGPT_BASE_URL
+        resolved_model_name = (model_name or "").strip() or DEFAULT_CODEX_LOGIN_MODEL
+    else:
+        provider_base_url = resolved_model_base_url or (
+            config.model_base_url
+            if config
+            else MODEL_PROVIDER_CONFIGS[default_model_provider()].model_base_url
+        )
+        resolved_model_name = resolve_model_name(model_name, resolved_provider)
     resolved_codex_provider = codex_model_provider_id(resolved_provider)
     quoted_model = _toml_quote(resolved_model_name)
     lines = [
