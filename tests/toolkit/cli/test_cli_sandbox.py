@@ -1029,6 +1029,7 @@ def test_build_model_envs_renames_reserved_codex_provider(monkeypatch) -> None:
 
     envs = session_create.build_model_envs(
         model_name="custom-model",
+        model_api_key="sk-openai",
         model_provider="openai",
         model_base_url="https://models.example.com/v1",
         include_codex_config=True,
@@ -1040,6 +1041,30 @@ def test_build_model_envs_renames_reserved_codex_provider(monkeypatch) -> None:
     assert "[model_providers.openai-custom]" in env_map["CODEX_CONFIG_TOML"]
     assert 'name = "openai-custom"' in env_map["CODEX_CONFIG_TOML"]
     assert "[model_providers.openai]" not in env_map["CODEX_CONFIG_TOML"]
+    assert "model_catalog_json" not in env_map["CODEX_CONFIG_TOML"]
+    assert "CODEX_MODEL_CATALOG_JSON" not in env_map
+    assert 'env_key = "CODEX_API_KEY"' in env_map["CODEX_CONFIG_TOML"]
+    assert "requires_openai_auth" not in env_map["CODEX_CONFIG_TOML"]
+    assert env_map["CODEX_API_KEY"] == "sk-openai"
+
+
+def test_build_model_envs_codex_login_uses_chatgpt_auth(monkeypatch) -> None:
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+
+    envs = session_create.build_model_envs(
+        model_provider="codex_login",
+        include_codex_config=True,
+    )
+    env_map = {item.key: item.value for item in envs}
+
+    assert env_map["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "codex_login"
+    assert env_map["CODEX_MODEL"] == "gpt-5.5"
+    assert 'model_provider = "codex_login"' in env_map["CODEX_CONFIG_TOML"]
+    assert 'model = "gpt-5.5"' in env_map["CODEX_CONFIG_TOML"]
+    assert "requires_openai_auth = true" in env_map["CODEX_CONFIG_TOML"]
+    assert 'env_key = "CODEX_API_KEY"' not in env_map["CODEX_CONFIG_TOML"]
     assert "model_catalog_json" not in env_map["CODEX_CONFIG_TOML"]
     assert "CODEX_MODEL_CATALOG_JSON" not in env_map
 

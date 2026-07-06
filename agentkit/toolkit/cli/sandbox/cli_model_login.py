@@ -16,8 +16,8 @@
 
 Reads the OAuth login codex/claude wrote locally ($CODEX_HOME/auth.json,
 ~/.claude/.credentials.json) and writes the token to the same path in the sandbox session.
-Only the OAuth token is injected; an API key in the same file is stripped. The sandbox config
-is not touched; select the subscription at exec with `codex exec -c model_provider=openai`.
+Only the OAuth token is injected; an API key in the same file is stripped. Codex sessions use
+the codex_login provider, which authenticates from the injected OAuth token.
 """
 
 from __future__ import annotations
@@ -29,8 +29,13 @@ from typing import Optional
 import typer
 
 from agentkit.toolkit.cli.sandbox.cli_file import _exec_shell_command
+from agentkit.toolkit.cli.sandbox.model_config import (
+    CODEX_LOGIN_MODEL_PROVIDER_ID,
+    MODEL_API_KEY_ENV_KEYS,
+)
 from agentkit.toolkit.cli.sandbox.session_create import (
     SANDBOX_TOOL_ID_ENV,
+    build_model_envs,
     ensure_sandbox_session,
 )
 from agentkit.toolkit.cli.sandbox.tool_resolve import SandboxToolType
@@ -53,6 +58,19 @@ def _redact_inject(cmd: str) -> str:
         lambda m: f"printf %s '<base64 {len(m.group(1))} bytes - redacted>'",
         cmd,
     )
+
+
+def _codex_login_session_envs(tool_type: SandboxToolType):
+    envs = build_model_envs(
+        model_provider=CODEX_LOGIN_MODEL_PROVIDER_ID,
+        model_provider_was_provided=True,
+        include_codex_config=tool_type == SandboxToolType.CODE_ENV,
+    )
+    if not envs:
+        return envs
+    return [
+        env for env in envs if getattr(env, "key", None) not in MODEL_API_KEY_ENV_KEYS
+    ]
 
 
 def codex_login_command(
@@ -108,8 +126,8 @@ def codex_login_command(
 ) -> None:
     """Inject your ChatGPT/Codex or Claude Code subscription token into a sandbox session.
 
-    Only the OAuth token is injected; an API key in the same file is not. The sandbox config is
-    left untouched; select the subscription with `codex exec -c model_provider=openai`.
+    Only the OAuth token is injected; an API key in the same file is not. Codex sessions use the
+    codex_login provider, which authenticates from the injected OAuth token.
     """
     from agentkit.auth import model_login as ml
 
@@ -161,6 +179,11 @@ def codex_login_command(
             session_id=session_id,
             tool_id=tool_id,
             tool_type=tool_type.value,
+            envs=(
+                _codex_login_session_envs(tool_type)
+                if provider == "codex"
+                else None
+            ),
         )
     except typer.Exit:
         raise
@@ -185,12 +208,12 @@ def codex_login_command(
     typer.secho(f"  session: {sid}", fg=typer.colors.CYAN, err=True)
     if provider == "codex":
         typer.secho(
-            f'  run: agentkit sandbox exec --sid {sid} --command "codex exec -c model_provider=openai \'...\'"',
+            f'  run: agentkit sandbox exec --sid {sid} --command "codex"',
             fg=typer.colors.CYAN,
             err=True,
         )
         typer.secho(
-            "  (config unchanged; -c model_provider=openai runs codex on your subscription)",
+            "  (session uses model_provider=codex_login with OAuth auth)",
             fg=typer.colors.BRIGHT_BLACK,
             err=True,
         )

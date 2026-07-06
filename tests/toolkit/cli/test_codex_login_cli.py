@@ -5,7 +5,7 @@
 
 The local credential is supplied via --auth-file; the sandbox session + shell exec are mocked so
 no network/login happens. We assert the feature injects ONLY the OAuth token (never a long-lived
-API key) and leaves the sandbox config untouched.
+API key) and uses the codex_login provider without a built-in model catalog.
 """
 
 from __future__ import annotations
@@ -24,8 +24,16 @@ runner = CliRunner()
 
 def _patch_sandbox(monkeypatch, captured):
     """Mock the sandbox session + shell exec; record every command and answer it."""
+    captured_session = {}
+
+    def fake_ensure_sandbox_session(**kw):
+        captured_session.update(kw)
+        return {"session_id": "s-1", "endpoint": "https://sbx.example"}
+
     monkeypatch.setattr(
-        cml, "ensure_sandbox_session", lambda **kw: {"session_id": "s-1", "endpoint": "https://sbx.example"}
+        cml,
+        "ensure_sandbox_session",
+        fake_ensure_sandbox_session,
     )
 
     def fake_exec(session, command, quiet_errors=False):
@@ -37,6 +45,7 @@ def _patch_sandbox(monkeypatch, captured):
         return {"data": {"output": "", "exit_code": 0}}
 
     monkeypatch.setattr(cml, "_exec_shell_command", fake_exec)
+    return captured_session
 
 
 def _injected_payload(cmd: str) -> dict:
@@ -44,7 +53,10 @@ def _injected_payload(cmd: str) -> dict:
     return json.loads(base64.b64decode(b64).decode())
 
 
-def test_codex_login_injects_oauth_only_and_leaves_config(tmp_path, monkeypatch):
+def test_codex_login_injects_oauth_only_and_uses_codex_login_provider(
+    tmp_path,
+    monkeypatch,
+):
     auth = tmp_path / "auth.json"
     auth.write_text(json.dumps({
         "auth_mode": "chatgpt",
@@ -52,7 +64,7 @@ def test_codex_login_injects_oauth_only_and_leaves_config(tmp_path, monkeypatch)
         "tokens": {"id_token": "a.b.c", "refresh_token": "r", "account_id": "acc"},
     }))
     captured: list[str] = []
-    _patch_sandbox(monkeypatch, captured)
+    captured_session = _patch_sandbox(monkeypatch, captured)
 
     result = runner.invoke(app, ["sandbox", "codex-login", "--auth-file", str(auth)])
     assert result.exit_code == 0, result.output
@@ -66,6 +78,16 @@ def test_codex_login_injects_oauth_only_and_leaves_config(tmp_path, monkeypatch)
     assert payload["tokens"]["id_token"] == "a.b.c"     # OAuth carried
     assert "s-1" in result.output                       # session id surfaced
     assert "sk-LONG-LIVED-SECRET" not in result.output  # never printed
+    envs = {item.key: item.value for item in captured_session["envs"]}
+    assert envs["AGENTKIT_SANDBOX_MODEL_PROVIDER"] == "codex_login"
+    assert envs["CODEX_MODEL"] == "gpt-5.5"
+    assert 'model_provider = "codex_login"' in envs["CODEX_CONFIG_TOML"]
+    assert "requires_openai_auth = true" in envs["CODEX_CONFIG_TOML"]
+    assert "model_catalog_json" not in envs["CODEX_CONFIG_TOML"]
+    assert "CODEX_MODEL_CATALOG_JSON" not in envs
+    assert "CODEX_API_KEY" not in envs
+    assert "OPENCODE_API_KEY" not in envs
+    assert "ANTHROPIC_AUTH_TOKEN" not in envs
 
 
 def test_codex_login_refuses_apikey_only(tmp_path, monkeypatch):

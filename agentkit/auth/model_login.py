@@ -23,9 +23,8 @@ Only the OAuth token is injected. The same file can also hold a long-lived API k
 (codex: OPENAI_API_KEY); that is stripped before injection and an api-key-only file is
 rejected, so a long-lived key never reaches the sandbox. See sanitize_*_for_injection.
 
-The sandbox config.toml is not touched; select the subscription at exec with
-`codex exec -c model_provider=openai`. Stdlib only; the sandbox transport lives in
-sandbox/cli_model_login.py.
+The sandbox transport configures a codex_login provider for OAuth auth. Stdlib only; the
+sandbox transport lives in sandbox/cli_model_login.py.
 """
 
 from __future__ import annotations
