@@ -65,6 +65,9 @@ Options:
   `/home/gem/workspace`.
 - `--cpu`: optional. Sandbox vCPU count; allowed values are `2`, `4`, `8`, and
   `16`. Defaults to `4`. Memory is derived as 2 GiB per vCPU.
+- `--network-config`: optional. Network configuration as inline JSON or a path
+  to a JSON file. If omitted, the tool is created with public access enabled
+  and private access disabled.
 - `--model-provider`: optional. Model provider marker to inject into
   `AGENTKIT_SANDBOX_MODEL_PROVIDER`; defaults to `model_square`, or
   `byteplus_model_square` when `CLOUD_PROVIDER` / `AGENTKIT_CLOUD_PROVIDER` is
@@ -90,6 +93,35 @@ Options:
 
 The sandbox create request maps `--cpu` to `CpuMilli=<cpu * 1000>` and
 `MemoryMb=<cpu * 2048>`, so the default shape is 4 vCPU / 8 GiB.
+
+Network configuration uses the same access concepts as the AgentKit console:
+
+```json
+{
+  "private_access": true,
+  "public_access": true,
+  "vpc_id": "vpc-xxxxxxxx",
+  "subnet_ids": ["subnet-aaaaaaaa"],
+  "enable_shared_internet_access": true
+}
+```
+
+`public_access` defaults to `true`; `private_access` defaults to `false`.
+When `private_access` is `true`, `vpc_id` is required. `subnet_ids` may be an
+array of strings or a comma-separated string. The CLI validates JSON syntax,
+field names, field types, and field combinations before calling `CreateTool`.
+VPC and subnet existence or availability errors are returned by the control
+plane.
+
+Examples:
+
+```bash
+agentkit sandbox create \
+  --network-config network.json
+
+agentkit sandbox create \
+  --network-config '{"private_access":true,"public_access":true,"vpc_id":"vpc-xxxxxxxx","subnet_ids":["subnet-aaaaaaaa"]}'
+```
 
 When `--tool-type Private` is used, the CLI creates a private-image tool and
 applies the default aio-sandbox startup profile:

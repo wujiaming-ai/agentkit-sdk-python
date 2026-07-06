@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Any, NoReturn, Optional
 
 import typer
 
@@ -63,6 +65,13 @@ TOOL_READY_STATUS = "Ready"
 TOOL_FAILED_STATUSES = {"Error", "Failed", "CreateFailed", "Deleting", "Deleted"}
 TOOL_WAIT_INTERVAL_SECONDS = 5
 TOOL_WAIT_TIMEOUT_SECONDS = 600
+NETWORK_CONFIG_FIELDS = (
+    "private_access",
+    "public_access",
+    "vpc_id",
+    "subnet_ids",
+    "enable_shared_internet_access",
+)
 
 
 def _resolve_region(env_var_name: str, service_key: str) -> str:
@@ -99,6 +108,157 @@ def _cpu_to_resource_shape(cpu: int) -> tuple[int, int]:
     return resolved_cpu * 1000, resolved_cpu * MEMORY_MB_PER_CPU
 
 
+def _network_config_error(message: str) -> NoReturn:
+    error(f"Invalid --network-config: {message}")
+
+
+def _load_network_config(value: str) -> dict[str, Any]:
+    raw = value.strip()
+    if not raw:
+        _network_config_error("value must not be empty")
+
+    if raw[0] in "{[":
+        source = "inline JSON"
+        content = raw
+    else:
+        path = Path(raw).expanduser()
+        source = str(path)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            _network_config_error(f"file not found: {source}")
+        except OSError as exc:
+            _network_config_error(f"failed to read file {source}: {exc}")
+
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        _network_config_error(
+            f"{source} is not valid JSON at line {exc.lineno}, "
+            f"column {exc.colno}: {exc.msg}"
+        )
+
+    if not isinstance(payload, dict):
+        _network_config_error("expected a JSON object")
+    return payload
+
+
+def _get_network_bool(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    default: bool,
+) -> bool:
+    if field not in payload or payload[field] is None:
+        return default
+    if not isinstance(payload[field], bool):
+        _network_config_error(f"{field} must be a boolean")
+    return payload[field]
+
+
+def _get_network_string(payload: dict[str, Any], field: str) -> Optional[str]:
+    if field not in payload or payload[field] is None:
+        return None
+    value = payload[field]
+    if not isinstance(value, str):
+        _network_config_error(f"{field} must be a string")
+    resolved = value.strip()
+    if not resolved:
+        _network_config_error(f"{field} must not be empty")
+    return resolved
+
+
+def _get_network_string_list(
+    payload: dict[str, Any],
+    field: str,
+) -> Optional[list[str]]:
+    if field not in payload or payload[field] is None:
+        return None
+    value = payload[field]
+    if isinstance(value, str):
+        items = [item.strip() for item in value.split(",") if item.strip()]
+        if not items:
+            _network_config_error(f"{field} must contain at least one value")
+        return items
+    if not isinstance(value, list):
+        _network_config_error(f"{field} must be a string or an array of strings")
+    items = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            _network_config_error(f"{field}[{index}] must be a string")
+        resolved = item.strip()
+        if not resolved:
+            _network_config_error(f"{field}[{index}] must not be empty")
+        items.append(resolved)
+    if not items:
+        _network_config_error(f"{field} must contain at least one value")
+    return items
+
+
+def _build_network_configuration(
+    network_config: Optional[str] = None,
+) -> tools_types.NetworkForCreateTool:
+    if not network_config:
+        return tools_types.NetworkForCreateTool(
+            EnablePublicNetwork=True,
+            EnablePrivateNetwork=False,
+        )
+
+    payload = _load_network_config(network_config)
+    unknown_fields = sorted(set(payload) - set(NETWORK_CONFIG_FIELDS))
+    if unknown_fields:
+        allowed = ", ".join(NETWORK_CONFIG_FIELDS)
+        _network_config_error(
+            f"unsupported field {unknown_fields[0]!r}; allowed fields: {allowed}"
+        )
+
+    private_access = _get_network_bool(
+        payload,
+        "private_access",
+        default=False,
+    )
+    public_access = _get_network_bool(payload, "public_access", default=True)
+    vpc_id = _get_network_string(payload, "vpc_id")
+    subnet_ids = _get_network_string_list(payload, "subnet_ids")
+    enable_shared_internet_access = _get_network_bool(
+        payload,
+        "enable_shared_internet_access",
+        default=False,
+    )
+
+    if not private_access and not public_access:
+        _network_config_error(
+            "private_access and public_access cannot both be false"
+        )
+    if private_access and not vpc_id:
+        _network_config_error("vpc_id is required when private_access is true")
+    if not private_access and any(
+        [
+            vpc_id,
+            subnet_ids,
+            payload.get("enable_shared_internet_access") is not None,
+        ]
+    ):
+        _network_config_error(
+            "vpc_id, subnet_ids, and enable_shared_internet_access require "
+            "private_access=true"
+        )
+
+    vpc_configuration = None
+    if private_access:
+        vpc_configuration = tools_types.NetworkVpcForCreateTool(
+            VpcId=vpc_id,
+            SubnetIds=subnet_ids,
+            EnableSharedInternetAccess=enable_shared_internet_access,
+        )
+
+    return tools_types.NetworkForCreateTool(
+        EnablePublicNetwork=public_access,
+        EnablePrivateNetwork=private_access,
+        VpcConfiguration=vpc_configuration,
+    )
+
+
 def _build_create_tool_request(
     *,
     tool_type: str,
@@ -116,6 +276,7 @@ def _build_create_tool_request(
     role_name: Optional[str] = None,
     websearch_apikey: Optional[str] = None,
     image_url: Optional[str] = None,
+    network_config: Optional[str] = None,
 ) -> tools_types.CreateToolRequest:
     resolved_tool_type = _validate_tool_type(tool_type)
     resolved_name = (name or "").strip() or _generate_tool_name(resolved_tool_type)
@@ -170,10 +331,7 @@ def _build_create_tool_request(
                 ApiKeyLocation="Header",
             )
         ),
-        NetworkConfiguration=tools_types.NetworkForCreateTool(
-            EnablePublicNetwork=True,
-            EnablePrivateNetwork=False,
-        ),
+        NetworkConfiguration=_build_network_configuration(network_config),
         TosMountConfig=tos_mount_config,
         Envs=envs,
     )
@@ -350,6 +508,7 @@ def create_tool(
     skill_role_name_provided: bool = False,
     websearch_apikey: Optional[str] = None,
     image_url: Optional[str] = None,
+    network_config: Optional[str] = None,
 ) -> dict[str, object]:
     resolved_model_base_url = normalize_model_base_url(model_base_url)
     raw_model_provider = (
@@ -390,6 +549,7 @@ def create_tool(
         role_name=resolved_role_name,
         websearch_apikey=resolved_websearch_apikey,
         image_url=image_url,
+        network_config=network_config,
     )
     client = AgentkitToolsClient(
         region=region,
@@ -485,6 +645,15 @@ def create_command(
         "--image-url",
         help="Custom image URL. Required when --tool-type Private.",
     ),
+    network_config: Optional[str] = typer.Option(
+        None,
+        "--network-config",
+        help=(
+            "Network config as inline JSON or a JSON file path. Fields: "
+            "private_access=false, public_access=true, vpc_id, subnet_ids, "
+            "enable_shared_internet_access. private_access=true requires vpc_id."
+        ),
+    ),
 ) -> None:
     """Create an AgentKit Tool with optional TOS mount.
 
@@ -511,6 +680,7 @@ def create_command(
             skill_role_name_provided=skill_role_name_provided,
             websearch_apikey=websearch_apikey,
             image_url=image_url,
+            network_config=network_config,
         )
         save_tool_result_if_resolvable(str(result["tool_type"]), result)
     except (typer.Abort, typer.Exit):
