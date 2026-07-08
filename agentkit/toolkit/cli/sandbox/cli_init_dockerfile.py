@@ -38,25 +38,24 @@ _TEMPLATE_ROOT = (
     / "resources"
     / "templates"
     / "sandbox"
-    / "docker-templates"
 )
 
 _AVAILABLE_TEMPLATES: dict[str, DockerfileTemplate] = {
     "package": DockerfileTemplate(
         name="package",
-        resource_path="package/Dockerfile.install-package",
+        resource_path="Dockerfile.install-package",
         default_output="Dockerfile.install-package",
         description="Base code-cli image with additional npm packages installed.",
     ),
     "skill": DockerfileTemplate(
         name="skill",
-        resource_path="skill/Dockerfile.install-skills",
+        resource_path="Dockerfile.install-skills",
         default_output="Dockerfile.install-skills",
         description="Base code-cli image with local Codex skills copied in.",
     ),
     "web-server": DockerfileTemplate(
         name="web-server",
-        resource_path="web-server/Dockerfile.web-server",
+        resource_path="Dockerfile.web-server",
         default_output="Dockerfile.web-server",
         description="Base code-cli image with nginx routing to a local server.",
     ),
