@@ -70,17 +70,27 @@ Create a Dockerfile template for a custom sandbox image.
 
 ```bash
 agentkit sandbox init-dockerfile --template package
+agentkit sandbox init-dockerfile --template skill
+agentkit sandbox init-dockerfile --template web-server
 agentkit sandbox init-dockerfile --template package -o ./Dockerfile
 ```
 
 Options:
 
 - `--template` / `-t`: optional. Dockerfile template to generate. Currently
-  available: `package`. The names `skill` and `web-server` are reserved for
-  future templates.
+  available: `package`, `skill`, `web-server`.
 - `--output` / `-o`: optional. Output Dockerfile path. Defaults to
-  `Dockerfile.install-package` for the `package` template.
+  `Dockerfile.install-package` for `package`, `Dockerfile.install-skills` for
+  `skill`, and `Dockerfile.web-server` for `web-server`.
 - `--force` / `-f`: optional. Overwrite the output file if it already exists.
+
+The `skill` template copies local Codex skills from `./skills/` in the Docker
+build context into `/home/gem/.codex/skills/`, matching the sandbox CodeEnv
+`CODEX_HOME`.
+
+The `web-server` template exposes nginx on port `8080` and proxies `/app/` to a
+local server on `127.0.0.1:8000`. Put server code under `./server/` and adjust
+the route or command in the generated Dockerfile as needed.
 
 ### Create
 

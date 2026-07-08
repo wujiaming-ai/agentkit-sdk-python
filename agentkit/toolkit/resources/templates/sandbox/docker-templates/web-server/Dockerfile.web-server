@@ -1,0 +1,44 @@
+# Base image + nginx route + local server
+# Usage:
+#   1. Put your server under ./server/ in the build context.
+#      The default command expects ./server/server.py to accept --host and --port.
+#   2. Adjust the nginx location, APP_PORT, and the CMD as needed.
+#   3. agentkit sandbox build --dockerfile Dockerfile.web-server
+#   4. agentkit sandbox deploy
+
+FROM enterprise-public-cn-beijing.cr.volces.com/vefaas-public/code-cli:0.0.7
+
+# Private sandbox tools expose port 8080. The app server runs locally on 8000.
+ENV PUBLIC_PORT="8080"
+ENV APP_PORT="8000"
+
+# Install nginx when the base image does not already provide it.
+RUN if ! command -v nginx >/dev/null 2>&1; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends nginx && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
+RUN printf '%s\n' \
+        'events {}' \
+        '' \
+        'http {' \
+        '    server {' \
+        '        listen 8080;' \
+        '' \
+        '        location /app/ {' \
+        '            proxy_pass http://127.0.0.1:8000/;' \
+        '            proxy_set_header Host $host;' \
+        '            proxy_set_header X-Real-IP $remote_addr;' \
+        '            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;' \
+        '            proxy_set_header X-Forwarded-Proto $scheme;' \
+        '        }' \
+        '    }' \
+        '}' \
+        > /etc/nginx/nginx.conf
+
+COPY server/ /opt/agentkit-server/
+
+EXPOSE 8080
+
+CMD sh -c "python /opt/agentkit-server/server.py --host 127.0.0.1 --port ${APP_PORT} & nginx -g 'daemon off;'"

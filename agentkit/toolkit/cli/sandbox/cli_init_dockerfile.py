@@ -48,21 +48,26 @@ _AVAILABLE_TEMPLATES: dict[str, DockerfileTemplate] = {
         default_output="Dockerfile.install-package",
         description="Base code-cli image with additional npm packages installed.",
     ),
+    "skill": DockerfileTemplate(
+        name="skill",
+        resource_path="skill/Dockerfile.install-skills",
+        default_output="Dockerfile.install-skills",
+        description="Base code-cli image with local Codex skills copied in.",
+    ),
+    "web-server": DockerfileTemplate(
+        name="web-server",
+        resource_path="web-server/Dockerfile.web-server",
+        default_output="Dockerfile.web-server",
+        description="Base code-cli image with nginx routing to a local server.",
+    ),
 }
-
-_RESERVED_TEMPLATES = ("skill", "web-server")
 
 
 def _resolve_template(template: str) -> DockerfileTemplate:
     normalized = (template or "").strip()
     if normalized in _AVAILABLE_TEMPLATES:
         return _AVAILABLE_TEMPLATES[normalized]
-    if normalized in _RESERVED_TEMPLATES:
-        error(
-            f"Template '{normalized}' is reserved but not implemented yet. "
-            "Currently available: package"
-        )
-    valid = ", ".join([*_AVAILABLE_TEMPLATES.keys(), *_RESERVED_TEMPLATES])
+    valid = ", ".join(_AVAILABLE_TEMPLATES.keys())
     error(f"Unknown Dockerfile template '{template}'. Valid templates: {valid}")
 
 
@@ -78,7 +83,10 @@ def init_dockerfile_command(
         "package",
         "--template",
         "-t",
-        help="Dockerfile template to generate. Currently available: package.",
+        help=(
+            "Dockerfile template to generate. Available: "
+            f"{', '.join(_AVAILABLE_TEMPLATES.keys())}."
+        ),
     ),
     output: Optional[Path] = typer.Option(
         None,

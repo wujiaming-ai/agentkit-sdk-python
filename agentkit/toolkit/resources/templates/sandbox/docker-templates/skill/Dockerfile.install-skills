@@ -1,0 +1,18 @@
+# Base image + local Codex skills
+# Usage:
+#   1. Put local skills under ./skills/<skill-name>/SKILL.md in the build context.
+#      You can create one with:
+#        agentkit skills init <skill-name> --path ./skills
+#   2. agentkit sandbox build --dockerfile Dockerfile.install-skills
+#   3. agentkit sandbox deploy
+
+FROM enterprise-public-cn-beijing.cr.volces.com/vefaas-public/code-cli:0.0.7
+
+# Keep this path aligned with the sandbox CodeEnv runtime configuration.
+ENV HOME="/home/gem"
+ENV CODEX_HOME="/home/gem/.codex"
+
+RUN mkdir -p /home/gem/.codex/skills
+
+# Copy all local skills from the Docker build context into Codex's skills directory.
+COPY skills/ /home/gem/.codex/skills/

@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+
 from typer.testing import CliRunner
 
 from agentkit.toolkit.cli.sandbox.cli import sandbox_app
@@ -22,7 +25,8 @@ runner = CliRunner()
 
 
 def test_init_dockerfile_package_writes_default_template():
-    with runner.isolated_filesystem():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.chdir(tmpdir)
         result = runner.invoke(
             sandbox_app,
             ["init-dockerfile", "--template", "package"],
@@ -43,7 +47,8 @@ def test_init_dockerfile_package_writes_default_template():
 
 
 def test_init_dockerfile_package_writes_custom_output_path():
-    with runner.isolated_filesystem():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.chdir(tmpdir)
         result = runner.invoke(
             sandbox_app,
             ["init-dockerfile", "--template", "package", "-o", "./Dockerfile"],
@@ -55,7 +60,8 @@ def test_init_dockerfile_package_writes_custom_output_path():
 
 
 def test_init_dockerfile_refuses_to_overwrite_without_force():
-    with runner.isolated_filesystem():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.chdir(tmpdir)
         with open("Dockerfile", "w", encoding="utf-8") as file:
             file.write("FROM scratch\n")
 
@@ -70,7 +76,8 @@ def test_init_dockerfile_refuses_to_overwrite_without_force():
 
 
 def test_init_dockerfile_force_overwrites_existing_file():
-    with runner.isolated_filesystem():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.chdir(tmpdir)
         with open("Dockerfile", "w", encoding="utf-8") as file:
             file.write("FROM scratch\n")
 
@@ -92,11 +99,54 @@ def test_init_dockerfile_force_overwrites_existing_file():
         ).read()
 
 
-def test_init_dockerfile_reserved_template_exits_with_clear_error():
+def test_init_dockerfile_skill_writes_default_template():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.chdir(tmpdir)
+        result = runner.invoke(
+            sandbox_app,
+            ["init-dockerfile", "--template", "skill"],
+        )
+
+        assert result.exit_code == 0
+        assert "Dockerfile template 'skill' written to Dockerfile.install-skills" in (
+            result.output
+        )
+        content = open("Dockerfile.install-skills", encoding="utf-8").read()
+        assert "Base image + local Codex skills" in content
+        assert "agentkit skills init <skill-name> --path ./skills" in content
+        assert 'ENV CODEX_HOME="/home/gem/.codex"' in content
+        assert "COPY skills/ /home/gem/.codex/skills/" in content
+
+
+def test_init_dockerfile_web_server_writes_default_template():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.chdir(tmpdir)
+        result = runner.invoke(
+            sandbox_app,
+            ["init-dockerfile", "--template", "web-server"],
+        )
+
+        assert result.exit_code == 0
+        assert "Dockerfile template 'web-server' written to Dockerfile.web-server" in (
+            result.output
+        )
+        content = open("Dockerfile.web-server", encoding="utf-8").read()
+        assert "Base image + nginx route + local server" in content
+        assert 'ENV PUBLIC_PORT="8080"' in content
+        assert 'ENV APP_PORT="8000"' in content
+        assert "location /app/" in content
+        assert "proxy_pass http://127.0.0.1:8000/" in content
+        assert "nginx -g 'daemon off;'" in content
+
+
+def test_init_dockerfile_unknown_template_exits_with_clear_error():
     result = runner.invoke(
         sandbox_app,
-        ["init-dockerfile", "--template", "skill"],
+        ["init-dockerfile", "--template", "missing"],
     )
 
     assert result.exit_code == 1
-    assert "Template 'skill' is reserved but not implemented yet" in result.output
+    assert (
+        "Unknown Dockerfile template 'missing'. Valid templates: package, skill, web-server"
+        in result.output
+    )
