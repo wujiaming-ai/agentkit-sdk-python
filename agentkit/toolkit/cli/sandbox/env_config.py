@@ -53,6 +53,7 @@ DEFAULT_CREATE_TOOL_TYPE = "CodeEnv"
 PRIVATE_TOOL_TYPE = "Private"
 PRIVATE_TOOL_COMMAND = "/opt/gem/run.sh"
 PRIVATE_TOOL_PORT = 8080
+CODE_ENV_RUST_LOG = "error,codex_core::util=off"
 PRIVATE_TOOL_VARS = (
     (
         "PATH",
@@ -395,6 +396,7 @@ def build_create_tool_envs(
 
     if tool_type.strip() == DEFAULT_CREATE_TOOL_TYPE:
         bundle.add("OPENCODE_DISABLE_AUTOUPDATE", "1")
+        bundle.add("RUST_LOG", CODE_ENV_RUST_LOG)
         bundle.add("HOME", CODE_ENV_HOME)
         bundle.add("CODEX_HOME", CODE_ENV_CODEX_HOME)
         if resolved.model_name and should_emit_codex_model_config(
