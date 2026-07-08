@@ -24,6 +24,7 @@ from agentkit.toolkit.cli.sandbox.cli_exec import exec_command
 from agentkit.toolkit.cli.sandbox.cli_file import file_command
 from agentkit.toolkit.cli.sandbox.cli_get import get_command
 from agentkit.toolkit.cli.sandbox.cli_invoke import invoke_command
+from agentkit.toolkit.cli.sandbox.cli_init_dockerfile import init_dockerfile_command
 from agentkit.toolkit.cli.sandbox.cli_model_login import codex_login_command
 from agentkit.toolkit.cli.sandbox.cli_mount import mount_command
 from agentkit.toolkit.cli.sandbox.cli_run import run_command
@@ -37,6 +38,7 @@ sandbox_app = typer.Typer(
 )
 
 sandbox_app.command(name="build")(build_command)
+sandbox_app.command(name="init-dockerfile")(init_dockerfile_command)
 sandbox_app.command(
     name="create",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},

@@ -64,6 +64,24 @@ Options:
   `agentkit`.
 - `--tag`: optional. Container image tag; defaults to `{{timestamp}}`.
 
+### Init Dockerfile
+
+Create a Dockerfile template for a custom sandbox image.
+
+```bash
+agentkit sandbox init-dockerfile --template package
+agentkit sandbox init-dockerfile --template package -o ./Dockerfile
+```
+
+Options:
+
+- `--template` / `-t`: optional. Dockerfile template to generate. Currently
+  available: `package`. The names `skill` and `web-server` are reserved for
+  future templates.
+- `--output` / `-o`: optional. Output Dockerfile path. Defaults to
+  `Dockerfile.install-package` for the `package` template.
+- `--force` / `-f`: optional. Overwrite the output file if it already exists.
+
 ### Create
 
 Create an AgentKit Tool for sandbox sessions. This command builds a `CreateTool`

@@ -1,0 +1,14 @@
+# Base image + npm package installation
+# Usage:
+#   1. Replace or append packages in the npm install command below.
+#   2. agentkit sandbox build --dockerfile Dockerfile.install-package
+#   3. agentkit sandbox deploy
+
+FROM enterprise-public-cn-beijing.cr.volces.com/vefaas-public/code-cli:0.0.7
+
+# The base image's Node.js runtime is installed under /opt/nodejs/22/bin.
+ENV PATH="/opt/nodejs/22/bin:${PATH}"
+
+# Add npm packages here, separated by spaces. Pin versions when needed.
+RUN npm install -g \
+        is-even@1.0.0
