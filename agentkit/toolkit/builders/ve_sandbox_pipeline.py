@@ -18,6 +18,8 @@ import sys
 import tempfile
 import time
 import uuid
+
+from agentkit.toolkit.docker.utils import create_dockerignore_file
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -127,6 +129,10 @@ class VeSandboxCPCRBuilder(VeCPCRBuilder):
             config.dockerfile = dockerfile_rel
 
             self.reporter.info("Starting sandbox cloud build process...")
+
+            if create_dockerignore_file(str(self.workdir)):
+                self.reporter.info("Created .dockerignore for optimal build context")
+
             self.reporter.info("1/5 Creating project archive...")
             resources["archive_path"] = self._create_project_archive(config)
 

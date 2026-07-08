@@ -23,6 +23,7 @@ from typing import Optional
 import typer
 
 from agentkit.toolkit.cli.sandbox.sandbox_client import error
+from agentkit.toolkit.docker.utils import create_dockerignore_file
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,12 @@ def init_dockerfile_command(
         content = _read_template_file(selected)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(content, encoding="utf-8")
+
+        dockerignore_created = create_dockerignore_file(str(Path.cwd()))
+        if dockerignore_created:
+            typer.echo("Created .dockerignore at current directory")
+        else:
+            typer.echo("Skipping .dockerignore (already exists)")
     except Exception as exc:
         error(str(exc))
 
