@@ -10,12 +10,26 @@ from agentkit.frameworks._common import UnsupportedFrameworkAgentError
 from agentkit.frameworks.langgraph import LANGGRAPH_PENDING_INTERRUPT_STATE_KEY, LangGraphAgentkitBridge
 
 
-def _ctx(text: str = "hi", session_id: str | None = None, state: dict | None = None):
+def _ctx(
+    text: str = "hi",
+    session_id: str | None = None,
+    state: dict | None = None,
+    app_name: str | None = None,
+    user_id: str | None = None,
+):
+    session = None
+    if session_id:
+        session = SimpleNamespace(
+            id=session_id,
+            app_name=app_name,
+            user_id=user_id,
+            state=state if state is not None else {},
+        )
     return SimpleNamespace(
         invocation_id="invocation",
         branch=None,
         user_content=types.UserContent(parts=[types.Part(text=text)]),
-        session=SimpleNamespace(id=session_id, state=state if state is not None else {}) if session_id else None,
+        session=session,
     )
 
 
@@ -390,6 +404,75 @@ def test_real_interrupt_resume_from_compiled_graph_is_supported():
     assert second[-1]["state_delta"] == {LANGGRAPH_PENDING_INTERRUPT_STATE_KEY: None}
 
 
+def test_real_checkpointer_history_is_scoped_by_app_user_and_session():
+    from typing import Annotated, TypedDict
+
+    from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.graph import END, START, StateGraph
+    from langgraph.graph.message import add_messages
+
+    class State(TypedDict):
+        messages: Annotated[list[AnyMessage], add_messages]
+        answer: str
+
+    def write_answer(state: State):
+        human_messages = [
+            message.content
+            for message in state["messages"]
+            if isinstance(message, HumanMessage)
+        ]
+        answer = "|".join(human_messages)
+        return {"messages": [AIMessage(content=answer)], "answer": answer}
+
+    builder = StateGraph(State)
+    builder.add_node("write_answer", write_answer)
+    builder.add_edge(START, "write_answer")
+    builder.add_edge("write_answer", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+
+    class SyncOnlyGraph:
+        def stream(self, payload, **kwargs):
+            yield from graph.stream(payload, **kwargs)
+
+    bridge = LangGraphAgentkitBridge(SyncOnlyGraph(), name="lg_scoped_history")
+
+    user_one = _collect_events(
+        bridge,
+        _ctx(
+            "USER_ONE_MARKER",
+            session_id="shared-session",
+            app_name="app",
+            user_id="user-one",
+        ),
+    )
+    user_two = _collect_events(
+        bridge,
+        _ctx(
+            "USER_TWO_MARKER",
+            session_id="shared-session",
+            app_name="app",
+            user_id="user-two",
+        ),
+    )
+    user_one_again = _collect_events(
+        bridge,
+        _ctx(
+            "USER_ONE_SECOND",
+            session_id="shared-session",
+            app_name="app",
+            user_id="user-one",
+        ),
+    )
+
+    assert _visible(user_one)[-1] == {"partial": False, "text": "USER_ONE_MARKER"}
+    assert _visible(user_two)[-1] == {"partial": False, "text": "USER_TWO_MARKER"}
+    assert _visible(user_one_again)[-1] == {
+        "partial": False,
+        "text": "USER_ONE_MARKER|USER_ONE_SECOND",
+    }
+
+
 def test_real_command_updates_from_compiled_graph_are_supported():
     from typing import TypedDict
 
@@ -401,16 +484,16 @@ def test_real_command_updates_from_compiled_graph_are_supported():
         answer: str
 
     def route(state: State):
-        return Command(goto="answer", update={"answer": f"command:{state['question']}"})
+        return Command(goto="write_answer", update={"answer": f"command:{state['question']}"})
 
-    def answer(state: State):
+    def write_answer(state: State):
         return {"answer": f"{state['answer']}:done"}
 
     builder = StateGraph(State)
     builder.add_node("route", route)
-    builder.add_node("answer", answer)
+    builder.add_node("write_answer", write_answer)
     builder.add_edge(START, "route")
-    builder.add_edge("answer", END)
+    builder.add_edge("write_answer", END)
     graph = builder.compile()
 
     class SyncOnlyGraph:

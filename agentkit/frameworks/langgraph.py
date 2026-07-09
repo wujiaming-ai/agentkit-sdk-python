@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+import hashlib
 import inspect
 import json
 from typing import Any
@@ -141,7 +142,15 @@ class LangGraphAgentkitBridge(BaseAgent):
         session_id = getattr(session, "id", None)
         if not session_id:
             return None
-        return {"configurable": {"thread_id": session_id}}
+        app_name = getattr(session, "app_name", None)
+        user_id = getattr(session, "user_id", None)
+        if app_name and user_id:
+            raw_identity = f"{app_name}\0{user_id}\0{session_id}"
+            digest = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()
+            thread_id = f"agentkit:{digest}"
+        else:
+            thread_id = session_id
+        return {"configurable": {"thread_id": thread_id}}
 
     def _pending_interrupt(self, ctx: InvocationContext) -> Any | None:
         session = getattr(ctx, "session", None)
@@ -218,32 +227,37 @@ class LangGraphAgentkitBridge(BaseAgent):
         stream_fn = getattr(self._graph, "stream", None)
         if not callable(stream_fn):
             return None
-        try:
-            return stream_fn(
-                payload,
-                **_method_kwargs(
-                    stream_fn,
-                    {
-                        "config": config,
-                        "stream_mode": ["messages", "updates"],
-                        "version": "v2",
-                    },
-                ),
-            )
-        except TypeError:
-            try:
-                return stream_fn(
-                    payload,
-                    **_method_kwargs(
-                        stream_fn,
-                        {
-                            "config": config,
-                            "stream_mode": ["messages", "updates"],
-                        },
-                    ),
-                )
-            except TypeError:
-                return stream_fn(payload, **_method_kwargs(stream_fn, {"config": config}))
+        attempts = [
+            {
+                "config": config,
+                "stream_mode": ["messages", "updates"],
+                "version": "v2",
+            },
+            {
+                "config": config,
+                "stream_mode": ["messages", "updates"],
+            },
+            {"config": config},
+        ]
+
+        def iterate_attempts():
+            last_error: TypeError | None = None
+            for kwargs in attempts:
+                emitted = False
+                try:
+                    stream = stream_fn(payload, **_method_kwargs(stream_fn, kwargs))
+                    for item in stream:
+                        emitted = True
+                        yield item
+                    return
+                except TypeError as exc:
+                    if emitted:
+                        raise
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
+
+        return iterate_attempts()
 
     async def _stream_graph(self, payload: Any, config: dict[str, Any] | None, *, prefer_sync: bool = False):
         if prefer_sync:
@@ -255,35 +269,33 @@ class LangGraphAgentkitBridge(BaseAgent):
 
         astream = getattr(self._graph, "astream", None)
         if callable(astream):
-            try:
-                stream = astream(
-                    payload,
-                    **_method_kwargs(
-                        astream,
-                        {
-                            "config": config,
-                            "stream_mode": ["messages", "updates"],
-                            "version": "v2",
-                        },
-                    ),
-                )
-            except TypeError:
+            attempts = [
+                {
+                    "config": config,
+                    "stream_mode": ["messages", "updates"],
+                    "version": "v2",
+                },
+                {
+                    "config": config,
+                    "stream_mode": ["messages", "updates"],
+                },
+                {"config": config},
+            ]
+            last_error: TypeError | None = None
+            for kwargs in attempts:
+                emitted = False
                 try:
-                    stream = astream(
-                        payload,
-                        **_method_kwargs(
-                            astream,
-                            {
-                                "config": config,
-                                "stream_mode": ["messages", "updates"],
-                            },
-                        ),
-                    )
-                except TypeError:
-                    stream = astream(payload, **_method_kwargs(astream, {"config": config}))
-            async for item in stream:
-                yield item
-            return
+                    stream = astream(payload, **_method_kwargs(astream, kwargs))
+                    async for item in stream:
+                        emitted = True
+                        yield item
+                    return
+                except TypeError as exc:
+                    if emitted:
+                        raise
+                    last_error = exc
+            if last_error is not None:
+                raise last_error
 
         stream = self._sync_stream(payload, config)
         if stream is not None:

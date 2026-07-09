@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 from pathlib import Path
 import sys
 from types import ModuleType
@@ -55,6 +56,50 @@ def _resolve_object(module: ModuleType, object_path: str) -> Any:
     return target
 
 
+def _call_zero_arg_factory(target: Any, object_path: str) -> Any:
+    if not callable(target):
+        raise TypeError(
+            f"Entry object {object_path!r} was marked as a factory, "
+            "but the loaded object is not callable."
+        )
+
+    try:
+        signature = inspect.signature(target)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            f"Entry factory {object_path!r} has no inspectable signature. "
+            "Expose a zero-argument factory or a constructed agent object."
+        ) from exc
+
+    required_params = [
+        name
+        for name, param in signature.parameters.items()
+        if param.default is inspect.Parameter.empty
+        and param.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    ]
+    if required_params:
+        formatted = ", ".join(required_params)
+        raise TypeError(
+            f"Entry factory {object_path!r} requires arguments: {formatted}. "
+            "agentkit migrate can only call zero-argument factories; expose a "
+            "thin zero-argument entry object for migration."
+        )
+
+    result = target()
+    if inspect.isawaitable(result):
+        raise TypeError(
+            f"Entry factory {object_path!r} returned an awaitable object. "
+            "Async factories are not supported by generated migration apps; "
+            "expose a synchronous factory or a constructed agent object."
+        )
+    return result
+
+
 def load_entry_object(
     *,
     file: str,
@@ -63,6 +108,7 @@ def load_entry_object(
     project_root: str | Path = ".",
     base_dir: str | Path | None = None,
     import_name: str = "agentkit_migrated_entry",
+    call_factory: bool = False,
 ) -> Any:
     """Load an object from a migrated project's original entry reference.
 
@@ -83,4 +129,7 @@ def load_entry_object(
         entry_path = (base_path / file).resolve()
         loaded_module = _load_module_from_file(entry_path, import_name)
 
-    return _resolve_object(loaded_module, object_path)
+    target = _resolve_object(loaded_module, object_path)
+    if call_factory:
+        return _call_zero_arg_factory(target, object_path)
+    return target

@@ -106,3 +106,64 @@ def test_missing_object_attribute_raises_clear_error(tmp_path):
             )
     finally:
         sys.modules.pop("entry_loader_attr", None)
+
+
+def test_can_call_zero_argument_factory_entry(tmp_path):
+    (tmp_path / "entry_loader_factory.py").write_text(
+        "class Agent:\n"
+        "    name = 'factory-loaded'\n\n"
+        "def build_agent():\n"
+        "    return Agent()\n",
+        encoding="utf8",
+    )
+
+    try:
+        agent = load_entry_object(
+            file="entry_loader_factory.py",
+            module="entry_loader_factory",
+            object_path="build_agent",
+            base_dir=tmp_path,
+            call_factory=True,
+        )
+        assert agent.name == "factory-loaded"
+    finally:
+        sys.modules.pop("entry_loader_factory", None)
+
+
+def test_factory_entry_with_required_arguments_raises_clear_error(tmp_path):
+    (tmp_path / "entry_loader_factory_args.py").write_text(
+        "def build_agent(settings):\n"
+        "    return settings\n",
+        encoding="utf8",
+    )
+
+    try:
+        with pytest.raises(TypeError, match="requires arguments: settings"):
+            load_entry_object(
+                file="entry_loader_factory_args.py",
+                module="entry_loader_factory_args",
+                object_path="build_agent",
+                base_dir=tmp_path,
+                call_factory=True,
+            )
+    finally:
+        sys.modules.pop("entry_loader_factory_args", None)
+
+
+def test_factory_flag_requires_callable_entry(tmp_path):
+    (tmp_path / "entry_loader_not_factory.py").write_text(
+        "agent = object()\n",
+        encoding="utf8",
+    )
+
+    try:
+        with pytest.raises(TypeError, match="marked as a factory"):
+            load_entry_object(
+                file="entry_loader_not_factory.py",
+                module="entry_loader_not_factory",
+                object_path="agent",
+                base_dir=tmp_path,
+                call_factory=True,
+            )
+    finally:
+        sys.modules.pop("entry_loader_not_factory", None)
