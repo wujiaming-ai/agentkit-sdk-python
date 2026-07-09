@@ -84,6 +84,35 @@ def _resume_value(text_input: str) -> Any:
     return text_input
 
 
+def _update_output_text(data: Any) -> str:
+    """Extract user-facing output from LangGraph update payloads.
+
+    LangGraph ``stream_mode=["messages", "updates"]`` can emit internal LLM
+    message chunks as well as node state updates. Generic recursive extraction
+    is too broad for updates such as ``{"classify": {"route": "x"}}``; only
+    explicit output-like fields should override streamed message text.
+    """
+    if not isinstance(data, dict):
+        return chunk_to_text(data)
+
+    for key in ("answer", "output", "text", "content", "messages"):
+        if key in data:
+            text = chunk_to_text(data[key])
+            if text:
+                return text
+
+    latest = ""
+    for value in data.values():
+        if not isinstance(value, dict):
+            continue
+        for key in ("answer", "output", "text", "content", "messages"):
+            if key in value:
+                text = chunk_to_text(value[key])
+                if text:
+                    latest = text
+    return latest
+
+
 class LangGraphAgentkitBridge(BaseAgent):
     """Adapt a compiled LangGraph graph to AgentKit's ADK runtime boundary."""
 
@@ -318,9 +347,7 @@ class LangGraphAgentkitBridge(BaseAgent):
                     )
                     return
                 last_update = data
-                if saw_messages:
-                    continue
-                text = chunk_to_text(data)
+                text = _update_output_text(data)
                 if text:
                     pending_update_text = text
                 continue
@@ -334,10 +361,11 @@ class LangGraphAgentkitBridge(BaseAgent):
                     yield adk_event(ctx, self.name, delta, partial=True)
 
         if streamed:
+            update_text = pending_update_text or _update_output_text(last_update)
             if saw_messages or has_output:
-                final_text = accumulated_text
+                final_text = update_text or accumulated_text
             else:
-                final_text = pending_update_text or chunk_to_text(last_update)
+                final_text = update_text
                 if final_text:
                     yield adk_event(ctx, self.name, final_text, partial=True)
         else:

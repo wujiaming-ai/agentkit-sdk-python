@@ -49,7 +49,7 @@ def _visible(events):
     return [{"partial": event["partial"], "text": event["text"]} for event in events]
 
 
-def test_message_stream_suppresses_state_updates():
+def test_message_stream_ignores_non_output_state_updates():
     class FakeGraph:
         async def astream(self, payload, stream_mode=None):
             assert stream_mode == ["messages", "updates"]
@@ -63,6 +63,23 @@ def test_message_stream_suppresses_state_updates():
     assert _visible(events) == [
         {"partial": True, "text": "final answer"},
         {"partial": False, "text": "final answer"},
+    ]
+
+
+def test_final_output_update_overrides_internal_message_stream_for_final_event():
+    class FakeGraph:
+        async def astream(self, payload, stream_mode=None):
+            assert stream_mode == ["messages", "updates"]
+            yield ("messages", (SimpleNamespace(content="internal llm token"), {}))
+            yield ("updates", {"answer": {"answer": "LG_PROD_OK\nfinal graph answer"}})
+
+    events = _collect_events(
+        LangGraphAgentkitBridge(FakeGraph(), name="lg_final_update"),
+    )
+
+    assert _visible(events) == [
+        {"partial": True, "text": "internal llm token"},
+        {"partial": False, "text": "LG_PROD_OK\nfinal graph answer"},
     ]
 
 
