@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
+import requests
 import typer
 
 from agentkit.toolkit.cli.sandbox.agentkit_client import AgentkitToolsClient
@@ -45,10 +46,14 @@ from agentkit.toolkit.cli.sandbox.cli_file import (
 from agentkit.toolkit.cli.sandbox.session_create import (
     SANDBOX_TOOL_ID_ENV,
     build_model_envs,
-    ensure_sandbox_session,
+    ensure_sandbox_session_with_status,
 )
 from agentkit.toolkit.cli.sandbox.git_config import apply_git_config_to_session
-from agentkit.toolkit.cli.sandbox.model_config import normalize_model_base_url
+from agentkit.toolkit.cli.sandbox.model_config import (
+    build_codex_hot_update_command,
+    build_codex_hot_update_env,
+    normalize_model_base_url,
+)
 from agentkit.toolkit.cli.sandbox.tos_config import DEFAULT_SANDBOX_WORKSPACE
 from agentkit.toolkit.cli.sandbox.tool_resolve import (
     SandboxToolType,
@@ -58,6 +63,7 @@ from agentkit.toolkit.cli.sandbox.tool_resolve import (
 )
 from agentkit.toolkit.cli.sandbox.sandbox_client import (
     add_session_terminal_shell_id,
+    build_bash_exec_url,
     build_terminal_ws_url,
     error,
     find_session_result,
@@ -68,11 +74,109 @@ DETACH_SEQUENCE = b"\x1d"
 DETACH_HINT = "Ctrl-]"
 LOCAL_EXIT_COMMANDS = {"exit", "exit()"}
 EXEC_MODE_TMUX = "tmux"
+CODEX_HOT_UPDATE_TIMEOUT_SECONDS = 300
+CODEX_HOT_UPDATE_REQUEST_TIMEOUT = 30
+CODEX_HOT_UPDATE_REQUEST_HARD_TIMEOUT = 90
 
 
 def _terminal_size() -> dict[str, int]:
     size = shutil.get_terminal_size(fallback=(120, 40))
     return {"cols": size.columns, "rows": size.lines}
+
+
+def _param_was_provided(ctx: typer.Context, param_name: str) -> bool:
+    get_source = getattr(ctx, "get_parameter_source", None)
+    if get_source is None:
+        return False
+    try:
+        source = get_source(param_name)
+    except Exception:
+        return False
+    return getattr(source, "name", None) == "COMMANDLINE" or str(source).endswith(
+        "COMMANDLINE"
+    )
+
+
+def _codex_hot_update_requested(
+    *,
+    model_api_key_was_provided: bool,
+    model_name_was_provided: bool,
+    model_base_url_was_provided: bool,
+) -> bool:
+    return (
+        model_api_key_was_provided
+        or model_name_was_provided
+        or model_base_url_was_provided
+    )
+
+
+def _handle_hot_update_response(payload: object) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return
+
+    status = data.get("status")
+    if status and status != "completed":
+        output = data.get("output")
+        message = output if isinstance(output, str) and output.strip() else payload
+        error(f"Codex hot update did not complete: {message}")
+
+    exit_code = data.get("exit_code")
+    if exit_code not in (None, 0):
+        output = data.get("output")
+        message = output if isinstance(output, str) and output.strip() else payload
+        error(f"Codex hot update failed: {message}")
+
+
+def _hot_update_codex_config(
+    session: dict[str, object],
+    *,
+    model_name: Optional[str],
+    model_api_key: Optional[str],
+    model_provider: Optional[str],
+    model_base_url: Optional[str],
+    model_api_key_was_provided: bool,
+    model_name_was_provided: bool,
+    model_base_url_was_provided: bool,
+) -> None:
+    env = build_codex_hot_update_env(
+        model_name=model_name,
+        model_api_key=model_api_key,
+        model_provider=model_provider,
+        model_base_url=model_base_url,
+        model_api_key_was_provided=model_api_key_was_provided,
+        model_name_was_provided=model_name_was_provided,
+        model_base_url_was_provided=model_base_url_was_provided,
+    )
+    body = {
+        "timeout": CODEX_HOT_UPDATE_REQUEST_TIMEOUT,
+        "hard_timeout": CODEX_HOT_UPDATE_REQUEST_HARD_TIMEOUT,
+        "env": env,
+        "command": build_codex_hot_update_command(),
+    }
+
+    try:
+        response = requests.post(
+            build_bash_exec_url(session.get("endpoint")),
+            json=body,
+            timeout=CODEX_HOT_UPDATE_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        error(str(exc))
+
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int) and status_code >= 400:
+        error(f"Codex hot update failed: {getattr(response, 'text', '')}")
+
+    try:
+        payload = response.json()
+    except ValueError:
+        error(f"Invalid Codex hot update response: {response.text}")
+
+    _handle_hot_update_response(payload)
 
 
 @contextmanager
@@ -531,6 +635,9 @@ def exec_command(
     """Open a streaming sandbox exec session. Press Ctrl-] or type exit/exit()."""
     exec_mode = _normalize_exec_mode(mode)
     try:
+        model_api_key_was_provided = _param_was_provided(ctx, "model_api_key")
+        model_name_was_provided = _param_was_provided(ctx, "model_name")
+        model_base_url_was_provided = _param_was_provided(ctx, "model_base_url")
         resolved_model_provider = _resolve_exec_model_provider(
             session_id=session_id,
             tool_id=tool_id,
@@ -556,7 +663,7 @@ def exec_command(
                 err=True,
             )
 
-        session = ensure_sandbox_session(
+        session, is_new_session = ensure_sandbox_session_with_status(
             session_id=session_id,
             tool_id=tool_id,
             tool_type=tool_type.value,
@@ -566,13 +673,30 @@ def exec_command(
                 model_provider=resolved_model_provider,
                 model_base_url=resolved_model_base_url,
                 model_provider_was_provided=explicit_model_provider,
-                model_base_url_was_provided=bool(
-                    normalize_model_base_url(model_base_url)
-                ),
+                model_base_url_was_provided=model_base_url_was_provided,
                 include_codex_config=tool_type == SandboxToolType.CODE_ENV,
                 disable_websearch_apikey=disable_websearch,
             ),
         )
+        if (
+            not is_new_session
+            and tool_type == SandboxToolType.CODE_ENV
+            and _codex_hot_update_requested(
+                model_api_key_was_provided=model_api_key_was_provided,
+                model_name_was_provided=model_name_was_provided,
+                model_base_url_was_provided=model_base_url_was_provided,
+            )
+        ):
+            _hot_update_codex_config(
+                session,
+                model_name=model_name,
+                model_api_key=model_api_key,
+                model_provider=resolved_model_provider,
+                model_base_url=resolved_model_base_url,
+                model_api_key_was_provided=model_api_key_was_provided,
+                model_name_was_provided=model_name_was_provided,
+                model_base_url_was_provided=model_base_url_was_provided,
+            )
     except typer.Exit:
         raise
     except Exception as exc:

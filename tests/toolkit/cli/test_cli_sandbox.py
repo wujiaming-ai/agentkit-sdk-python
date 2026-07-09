@@ -224,7 +224,7 @@ def _write_session_store(store_path, records):
     )
 
 
-def _patch_exec_session(monkeypatch, cli_exec, session, capture=None):
+def _patch_exec_session(monkeypatch, cli_exec, session, capture=None, is_new=True):
     def fake_ensure_sandbox_session(session_id=None, tool_id=None, **kwargs):
         if capture is not None:
             capture["session_id"] = session_id
@@ -232,10 +232,27 @@ def _patch_exec_session(monkeypatch, cli_exec, session, capture=None):
             capture.update(kwargs)
         return session
 
+    def fake_ensure_sandbox_session_with_status(
+        session_id=None,
+        tool_id=None,
+        **kwargs,
+    ):
+        if capture is not None:
+            capture["session_id"] = session_id
+            capture["tool_id"] = tool_id
+            capture.update(kwargs)
+        return session, is_new
+
     monkeypatch.setattr(
         cli_exec,
         "ensure_sandbox_session",
         fake_ensure_sandbox_session,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli_exec,
+        "ensure_sandbox_session_with_status",
+        fake_ensure_sandbox_session_with_status,
     )
 
 
@@ -948,6 +965,21 @@ def test_build_model_envs_option_overrides_model_api_key_env(monkeypatch) -> Non
         ("CODEX_API_KEY", "cli-model-value"),
         ("ANTHROPIC_AUTH_TOKEN", "cli-model-value"),
     ]
+
+
+def test_build_codex_hot_update_env_allows_explicit_empty_api_key() -> None:
+    from agentkit.toolkit.cli.sandbox.model_config import build_codex_hot_update_env
+
+    env = build_codex_hot_update_env(
+        model_api_key="",
+        model_api_key_was_provided=True,
+    )
+
+    assert env == {
+        "CODEX_API_KEY": "",
+        "ARK_API_KEY": "",
+        "OPENAI_API_KEY": "",
+    }
 
 
 def test_build_model_envs_uses_model_base_url_and_emits_codex_config(
@@ -4200,6 +4232,153 @@ def test_cli_exec_connects_to_ws_endpoint(monkeypatch, tmp_path) -> None:
     assert captured["ws_url"] == "ws://sandbox.example.com/v1/shell/ws?token=abc"
     assert captured["initial_command"] is None
     assert captured["on_shell_id"] is not None
+
+
+def test_build_bash_exec_url_preserves_endpoint_query() -> None:
+    from agentkit.toolkit.cli.sandbox.sandbox_client import build_bash_exec_url
+
+    assert (
+        build_bash_exec_url("https://sandbox.example.com/base?token=abc")
+        == "https://sandbox.example.com/base/v1/bash/exec?token=abc"
+    )
+
+
+def test_cli_exec_hot_updates_existing_code_env_model_name(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    stored_session = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com/?token=abc",
+    }
+    store_path.write_text(
+        json.dumps({"user-1": stored_session}),
+        encoding="utf-8",
+    )
+    _patch_exec_session(monkeypatch, cli_exec, stored_session, is_new=False)
+    monkeypatch.setattr(
+        cli_exec,
+        "_connect_terminal",
+        lambda *_args, **_kwargs: None,
+    )
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _FakeA2AResponse({"data": {"status": "completed", "exit_code": 0}})
+
+    monkeypatch.setattr(cli_exec.requests, "post", fake_post)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--session-id",
+            "user-1",
+            "--model-name",
+            "glm-5.2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["url"] == "https://sandbox.example.com/v1/bash/exec?token=abc"
+    assert captured["timeout"] == cli_exec.CODEX_HOT_UPDATE_TIMEOUT_SECONDS
+    body = captured["json"]
+    assert body["timeout"] == 30
+    assert body["hard_timeout"] == 90
+    assert body["env"]["CODEX_MODEL"] == "glm-5.2"
+    assert 'model = "glm-5.2"' in body["env"]["CODEX_CONFIG_TOML"]
+    assert "REQ_CODEX_CONFIG_TOML" in body["command"]
+
+
+def test_cli_exec_hot_update_model_api_key_maps_all_api_key_envs(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    stored_session = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com/?token=abc",
+    }
+    _patch_store_path(monkeypatch, tmp_path).write_text(
+        json.dumps({"user-1": stored_session}),
+        encoding="utf-8",
+    )
+    _patch_exec_session(monkeypatch, cli_exec, stored_session, is_new=False)
+    monkeypatch.setattr(
+        cli_exec,
+        "_connect_terminal",
+        lambda *_args, **_kwargs: None,
+    )
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        captured["json"] = json
+        return _FakeA2AResponse({"data": {"status": "completed", "exit_code": 0}})
+
+    monkeypatch.setattr(cli_exec.requests, "post", fake_post)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "exec",
+            "--session-id",
+            "user-1",
+            "--model-api-key",
+            "sk-test",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["json"]["env"] == {
+        "CODEX_API_KEY": "sk-test",
+        "ARK_API_KEY": "sk-test",
+        "OPENAI_API_KEY": "sk-test",
+    }
+
+
+def test_cli_exec_skips_hot_update_for_new_session(monkeypatch, tmp_path) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    stored_session = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com/?token=abc",
+    }
+    _patch_exec_session(monkeypatch, cli_exec, stored_session, is_new=True)
+    monkeypatch.setattr(
+        cli_exec,
+        "_connect_terminal",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_post(*_args, **_kwargs):
+        raise AssertionError("new sessions must not hot update")
+
+    monkeypatch.setattr(cli_exec.requests, "post", fake_post)
+
+    result = runner.invoke(
+        app,
+        ["sandbox", "exec", "--model-name", "glm-5.2"],
+    )
+
+    assert result.exit_code == 0, result.output
 
 
 def test_cli_exec_runs_command_option(monkeypatch, tmp_path) -> None:

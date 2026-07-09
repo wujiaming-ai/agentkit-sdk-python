@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
 SANDBOX_SESSION_STORE_PATH = Path(".agentkit") / "sandbox" / "sessions.json"
 SANDBOX_YAML_PATH = Path(".agentkit") / "sandbox" / "sandbox.yaml"
 SANDBOX_EXEC_ROUTE = "/v1/shell/exec"
+SANDBOX_BASH_EXEC_ROUTE = "/v1/bash/exec"
 SANDBOX_TERMINAL_ROUTE = "/v1/shell/ws"
 SANDBOX_FILE_UPLOAD_ROUTE = "/v1/file/upload"
 SANDBOX_FILE_DOWNLOAD_ROUTE = "/v1/file/download"
@@ -377,6 +378,20 @@ def build_exec_url(endpoint: object) -> str:
     parts = urlsplit(endpoint.strip())
     path = parts.path.rstrip("/")
     exec_path = f"{path}{SANDBOX_EXEC_ROUTE}" if path else SANDBOX_EXEC_ROUTE
+    return urlunsplit(
+        (parts.scheme, parts.netloc, exec_path, parts.query, parts.fragment)
+    )
+
+
+def build_bash_exec_url(endpoint: object) -> str:
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        error("Sandbox session endpoint is missing")
+
+    parts = urlsplit(endpoint.strip())
+    path = parts.path.rstrip("/")
+    exec_path = (
+        f"{path}{SANDBOX_BASH_EXEC_ROUTE}" if path else SANDBOX_BASH_EXEC_ROUTE
+    )
     return urlunsplit(
         (parts.scheme, parts.netloc, exec_path, parts.query, parts.fragment)
     )

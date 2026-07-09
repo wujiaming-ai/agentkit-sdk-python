@@ -451,6 +451,170 @@ def build_codex_config_toml(
     return "\n".join(lines)
 
 
+def _codex_config_toml_for_exec_env(
+    *,
+    model_name: Optional[str],
+    model_provider: str | ModelProviderType | None = None,
+    model_base_url: Optional[str] = None,
+) -> str | None:
+    resolved_model_base_url = normalize_model_base_url(model_base_url)
+    effective_model_provider = model_provider or infer_model_provider_from_base_url(
+        resolved_model_base_url
+    )
+    resolved_model_provider = normalize_optional_model_provider(
+        effective_model_provider
+    )
+    resolved_model_name = (
+        resolve_model_name(model_name, resolved_model_provider)
+        if resolved_model_provider
+        else (model_name or "").strip()
+    )
+    if not resolved_model_name or not should_emit_codex_model_config(
+        model_provider=resolved_model_provider,
+        model_base_url=resolved_model_base_url,
+    ):
+        return None
+    return build_codex_config_toml(
+        resolved_model_name,
+        resolved_model_provider,
+        resolved_model_base_url,
+    )
+
+
+def build_codex_hot_update_env(
+    *,
+    model_name: Optional[str] = None,
+    model_api_key: Optional[str] = None,
+    model_provider: str | ModelProviderType | None = None,
+    model_base_url: Optional[str] = None,
+    model_api_key_was_provided: bool = False,
+    model_name_was_provided: bool = False,
+    model_base_url_was_provided: bool = False,
+) -> dict[str, str]:
+    """Build the env payload for an existing CodeEnv Codex hot update."""
+
+    env: dict[str, str] = {}
+    if model_api_key_was_provided:
+        value = model_api_key or ""
+        env["CODEX_API_KEY"] = value
+        env["ARK_API_KEY"] = value
+        env["OPENAI_API_KEY"] = value
+    if model_name_was_provided:
+        env["CODEX_MODEL"] = model_name or ""
+    if model_base_url_was_provided:
+        env["CODEX_BASE_URL"] = normalize_model_base_url(model_base_url) or ""
+
+    config_toml = _codex_config_toml_for_exec_env(
+        model_name=model_name,
+        model_provider=model_provider,
+        model_base_url=model_base_url,
+    )
+    if config_toml:
+        env[CODEX_CONFIG_TOML_ENV] = config_toml
+    return env
+
+
+def build_codex_hot_update_command() -> str:
+    """Shell command that updates Codex env and config inside an existing sandbox."""
+
+    return '''set -euo pipefail
+
+ENV_FILE=/home/gem/.env
+BASHRC=/home/gem/.bashrc
+TARGET=/home/gem/.codex/config.toml
+
+REQ_CODEX_API_KEY="${CODEX_API_KEY:-}"
+REQ_ARK_API_KEY="${ARK_API_KEY:-}"
+REQ_OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+REQ_CODEX_MODEL="${CODEX_MODEL:-}"
+REQ_CODEX_BASE_URL="${CODEX_BASE_URL:-}"
+REQ_CODEX_CONFIG_TOML="${CODEX_CONFIG_TOML:-}"
+
+mkdir -p /home/gem/.codex
+
+if [ -f "$ENV_FILE" ]; then
+  . "$ENV_FILE"
+fi
+
+if [ -n "$REQ_CODEX_API_KEY" ]; then
+  CODEX_API_KEY="$REQ_CODEX_API_KEY"
+elif [ -n "$REQ_ARK_API_KEY" ]; then
+  CODEX_API_KEY="$REQ_ARK_API_KEY"
+elif [ -n "$REQ_OPENAI_API_KEY" ]; then
+  CODEX_API_KEY="$REQ_OPENAI_API_KEY"
+fi
+
+if [ -n "$REQ_CODEX_MODEL" ]; then
+  CODEX_MODEL="$REQ_CODEX_MODEL"
+fi
+
+if [ -n "$REQ_CODEX_BASE_URL" ]; then
+  CODEX_BASE_URL="$REQ_CODEX_BASE_URL"
+fi
+
+CODEX_MODEL="${CODEX_MODEL:-deepseek-v4-flash-260425}"
+CODEX_BASE_URL="${CODEX_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}"
+
+: >"$ENV_FILE"
+
+for key in CODEX_API_KEY CODEX_MODEL CODEX_BASE_URL; do
+  value="${!key:-}"
+  if [ -n "$value" ]; then
+    printf "export %s=%q\\n" "$key" "$value" >>"$ENV_FILE"
+  fi
+done
+
+chmod 600 "$ENV_FILE"
+chown gem:gem "$ENV_FILE" 2>/dev/null || true
+
+source_line="[ -f \"\\$HOME/.env\" ] && . \"\\$HOME/.env\""
+touch "$BASHRC"
+if ! grep -qxF "$source_line" "$BASHRC"; then
+  printf "\n%s\n" "$source_line" >>"$BASHRC"
+fi
+chown gem:gem "$BASHRC" 2>/dev/null || true
+
+export CODEX_API_KEY CODEX_MODEL CODEX_BASE_URL REQ_CODEX_CONFIG_TOML
+
+python3 - <<"PY"
+import json
+import os
+from pathlib import Path
+
+target = Path("/home/gem/.codex/config.toml")
+model = os.environ["CODEX_MODEL"]
+base_url = os.environ["CODEX_BASE_URL"]
+provided_config = os.environ.get("REQ_CODEX_CONFIG_TOML", "")
+
+if provided_config:
+    config = provided_config
+else:
+    config = f"""model_provider = "codex"
+model = {json.dumps(model)}
+review_model = {json.dumps(model)}
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+model_reasoning_effort = "medium"
+personality = "pragmatic"
+
+[model_providers.codex]
+name = "codex"
+base_url = {json.dumps(base_url)}
+wire_api = "responses"
+env_key = "CODEX_API_KEY"
+"""
+
+tmp = target.with_name("config.toml.tmp")
+tmp.write_text(config)
+tmp.replace(target)
+PY
+
+chmod 600 "$TARGET"
+chown gem:gem "$TARGET" 2>/dev/null || true
+
+echo "status=updated"'''
+
+
 def _reasoning_levels() -> list[dict[str, str]]:
     return [
         {
