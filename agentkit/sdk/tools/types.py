@@ -178,12 +178,10 @@ class ToolsForListTools(ToolsBaseModel):
         default=None, alias="AuthorizerConfiguration"
     )
     command: Optional[str] = Field(default=None, alias="Command")
-    cpu_milli: Optional[int] = Field(default=None, alias="CpuMilli")
     created_at: Optional[str] = Field(default=None, alias="CreatedAt")
     description: Optional[str] = Field(default=None, alias="Description")
     envs: Optional[list[EnvsForListTools]] = Field(default=None, alias="Envs")
     image_url: Optional[str] = Field(default=None, alias="ImageUrl")
-    memory_mb: Optional[int] = Field(default=None, alias="MemoryMb")
     model_agent_name: Optional[str] = Field(default=None, alias="ModelAgentName")
     name: Optional[str] = Field(default=None, alias="Name")
     network_configurations: Optional[list[NetworkConfigurationsForListTools]] = Field(
@@ -247,6 +245,12 @@ class VpcConfigurationForListTools(ToolsBaseModel):
 
 
 # CreateSession - Request
+class ImageForCreateSession(ToolsBaseModel):
+    command: str = Field(..., alias="Command")
+    image: str = Field(..., alias="Image")
+    port: int = Field(..., alias="Port")
+
+
 class EnvsItemForCreateSession(ToolsBaseModel):
     key: str = Field(..., alias="Key")
     value: Optional[str] = Field(default=None, alias="Value")
@@ -259,11 +263,11 @@ class TosMountPointsItemForCreateSession(ToolsBaseModel):
 
 
 class CreateSessionRequest(ToolsBaseModel):
-    name: Optional[str] = Field(default=None, alias="Name")
     tool_id: str = Field(..., alias="ToolId")
     ttl: Optional[int] = Field(default=None, alias="Ttl")
     ttl_unit: Optional[str] = Field(default=None, alias="TtlUnit")
     user_session_id: Optional[str] = Field(default=None, alias="UserSessionId")
+    image_info: Optional[ImageForCreateSession] = Field(default=None, alias="ImageInfo")
     envs: Optional[list[EnvsItemForCreateSession]] = Field(default=None, alias="Envs")
     tos_mount_points: Optional[list[TosMountPointsItemForCreateSession]] = Field(
         default=None, alias="TosMountPoints"
@@ -600,12 +604,9 @@ class ListSessionsRequest(ToolsBaseModel):
 # ListSessions - Response
 class ListSessionsResponse(ToolsBaseModel):
     next_token: Optional[str] = Field(default=None, alias="NextToken")
-    page_number: Optional[int] = Field(default=None, alias="PageNumber")
-    page_size: Optional[int] = Field(default=None, alias="PageSize")
     session_infos: Optional[list[SessionInfosForListSessions]] = Field(
         default=None, alias="SessionInfos"
     )
-    total_count: Optional[int] = Field(default=None, alias="TotalCount")
 
 
 # ListTools - Request
