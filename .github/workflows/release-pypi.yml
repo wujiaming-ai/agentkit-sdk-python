@@ -1,0 +1,157 @@
+name: Release to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, for example v0.7.5'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+            git fetch --force --tags origin "refs/tags/${tag}:refs/tags/${tag}"
+            git checkout --force "refs/tags/${tag}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must use the form vX.Y.Z, got: ${tag}" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Ensure tag is on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Release tag ${{ steps.version.outputs.tag }} is not reachable from origin/main." >&2
+            exit 1
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install build and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Validate release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          expected = "${{ steps.version.outputs.version }}"
+          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          project_version = project["project"]["version"]
+          version_py = Path("agentkit/version.py").read_text(encoding="utf-8")
+          version_match = re.search(r'VERSION\s*=\s*["\']([^"\']+)["\']', version_py)
+          source_version = version_match.group(1) if version_match else None
+
+          checks = {
+              "pyproject.toml": project_version == expected,
+              "agentkit/version.py": source_version == expected,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              print(
+                  "Release version mismatch: "
+                  f"tag={expected}, pyproject={project_version}, "
+                  f"agentkit/version.py={source_version}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+
+      - name: Build release artifacts
+        run: python -m build --outdir dist
+
+      - name: Verify artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m twine check dist/*
+          python - <<'PY'
+          from __future__ import annotations
+
+          import sys
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          expected = "${{ steps.version.outputs.version }}"
+          dist = Path("dist")
+          wheel = next(dist.glob("agentkit_sdk_python-*.whl"))
+          sdist = next(dist.glob("agentkit_sdk_python-*.tar.gz"))
+
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              version_py = archive.read("agentkit/version.py").decode()
+              metadata_name = next(
+                  name for name in names if name.endswith(".dist-info/METADATA")
+              )
+              metadata = archive.read(metadata_name).decode()
+
+          with tarfile.open(sdist) as archive:
+              root = archive.getnames()[0].split("/", 1)[0]
+              pyproject = archive.extractfile(f"{root}/pyproject.toml").read().decode()
+              sdist_version_py = (
+                  archive.extractfile(f"{root}/agentkit/version.py").read().decode()
+              )
+
+          checks = {
+              "wheel metadata": f"Version: {expected}" in metadata,
+              "wheel version.py": f'VERSION = "{expected}"' in version_py,
+              "sdist pyproject": f'version = "{expected}"' in pyproject,
+              "sdist version.py": f'VERSION = "{expected}"' in sdist_version_py,
+          }
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              print(f"Artifact version verification failed: {failed}", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
