@@ -111,10 +111,13 @@ When the tag reaches GitHub, `.github/workflows/release-pypi.yml` will:
 - verify that `pyproject.toml` and `agentkit/version.py` match the tag version
 - build the wheel and source distribution from the tagged commit
 - verify the built artifacts contain the expected version metadata
-- publish the release to PyPI through GitHub OIDC Trusted Publishing
+- publish the release to PyPI using the GitHub Actions secret `PYPI_API_TOKEN`
 
 The internal `local_build.py` helper is a separate local-only workflow and is
 not used by the GitHub tag release.
+
+Before using the GitHub tag release workflow, configure a project-scoped PyPI
+API token in the repository's GitHub Actions secrets as `PYPI_API_TOKEN`.
 
 ## Security and privacy
 
