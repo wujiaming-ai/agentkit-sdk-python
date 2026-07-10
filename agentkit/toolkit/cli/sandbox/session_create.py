@@ -305,7 +305,7 @@ def _resume_session_from_snapshot(
             tool_id=tool_id,
             snapshot_id=snapshot_id,
             ttl=ttl,
-            create_new_instance=True,
+            create_new_instance=False,
         )
     )
     instance_id = response.session_id
