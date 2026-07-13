@@ -85,40 +85,6 @@ pip install agentkit-sdk-python==1.0.0.dev1
 
 **Note**: Development versions may contain bugs and are not recommended for production use.
 
-## Release Process
-
-Stable releases are published from GitHub tags. The source tree keeps the
-release version in `pyproject.toml` and `agentkit/version.py`, and the GitHub
-workflow verifies that the pushed tag matches those files before building and
-publishing the package.
-
-The release workflow must already exist on `main` before you push the release
-tag. For `0.7.5`, merge the tag-release automation change first, then create
-and push `v0.7.5`.
-
-Use the following workflow for a stable release:
-
-```bash
-git checkout main
-git pull github main
-git tag v0.7.5
-git push github v0.7.5
-```
-
-When the tag reaches GitHub, `.github/workflows/release-pypi.yml` will:
-
-- verify the tag is reachable from `main`
-- verify that `pyproject.toml` and `agentkit/version.py` match the tag version
-- build the wheel and source distribution from the tagged commit
-- verify the built artifacts contain the expected version metadata
-- publish the release to PyPI using the GitHub Actions secret `PYPI_API_TOKEN`
-
-The internal `local_build.py` helper is a separate local-only workflow and is
-not used by the GitHub tag release.
-
-Before using the GitHub tag release workflow, configure a project-scoped PyPI
-API token in the repository's GitHub Actions secrets as `PYPI_API_TOKEN`.
-
 ## Security and privacy
 
 This project takes security seriously.
