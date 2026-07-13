@@ -30,6 +30,28 @@ def test_code_pipeline_uses_explicit_provider_over_env(monkeypatch) -> None:
     assert cp.host.endswith(".byteplusapi.com")
 
 
+def test_code_pipeline_passes_resolved_session_token(monkeypatch) -> None:
+    from agentkit.platform.provider import ENV_CLOUD_PROVIDER
+    import agentkit.toolkit.volcengine.code_pipeline as code_pipeline_mod
+    from agentkit.toolkit.volcengine.code_pipeline import VeCodePipeline
+
+    captured = {}
+
+    def _fake_ve_request(**kwargs):
+        captured.update(kwargs)
+        return {"ResponseMetadata": {}, "Result": {"Id": "workspace-id"}}
+
+    monkeypatch.setenv(ENV_CLOUD_PROVIDER, "volcengine")
+    monkeypatch.setenv("VOLCENGINE_ACCESS_KEY", "AK")
+    monkeypatch.setenv("VOLCENGINE_SECRET_KEY", "SK")
+    monkeypatch.setenv("VOLCENGINE_SESSION_TOKEN", "STS_TOKEN")
+    monkeypatch.setattr(code_pipeline_mod, "ve_request", _fake_ve_request)
+
+    cp = VeCodePipeline(region="cn-beijing")
+    assert cp._get_default_workspace() == "workspace-id"
+    assert captured["session_token"] == "STS_TOKEN"
+
+
 def test_cr_uses_explicit_provider_over_env(monkeypatch) -> None:
     from agentkit.platform.provider import ENV_CLOUD_PROVIDER
     from agentkit.toolkit.volcengine.cr import VeCR
@@ -43,6 +65,27 @@ def test_cr_uses_explicit_provider_over_env(monkeypatch) -> None:
         access_key="ak", secret_key="sk", region="ap-southeast-1", provider="byteplus"
     )
     assert cr.host.endswith(".byteplusapi.com")
+
+
+def test_cr_service_passes_resolved_session_token(monkeypatch) -> None:
+    from agentkit.platform.provider import ENV_CLOUD_PROVIDER
+    import agentkit.toolkit.volcengine.services.cr_service as cr_service_mod
+    from agentkit.toolkit.volcengine.services.cr_service import CRService
+
+    captured = {}
+
+    class _FakeVeCR:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv(ENV_CLOUD_PROVIDER, "volcengine")
+    monkeypatch.setenv("VOLCENGINE_ACCESS_KEY", "AK")
+    monkeypatch.setenv("VOLCENGINE_SECRET_KEY", "SK")
+    monkeypatch.setenv("VOLCENGINE_SESSION_TOKEN", "STS_TOKEN")
+    monkeypatch.setattr(cr_service_mod.ve_cr, "VeCR", _FakeVeCR)
+
+    CRService()
+    assert captured["session_token"] == "STS_TOKEN"
 
 
 def test_tos_service_uses_explicit_provider_over_env(monkeypatch) -> None:

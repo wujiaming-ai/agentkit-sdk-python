@@ -16,6 +16,7 @@ import inspect
 
 from agentkit.toolkit.config.choice_resolvers import resolve_field_choices
 from agentkit.toolkit.config.strategy_configs import CloudStrategyConfig
+from agentkit.toolkit.volcengine.code_pipeline import VeCodePipeline
 from agentkit.toolkit.volcengine.cr import VeCR
 from agentkit.toolkit.volcengine.services.cr_service import CRServiceConfig
 
@@ -35,6 +36,18 @@ def test_byteplus_region_choices_only_one() -> None:
 def test_vecr_default_region_is_none() -> None:
     sig = inspect.signature(VeCR.__init__)
     assert sig.parameters["region"].default is None
+
+
+def test_vecr_session_token_is_keyword_compatible() -> None:
+    sig = inspect.signature(VeCR.__init__)
+    parameters = list(sig.parameters)
+    assert parameters.index("session_token") > parameters.index("provider")
+
+
+def test_code_pipeline_session_token_is_keyword_compatible() -> None:
+    sig = inspect.signature(VeCodePipeline.__init__)
+    parameters = list(sig.parameters)
+    assert parameters.index("session_token") > parameters.index("provider")
 
 
 def test_cr_service_config_default_region_is_empty() -> None:

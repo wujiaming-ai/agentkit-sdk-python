@@ -207,6 +207,7 @@ class CRService:
             self._vecr_client = ve_cr.VeCR(
                 access_key=creds.access_key,
                 secret_key=creds.secret_key,
+                session_token=creds.session_token,
                 region=endpoint.region,
                 provider=self.provider,
             )

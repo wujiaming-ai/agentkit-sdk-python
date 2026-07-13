@@ -32,9 +32,11 @@ class VeCR:
         secret_key: str,
         region: str | None = None,
         provider: str | None = None,
+        session_token: str | None = None,
     ):
         self.ak = access_key
         self.sk = secret_key
+        self.session_token = session_token or None
 
         config = VolcConfiguration(region=region or None, provider=provider or None)
         ep = resolve_endpoint(
@@ -46,6 +48,20 @@ class VeCR:
         self.version = ep.api_version
         self.host = ep.host
         self.scheme = ep.scheme
+
+    def _ve_request(self, request_body: dict, action: str) -> dict:
+        return ve_request(
+            request_body=request_body,
+            action=action,
+            ak=self.ak,
+            sk=self.sk,
+            service="cr",
+            version=self.version,
+            region=self.region,
+            host=self.host,
+            scheme=self.scheme,
+            session_token=self.session_token,
+        )
 
     def _create_instance(
         self,
@@ -74,7 +90,7 @@ class VeCR:
         if status != "NONEXIST":
             logger.debug(f"cr instance {instance_name} already running")
             return instance_name
-        response = ve_request(
+        response = self._ve_request(
             request_body={
                 "Name": instance_name,
                 "ResourceTags": [
@@ -83,13 +99,6 @@ class VeCR:
                 "Type": instance_type,
             },
             action="CreateRegistry",
-            ak=self.ak,
-            sk=self.sk,
-            service="cr",
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            scheme=self.scheme,
         )
         logger.debug(f"create cr instance {instance_name}: {response}")
 
@@ -129,20 +138,13 @@ class VeCR:
         Returns:
             cr instance status
         """
-        response = ve_request(
+        response = self._ve_request(
             request_body={
                 "Filter": {
                     "Names": [instance_name],
                 }
             },
             action="ListRegistries",
-            ak=self.ak,
-            sk=self.sk,
-            service="cr",
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            scheme=self.scheme,
         )
         logger.debug(f"check cr instance {instance_name}: {response}")
 
@@ -168,19 +170,12 @@ class VeCR:
         Returns:
             cr namespace name
         """
-        response = ve_request(
+        response = self._ve_request(
             request_body={
                 "Name": namespace_name,
                 "Registry": instance_name,
             },
             action="CreateNamespace",
-            ak=self.ak,
-            sk=self.sk,
-            service="cr",
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            scheme=self.scheme,
         )
         logger.debug(f"create cr namespace {namespace_name}: {response}")
 
@@ -217,7 +212,7 @@ class VeCR:
         Returns:
             cr repo name
         """
-        response = ve_request(
+        response = self._ve_request(
             request_body={
                 "Name": repo_name,
                 "Registry": instance_name,
@@ -226,13 +221,6 @@ class VeCR:
                 "Description": "veadk cr repo",
             },
             action="CreateRepository",
-            ak=self.ak,
-            sk=self.sk,
-            service="cr",
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            scheme=self.scheme,
         )
         logger.debug(f"create cr repo {repo_name}: {response}")
 
@@ -255,18 +243,11 @@ class VeCR:
         """
         get cr authorization token
         """
-        response = ve_request(
+        response = self._ve_request(
             request_body={
                 "Registry": instance_name,
             },
             action="GetAuthorizationToken",
-            ak=self.ak,
-            sk=self.sk,
-            service="cr",
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            scheme=self.scheme,
         )
         logger.debug("got cr authorization token")
 
@@ -291,18 +272,11 @@ class VeCR:
         """
         get cr public endpoint
         """
-        response = ve_request(
+        response = self._ve_request(
             request_body={
                 "Registry": instance_name,
             },
             action="GetPublicEndpoint",
-            ak=self.ak,
-            sk=self.sk,
-            service="cr",
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            scheme=self.scheme,
         )
         logger.debug(f"get cr public endpoint: {response}")
         if "Error" in response["ResponseMetadata"]:
@@ -318,19 +292,12 @@ class VeCR:
         """
         update cr public endpoint
         """
-        response = ve_request(
+        response = self._ve_request(
             request_body={
                 "Registry": instance_name,
                 "Enabled": enabled,
             },
             action="UpdatePublicEndpoint",
-            ak=self.ak,
-            sk=self.sk,
-            service="cr",
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            scheme=self.scheme,
         )
         logger.debug(f"update cr public endpoint: {response}")
         if "Error" in response["ResponseMetadata"]:
@@ -354,7 +321,7 @@ class VeCR:
         """
         create endpoint acl policies
         """
-        response = ve_request(
+        response = self._ve_request(
             request_body={
                 "Registry": instance_name,
                 "Type": policy_type,
@@ -362,13 +329,6 @@ class VeCR:
                 "Description": description,
             },
             action="CreateEndpointAclPolicies",
-            ak=self.ak,
-            sk=self.sk,
-            service="cr",
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            scheme=self.scheme,
         )
         logger.debug(f"create endpoint acl policies: {response}")
 
@@ -387,18 +347,11 @@ class VeCR:
         """
         list cr domains
         """
-        response = ve_request(
+        response = self._ve_request(
             request_body={
                 "Registry": instance_name,
             },
             action="ListDomains",
-            ak=self.ak,
-            sk=self.sk,
-            service="cr",
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            scheme=self.scheme,
         )
         logger.debug(f"list cr domains: {response}")
         if "Error" in response["ResponseMetadata"]:

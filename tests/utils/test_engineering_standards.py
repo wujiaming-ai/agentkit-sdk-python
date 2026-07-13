@@ -109,6 +109,78 @@ def test_signed_request_retries_zero_means_single_attempt(monkeypatch, no_sleep)
     assert counter["attempts"] == 1
 
 
+def test_ve_request_signs_session_token(monkeypatch):
+    captured = {}
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def json(self):
+            return {"ResponseMetadata": {}}
+
+    def _fake_signed_request(method, url, headers, params, data):
+        captured.update(
+            {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "params": params,
+                "data": data,
+            }
+        )
+        return _FakeResponse()
+
+    monkeypatch.setattr(ve_sign, "_signed_request", _fake_signed_request)
+
+    ve_sign.ve_request(
+        request_body={},
+        action="ListRegistries",
+        ak="AK",
+        sk="SK",
+        service="cr",
+        version="2022-05-12",
+        region="cn-beijing",
+        host="cr.volcengineapi.com",
+        session_token="STS_TOKEN",
+    )
+
+    assert captured["headers"]["X-Security-Token"] == "STS_TOKEN"
+    assert "x-security-token" in captured["headers"]["Authorization"]
+
+
+def test_ve_request_signs_session_token_from_existing_header(monkeypatch):
+    captured = {}
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def json(self):
+            return {"ResponseMetadata": {}}
+
+    def _fake_signed_request(method, url, headers, params, data):
+        captured["headers"] = headers
+        return _FakeResponse()
+
+    monkeypatch.setattr(ve_sign, "_signed_request", _fake_signed_request)
+
+    ve_sign.ve_request(
+        request_body={},
+        action="GetResourceApiKey",
+        ak="AK",
+        sk="SK",
+        service="identity",
+        version="2025-01-01",
+        region="cn-beijing",
+        host="identity.volcengineapi.com",
+        header={"X-Security-Token": "HEADER_TOKEN"},
+    )
+
+    assert captured["headers"]["X-Security-Token"] == "HEADER_TOKEN"
+    assert "x-security-token" in captured["headers"]["Authorization"]
+
+
 # --------------------------------------------------------------------------- #
 # http_defaults env clamping
 # --------------------------------------------------------------------------- #

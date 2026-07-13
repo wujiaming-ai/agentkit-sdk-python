@@ -212,19 +212,22 @@ def norm_query(params):
     return query.replace("+", "%20")
 
 
-# 第一步：准备辅助函数。
-# sha256 非对称加密
 def hmac_sha256(key: bytes, content: str):
     return hmac.new(key, content.encode("utf-8"), hashlib.sha256).digest()
 
 
-# sha256 hash算法
 def hash_sha256(content: str):
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-# 第二步：签名请求函数
-def request(method, date, query, header, ak, sk, action, body):
+def _header_value(headers: dict, name: str) -> str | None:
+    for key, value in headers.items():
+        if key.lower() == name.lower() and value:
+            return str(value)
+    return None
+
+
+def request(method, date, query, header, ak, sk, action, body, session_token=None):
     # 第三步：创建身份证明。其中的 Service 和 Region 字段是固定的。ak 和 sk 分别代表
     # AccessKeyID 和 SecretAccessKey。同时需要初始化签名结构体。一些签名计算时需要的属性也在这里处理。
     # 初始化身份证明结构体
@@ -257,24 +260,28 @@ def request(method, date, query, header, ak, sk, action, body):
         "X-Date": x_date,
         "Content-Type": request_param["content_type"],
     }
+    token = session_token or _header_value(header, "X-Security-Token")
+    if token:
+        sign_result["X-Security-Token"] = token
+
     # 第五步：计算 Signature 签名。
-    signed_headers_str = ";".join(
-        ["content-type", "host", "x-content-sha256", "x-date"]
-    )
-    # signed_headers_str = signed_headers_str + ";x-security-token"
+    signed_header_names = ["content-type", "host", "x-content-sha256", "x-date"]
+    canonical_header_lines = [
+        "content-type:" + request_param["content_type"],
+        "host:" + request_param["host"],
+        "x-content-sha256:" + x_content_sha256,
+        "x-date:" + x_date,
+    ]
+    if token:
+        signed_header_names.append("x-security-token")
+        canonical_header_lines.append("x-security-token:" + token)
+    signed_headers_str = ";".join(signed_header_names)
     canonical_request_str = "\n".join(
         [
             request_param["method"].upper(),
             request_param["path"],
             norm_query(request_param["query"]),
-            "\n".join(
-                [
-                    "content-type:" + request_param["content_type"],
-                    "host:" + request_param["host"],
-                    "x-content-sha256:" + x_content_sha256,
-                    "x-date:" + x_date,
-                ]
-            ),
+            "\n".join(canonical_header_lines),
             "",
             signed_headers_str,
             x_content_sha256,
@@ -309,9 +316,14 @@ def request(method, date, query, header, ak, sk, action, body):
             signature,
         )
     )
+    if token:
+        header = {
+            key: value
+            for key, value in header.items()
+            if key.lower() != "x-security-token"
+        }
     header = ensure_x_custom_source_header(header)
     header = {**header, **sign_result}
-    # header = {**header, **{"X-Security-Token": SessionToken}}
     # 第六步：将 Signature 签名写入 HTTP Header 中，并发送 HTTP 请求。
     r = _signed_request(
         method=method,
@@ -335,6 +347,7 @@ def ve_request(
     header: dict | None = None,
     content_type: str = "application/json",
     scheme: str = "https",
+    session_token: str | None = None,
 ):
     # response_body = request("Get", datetime.datetime.utcnow(), {}, {}, AK, SK, "ListUsers", None)
     # print(response_body)
@@ -355,14 +368,22 @@ def ve_request(
     AK = ak
     SK = sk
 
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
     # Body的格式需要配合Content-Type，API使用的类型请阅读具体的官方文档，如:json格式需要json.dumps(obj)
     # response_body = request("GET", now, {"Limit": "2"}, {}, AK, SK, "ListUsers", None)
     import json
 
     response_body = request(
-        "POST", now, {}, header or {}, AK, SK, action, json.dumps(request_body)
+        "POST",
+        now,
+        {},
+        header or {},
+        AK,
+        SK,
+        action,
+        json.dumps(request_body),
+        session_token=session_token,
     )
     check_error(response_body)
     return response_body

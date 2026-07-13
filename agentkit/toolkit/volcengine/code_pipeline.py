@@ -31,11 +31,13 @@ class VeCodePipeline:
         secret_key: str = "",
         region: str = "",
         provider: str | None = None,
+        session_token: str = "",
     ) -> None:
         # Use provided region or None to trigger auto-detection in VolcConfiguration
         config = VolcConfiguration(
             access_key=access_key or None,
             secret_key=secret_key or None,
+            session_token=session_token or None,
             region=region or None,
             provider=provider or None,
         )
@@ -45,6 +47,7 @@ class VeCodePipeline:
             creds = config.get_service_credentials("cp")
             self.volcengine_access_key = creds.access_key
             self.volcengine_secret_key = creds.secret_key
+            self.volcengine_session_token = creds.session_token or None
         elif not all([access_key, secret_key]):
             raise ValueError(
                 "Error create cp instance: missing access key or secret key",
@@ -52,6 +55,7 @@ class VeCodePipeline:
         else:
             self.volcengine_access_key = access_key
             self.volcengine_secret_key = secret_key
+            self.volcengine_session_token = session_token or None
 
         endpoint = config.get_service_endpoint("cp")
 
@@ -61,12 +65,10 @@ class VeCodePipeline:
         self.host = endpoint.host
         self.content_type = "application/json"
 
-    def _get_default_workspace(self) -> str:
-        logger.info("Getting default workspace...")
-
-        res = ve_request(
-            request_body={},
-            action="GetDefaultWorkspaceInner",
+    def _ve_request(self, request_body: dict, action: str) -> dict:
+        return ve_request(
+            request_body=request_body,
+            action=action,
             ak=self.volcengine_access_key,
             sk=self.volcengine_secret_key,
             service=self.service,
@@ -74,6 +76,15 @@ class VeCodePipeline:
             region=self.region,
             host=self.host,
             content_type=self.content_type,
+            session_token=self.volcengine_session_token,
+        )
+
+    def _get_default_workspace(self) -> str:
+        logger.info("Getting default workspace...")
+
+        res = self._ve_request(
+            request_body={},
+            action="GetDefaultWorkspaceInner",
         )
 
         try:
@@ -134,16 +145,9 @@ class VeCodePipeline:
         if visible_users:
             request_body["VisibleUsers"] = visible_users
 
-        res = ve_request(
+        res = self._ve_request(
             request_body=request_body,
             action="CreateWorkspace",
-            ak=self.volcengine_access_key,
-            sk=self.volcengine_secret_key,
-            service=self.service,
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            content_type=self.content_type,
         )
 
         try:
@@ -206,16 +210,9 @@ class VeCodePipeline:
             if workspace_ids:
                 request_body["Filter"]["Ids"] = workspace_ids
 
-        res = ve_request(
+        res = self._ve_request(
             request_body=request_body,
             action="ListWorkspaces",
-            ak=self.volcengine_access_key,
-            sk=self.volcengine_secret_key,
-            service=self.service,
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            content_type=self.content_type,
         )
 
         try:
@@ -301,7 +298,7 @@ class VeCodePipeline:
         parameters: list[dict[str, str]] | None = None,
     ) -> str:
         logger.info("Creating pipeline...")
-        res = ve_request(
+        res = self._ve_request(
             request_body={
                 "WorkspaceId": workspace_id,
                 "Name": pipeline_name,
@@ -309,13 +306,6 @@ class VeCodePipeline:
                 "Parameters": parameters or [],
             },
             action="CreatePipeline",
-            ak=self.volcengine_access_key,
-            sk=self.volcengine_secret_key,
-            service=self.service,
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            content_type=self.content_type,
         )
 
         try:
@@ -366,16 +356,9 @@ class VeCodePipeline:
         if resources:
             request_body["Resources"] = resources
 
-        res = ve_request(
+        res = self._ve_request(
             request_body=request_body,
             action="RunPipeline",
-            ak=self.volcengine_access_key,
-            sk=self.volcengine_secret_key,
-            service=self.service,
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            content_type=self.content_type,
         )
 
         try:
@@ -459,16 +442,9 @@ class VeCodePipeline:
             if run_ids:
                 request_body["Filter"]["Ids"] = run_ids
 
-        res = ve_request(
+        res = self._ve_request(
             request_body=request_body,
             action="ListPipelineRuns",
-            ak=self.volcengine_access_key,
-            sk=self.volcengine_secret_key,
-            service=self.service,
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            content_type=self.content_type,
         )
 
         try:
@@ -569,16 +545,9 @@ class VeCodePipeline:
             if pipeline_ids:
                 request_body["Filter"]["Ids"] = pipeline_ids
 
-        res = ve_request(
+        res = self._ve_request(
             request_body=request_body,
             action="ListPipelines",
-            ak=self.volcengine_access_key,
-            sk=self.volcengine_secret_key,
-            service=self.service,
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            content_type=self.content_type,
         )
 
         try:
@@ -684,16 +653,9 @@ class VeCodePipeline:
             "PipelineRunId": pipeline_run_id,
         }
 
-        res = ve_request(
+        res = self._ve_request(
             request_body=request_body,
             action="ListPipelineRunStagesInner",
-            ak=self.volcengine_access_key,
-            sk=self.volcengine_secret_key,
-            service=self.service,
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            content_type=self.content_type,
         )
 
         try:
@@ -757,16 +719,9 @@ class VeCodePipeline:
             "StepName": step_name,
         }
 
-        res = ve_request(
+        res = self._ve_request(
             request_body=request_body,
             action="GetTaskRunLogDownloadURI",
-            ak=self.volcengine_access_key,
-            sk=self.volcengine_secret_key,
-            service=self.service,
-            version=self.version,
-            region=self.region,
-            host=self.host,
-            content_type=self.content_type,
         )
 
         try:

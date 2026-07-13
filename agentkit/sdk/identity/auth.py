@@ -41,7 +41,7 @@ def requires_api_key(*, provider_name: str, into: str = "api_key"):
             endpoint = resolve_endpoint("identity")
             access_key = creds.access_key
             secret_key = creds.secret_key
-            session_token = ""
+            session_token = getattr(creds, "session_token", None) or None
 
             response = ve_request(
                 request_body={
@@ -49,9 +49,9 @@ def requires_api_key(*, provider_name: str, into: str = "api_key"):
                     "IdentityToken": "identity_token",
                 },
                 action="GetResourceApiKey",
-                header={"X-Security-Token": session_token} if session_token else {},
                 ak=access_key,
                 sk=secret_key,
+                session_token=session_token,
                 version=endpoint.api_version,
                 service=endpoint.service,
                 host=endpoint.host,
