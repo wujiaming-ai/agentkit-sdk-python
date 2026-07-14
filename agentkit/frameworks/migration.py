@@ -92,6 +92,9 @@ def _call_zero_arg_factory(target: Any, object_path: str) -> Any:
 
     result = target()
     if inspect.isawaitable(result):
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
         raise TypeError(
             f"Entry factory {object_path!r} returned an awaitable object. "
             "Async factories are not supported by generated migration apps; "

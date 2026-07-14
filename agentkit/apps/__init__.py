@@ -17,6 +17,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agentkit.apps.a2a_app.a2a_app import AgentkitA2aApp
     from agentkit.apps.agent_server_app.agent_server_app import AgentkitAgentServerApp
+    from agentkit.apps.langgraph_server_app.langgraph_server_app import (
+        AgentkitLangGraphServerApp,
+    )
     from agentkit.apps.mcp_app.mcp_app import AgentkitMCPApp
     from agentkit.apps.simple_app.simple_app import AgentkitSimpleApp
 
@@ -28,6 +31,7 @@ def __getattr__(
     | type["AgentkitMCPApp"]
     | type["AgentkitSimpleApp"]
     | type["AgentkitAgentServerApp"]
+    | type["AgentkitLangGraphServerApp"]
 ):
     if name == "AgentkitA2aApp":
         from agentkit.apps.a2a_app.a2a_app import AgentkitA2aApp
@@ -47,6 +51,12 @@ def __getattr__(
         )
 
         return AgentkitAgentServerApp
+    if name == "AgentkitLangGraphServerApp":
+        from agentkit.apps.langgraph_server_app.langgraph_server_app import (
+            AgentkitLangGraphServerApp,
+        )
+
+        return AgentkitLangGraphServerApp
     raise AttributeError(f"module 'agentkit.apps' has no attribute '{name}'")
 
 
@@ -55,4 +65,5 @@ __all__ = [
     "AgentkitMCPApp",
     "AgentkitSimpleApp",
     "AgentkitAgentServerApp",
+    "AgentkitLangGraphServerApp",
 ]

@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator, Iterable
 import hashlib
 import inspect
 import json
+from dataclasses import dataclass
 from typing import Any
 
 try:
@@ -40,6 +41,12 @@ LANGGRAPH_PENDING_INTERRUPT_STATE_KEY = "agentkit:langgraph:pending_interrupt"
 _OUTPUT_FIELD_KEYS = ("answer", "output", "final", "response", "text", "messages")
 
 
+@dataclass(frozen=True)
+class _FactoryCall:
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+
+
 def _method_kwargs(method: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
     try:
         signature = inspect.signature(method)
@@ -49,6 +56,66 @@ def _method_kwargs(method: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
     parameters = signature.parameters
     accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
     return {key: value for key, value in kwargs.items() if accepts_kwargs or key in parameters}
+
+
+def _factory_call(factory: Any, config: dict[str, Any] | None) -> _FactoryCall:
+    if not callable(factory):
+        raise UnsupportedFrameworkAgentError(
+            "LangGraph graph_factory=True requires a callable entry that "
+            "returns a compiled graph-like object."
+        )
+
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return _FactoryCall(args=(config,), kwargs={})
+
+    parameters = list(signature.parameters.values())
+    required = [
+        param
+        for param in parameters
+        if param.default is inspect.Parameter.empty
+        and param.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    ]
+    if len(required) > 1:
+        names = ", ".join(param.name for param in required)
+        raise UnsupportedFrameworkAgentError(
+            "LangGraph Server graph factory entries may require at most one "
+            f"RunnableConfig argument; required parameters found: {names}."
+        )
+
+    if any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in parameters):
+        return _FactoryCall(args=(config,), kwargs={})
+
+    if required:
+        param = required[0]
+        if param.kind == inspect.Parameter.KEYWORD_ONLY:
+            return _FactoryCall(args=(), kwargs={param.name: config})
+        return _FactoryCall(args=(config,), kwargs={})
+
+    optional_config = next(
+        (
+            param
+            for param in parameters
+            if param.name in {"config", "runnable_config"}
+            and param.kind
+            in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+        ),
+        None,
+    )
+    if optional_config is None:
+        return _FactoryCall(args=(), kwargs={})
+    if optional_config.kind == inspect.Parameter.KEYWORD_ONLY:
+        return _FactoryCall(args=(), kwargs={optional_config.name: config})
+    return _FactoryCall(args=(config,), kwargs={})
 
 
 def _jsonable(value: Any) -> Any:
@@ -119,6 +186,7 @@ class LangGraphAgentkitBridge(BaseAgent):
     """Adapt a compiled LangGraph graph to AgentKit's ADK runtime boundary."""
 
     _graph: Any = PrivateAttr()
+    _graph_factory: bool = PrivateAttr(default=False)
     _input_key: str | None = PrivateAttr(default=None)
     _stream_nodes: frozenset[str] = PrivateAttr(default_factory=frozenset)
 
@@ -130,9 +198,11 @@ class LangGraphAgentkitBridge(BaseAgent):
         description: str = "LangGraph agent adapted for AgentKit runtime",
         input_key: str | None = None,
         stream_nodes: Iterable[str] | str | None = None,
+        graph_factory: bool = False,
     ) -> None:
         super().__init__(name=name, description=description)
         self._graph = graph
+        self._graph_factory = graph_factory
         self._input_key = input_key
         if isinstance(stream_nodes, str):
             nodes = (stream_nodes,)
@@ -159,6 +229,15 @@ class LangGraphAgentkitBridge(BaseAgent):
         else:
             thread_id = session_id
         return {"configurable": {"thread_id": thread_id}}
+
+    async def _graph_for_run(self, config: dict[str, Any] | None) -> Any:
+        if not self._graph_factory:
+            return self._graph
+        call = _factory_call(self._graph, config)
+        graph = self._graph(*call.args, **call.kwargs)
+        if inspect.isawaitable(graph):
+            graph = await graph
+        return graph
 
     def _pending_interrupt(self, ctx: InvocationContext) -> Any | None:
         session = getattr(ctx, "session", None)
@@ -217,12 +296,12 @@ class LangGraphAgentkitBridge(BaseAgent):
             actions=EventActions(state_delta={LANGGRAPH_PENDING_INTERRUPT_STATE_KEY: None}),
         )
 
-    async def _call_once(self, payload: Any, config: dict[str, Any] | None) -> Any:
-        ainvoke = getattr(self._graph, "ainvoke", None)
+    async def _call_once(self, graph: Any, payload: Any, config: dict[str, Any] | None) -> Any:
+        ainvoke = getattr(graph, "ainvoke", None)
         if callable(ainvoke):
             return await ainvoke(payload, **_method_kwargs(ainvoke, {"config": config}))
 
-        invoke = getattr(self._graph, "invoke", None)
+        invoke = getattr(graph, "invoke", None)
         if callable(invoke):
             return invoke(payload, **_method_kwargs(invoke, {"config": config}))
 
@@ -236,8 +315,8 @@ class LangGraphAgentkitBridge(BaseAgent):
             return ["messages", "updates"]
         return "updates"
 
-    def _sync_stream(self, payload: Any, config: dict[str, Any] | None):
-        stream_fn = getattr(self._graph, "stream", None)
+    def _sync_stream(self, graph: Any, payload: Any, config: dict[str, Any] | None):
+        stream_fn = getattr(graph, "stream", None)
         if not callable(stream_fn):
             return None
         stream_mode = self._stream_mode()
@@ -273,15 +352,15 @@ class LangGraphAgentkitBridge(BaseAgent):
 
         return iterate_attempts()
 
-    async def _stream_graph(self, payload: Any, config: dict[str, Any] | None, *, prefer_sync: bool = False):
+    async def _stream_graph(self, graph: Any, payload: Any, config: dict[str, Any] | None, *, prefer_sync: bool = False):
         if prefer_sync:
-            stream = self._sync_stream(payload, config)
+            stream = self._sync_stream(graph, payload, config)
             if stream is not None:
                 for item in stream:
                     yield item
                 return
 
-        astream = getattr(self._graph, "astream", None)
+        astream = getattr(graph, "astream", None)
         if callable(astream):
             stream_mode = self._stream_mode()
             attempts = [
@@ -312,7 +391,7 @@ class LangGraphAgentkitBridge(BaseAgent):
             if last_error is not None:
                 raise last_error
 
-        stream = self._sync_stream(payload, config)
+        stream = self._sync_stream(graph, payload, config)
         if stream is not None:
             for item in stream:
                 yield item
@@ -337,12 +416,13 @@ class LangGraphAgentkitBridge(BaseAgent):
         config = self._graph_config(ctx)
         resume_pending = self._pending_interrupt(ctx) is not None
         payload = self._run_payload(ctx)
+        graph = await self._graph_for_run(config)
         accumulated_text = ""
         last_update: Any = None
         pending_update_text = ""
         streamed = False
 
-        async for item in self._stream_graph(payload, config, prefer_sync=resume_pending):
+        async for item in self._stream_graph(graph, payload, config, prefer_sync=resume_pending):
             streamed = True
             mode = ""
             data = item
@@ -400,7 +480,7 @@ class LangGraphAgentkitBridge(BaseAgent):
             update_text = pending_update_text or _update_output_text(last_update)
             final_text = update_text or accumulated_text
         else:
-            final_text = _update_output_text(await self._call_once(payload, config))
+            final_text = _update_output_text(await self._call_once(graph, payload, config))
 
         if final_text:
             yield self._final_event(ctx, final_text, clear_pending_interrupt=resume_pending)

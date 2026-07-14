@@ -330,6 +330,8 @@ def _result_to_text(result: Any) -> str:
     message_text = _message_to_text(getattr(result, "message", None))
     if message_text:
         return message_text
+    if hasattr(result, "message") or hasattr(result, "structured_output"):
+        return ""
     if isinstance(result, Exception):
         return str(result)
     if isinstance(getattr(result, "results", None), dict):

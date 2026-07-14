@@ -619,6 +619,7 @@ def test_interrupt_resume_accepts_response_lists_and_ignores_unusable_pending_st
             state=pending,
         ),
     )
+    _collect_events(bridge, _ctx("{bad-json", session_id="s", state=pending))
     ignored_pending = {
         STRANDS_PENDING_INTERRUPT_STATE_KEY: {
             "agent": "other",
@@ -640,8 +641,11 @@ def test_interrupt_resume_accepts_response_lists_and_ignores_unusable_pending_st
     assert agent.prompts[1] == [
         {"interruptResponse": {"interruptId": "b", "response": "ok"}}
     ]
-    assert agent.prompts[2] == "{not-json"
-    assert agent.prompts[3] == "plain"
+    assert agent.prompts[2] == [
+        {"interruptResponse": {"interruptId": "a", "response": "{bad-json"}}
+    ]
+    assert agent.prompts[3] == "{not-json"
+    assert agent.prompts[4] == "plain"
 
 
 def test_pending_interrupt_without_text_clears_state():
@@ -694,7 +698,23 @@ def test_result_text_variants_cover_messages_exceptions_and_plain_values():
     assert _result_to_text(None) == ""
     assert _result_to_text(SimpleNamespace(message=MessageObject())) == "message-object"
     assert _result_to_text(RuntimeError("boom")) == "boom"
+    assert _result_to_text({"content": "plain-content"}) == "plain-content"
+    assert _result_to_text({"content": ["a", {"text": "b"}]}) == "ab"
     assert _result_to_text({"answer": []}) == '{"answer": []}'
+    assert _result_to_text(
+        SimpleNamespace(
+            results={
+                "empty": SimpleNamespace(
+                    result=SimpleNamespace(
+                        message={"role": "assistant", "content": []},
+                        structured_output=None,
+                    )
+                )
+            },
+            execution_order=[],
+            node_history=[],
+        )
+    ) == ""
     assert _result_to_text(42) == "42"
 
 

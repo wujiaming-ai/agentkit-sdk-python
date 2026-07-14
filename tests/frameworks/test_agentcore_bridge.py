@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 from types import SimpleNamespace
 
 import httpx
@@ -363,6 +364,29 @@ def test_agentcore_compat_ping_uses_source_status():
 
     assert response.status_code == 200
     assert response.json() == {"status": "Healthy", "time_of_last_update": 42}
+
+
+def test_agentcore_private_helpers_cover_contextless_and_json_fallbacks(monkeypatch):
+    monkeypatch.setitem(sys.modules, "bedrock_agentcore.runtime.context", None)
+    agentcore_module._set_agentcore_context(
+        request_id="request-1",
+        session_id="session-1",
+        headers={},
+    )
+
+    assert (
+        agentcore_module._response_text(SimpleNamespace(body="plain-body"))
+        == "plain-body"
+    )
+
+    circular: list = []
+    circular.append(circular)
+    assert agentcore_module._safe_json(circular) == '"[[...]]"'
+
+    async def collect(value):
+        return [item async for item in agentcore_module._iterate_stream(value)]
+
+    assert asyncio.run(collect({"answer": "plain"})) == [{"answer": "plain"}]
 
 
 def test_agentcore_private_edge_helpers(monkeypatch):

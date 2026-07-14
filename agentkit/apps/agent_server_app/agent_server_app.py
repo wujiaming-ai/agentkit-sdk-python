@@ -39,14 +39,22 @@ from google.adk.evaluation.local_eval_set_results_manager import (
 )
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.runners import Runner
 from google.adk.sessions.base_session_service import BaseSessionService
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 from opentelemetry import trace
 from typing_extensions import override
-from veadk import Agent
-from veadk.memory.short_term_memory import ShortTermMemory
-from veadk.runner import Runner
+
+try:  # pragma: no cover - exercised when users install veadk explicitly.
+    from veadk import Agent as VeadkAgent
+    from veadk.memory.short_term_memory import ShortTermMemory
+    from veadk.runner import Runner as VeadkRunner
+except ImportError:  # pragma: no cover - default migration path avoids veadk.
+    VeadkAgent = None  # type: ignore[assignment]
+    ShortTermMemory = None  # type: ignore[assignment,misc]
+    VeadkRunner = None  # type: ignore[assignment]
 
 from agentkit.apps.agent_server_app.middleware import (
     AgentkitTelemetryHTTPMiddleware,
@@ -62,6 +70,65 @@ from agentkit.apps.agent_server_app.telemetry import telemetry
 from agentkit.apps.base_app import BaseAgentkitApp
 
 logger = logging.getLogger(__name__)
+
+
+def _is_veadk_short_term_memory(value: Any) -> bool:
+    return ShortTermMemory is not None and isinstance(value, ShortTermMemory)
+
+
+def _is_veadk_agent(value: Any) -> bool:
+    return VeadkAgent is not None and isinstance(value, VeadkAgent)
+
+
+def _resolve_session_service(
+    short_term_memory: BaseSessionService | Any | None,
+) -> BaseSessionService:
+    if short_term_memory is None:
+        return InMemorySessionService()
+    if isinstance(short_term_memory, BaseSessionService):
+        return short_term_memory
+    if _is_veadk_short_term_memory(short_term_memory):
+        return short_term_memory.session_service
+    raise TypeError(
+        "short_term_memory must be a google.adk BaseSessionService, "
+        "a veadk ShortTermMemory, or None."
+    )
+
+
+def _resolve_memory_service(root_agent: BaseAgent) -> Any:
+    if _is_veadk_agent(root_agent):
+        long_term_memory = getattr(root_agent, "long_term_memory", None)
+        if long_term_memory:
+            return long_term_memory
+    return InMemoryMemoryService()
+
+
+def _create_a2a_runner(
+    *,
+    root_agent: BaseAgent,
+    short_term_memory: BaseSessionService | Any | None,
+    session_service: BaseSessionService,
+    memory_service: Any,
+    artifact_service: InMemoryArtifactService,
+    credential_service: InMemoryCredentialService,
+) -> Any:
+    if VeadkRunner is not None and (
+        _is_veadk_agent(root_agent) or _is_veadk_short_term_memory(short_term_memory)
+    ):
+        return VeadkRunner(
+            agent=root_agent,
+            short_term_memory=short_term_memory
+            if _is_veadk_short_term_memory(short_term_memory)
+            else None,
+        )
+    return Runner(
+        agent=root_agent,
+        app_name=root_agent.name,
+        session_service=session_service,
+        memory_service=memory_service,
+        artifact_service=artifact_service,
+        credential_service=credential_service,
+    )
 
 
 async def _call_lifecycle_handler(handler: Any) -> None:
@@ -143,9 +210,6 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
     ) -> None:
         super().__init__()
 
-        if short_term_memory is None:
-            raise TypeError("short_term_memory is required.")
-
         if app is not None and agent is not None:
             raise TypeError("Only one of 'agent' or 'app' can be provided.")
 
@@ -154,6 +218,8 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             raise TypeError("Either 'agent' or 'app' must be provided.")
 
         root_agent = entry.root_agent if isinstance(entry, App) else entry
+        session_service = _resolve_session_service(short_term_memory)
+        memory_service = _resolve_memory_service(root_agent)
 
         _artifact_service = InMemoryArtifactService()
         _credential_service = InMemoryCredentialService()
@@ -163,12 +229,8 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
 
         self.server = AdkWebServer(
             agent_loader=AgentKitAgentLoader(entry),
-            session_service=short_term_memory
-            if isinstance(short_term_memory, BaseSessionService)
-            else short_term_memory.session_service,
-            memory_service=root_agent.long_term_memory
-            if isinstance(root_agent, Agent) and root_agent.long_term_memory
-            else InMemoryMemoryService(),
+            session_service=session_service,
+            memory_service=memory_service,
             artifact_service=_artifact_service,
             credential_service=_credential_service,
             eval_sets_manager=_eval_sets_manager,
@@ -176,11 +238,13 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             agents_dir=".",
         )
 
-        runner = Runner(
-            agent=root_agent,
-            short_term_memory=short_term_memory
-            if isinstance(short_term_memory, ShortTermMemory)
-            else None,
+        runner = _create_a2a_runner(
+            root_agent=root_agent,
+            short_term_memory=short_term_memory,
+            session_service=session_service,
+            memory_service=memory_service,
+            artifact_service=_artifact_service,
+            credential_service=_credential_service,
         )
         _a2a_server_app = to_a2a(agent=root_agent, runner=runner)
 
