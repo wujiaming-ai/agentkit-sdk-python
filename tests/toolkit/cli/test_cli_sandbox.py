@@ -1138,6 +1138,15 @@ def test_build_codex_hot_update_env_allows_explicit_empty_api_key() -> None:
     }
 
 
+def test_build_codex_hot_update_command_uses_model_square_default() -> None:
+    from agentkit.toolkit.cli.sandbox.model_config import build_codex_hot_update_command
+
+    command = build_codex_hot_update_command()
+
+    assert 'CODEX_MODEL="${CODEX_MODEL:-glm-5-2-260617}"' in command
+    assert 'CODEX_MODEL="${CODEX_MODEL:-deepseek-v4-flash-260425}"' not in command
+
+
 def test_build_model_envs_uses_model_base_url_and_emits_codex_config(
     monkeypatch,
 ) -> None:
@@ -1299,9 +1308,9 @@ def test_build_model_envs_allows_model_base_url_without_model_name(monkeypatch) 
 
     assert [(item.key, item.value) for item in envs] == [
         ("AGENTKIT_SANDBOX_MODEL_PROVIDER", "custom_provider"),
-        ("OPENCODE_MODEL", "deepseek-v4-flash-260425"),
-        ("CODEX_MODEL", "deepseek-v4-flash-260425"),
-        ("ANTHROPIC_MODEL", "deepseek-v4-flash-260425"),
+        ("OPENCODE_MODEL", "glm-5-2-260617"),
+        ("CODEX_MODEL", "glm-5-2-260617"),
+        ("ANTHROPIC_MODEL", "glm-5-2-260617"),
         ("OPENCODE_BASE_URL", "https://models.example.com/v1"),
         ("CODEX_BASE_URL", "https://models.example.com/v1"),
         ("MODEL_BASE_URL", "https://models.example.com/v1"),
@@ -1312,7 +1321,7 @@ def test_build_model_envs_allows_model_base_url_without_model_name(monkeypatch) 
         ),
     ]
     assert 'model_provider = "custom_provider"' in envs[8].value
-    assert 'model = "deepseek-v4-flash-260425"' in envs[8].value
+    assert 'model = "glm-5-2-260617"' in envs[8].value
     assert 'base_url = "https://models.example.com/v1"' in envs[8].value
     assert "model_catalog_json" not in envs[8].value
 
@@ -5872,6 +5881,7 @@ def test_cli_exec_model_provider_sets_default_model_and_codex_config(
     models = {model["slug"]: model for model in catalog["models"]}
     assert "deepseek-v4-flash" in models
     assert "deepseek-v4-flash-260425" not in models
+    assert "glm-5-2-260617" not in models
     assert "glm-5.2" not in models
 
 

@@ -214,7 +214,7 @@ Provider defaults:
 
 | Provider | Default model | Model base URL |
 | --- | --- | --- |
-| `model_square` | `deepseek-v4-flash-260425` | `https://ark.cn-beijing.volces.com/api/v3` |
+| `model_square` | `glm-5-2-260617` | `https://ark.cn-beijing.volces.com/api/v3` |
 | `coding_plan` | `deepseek-v4-flash` | `https://ark.cn-beijing.volces.com/api/coding/v3` |
 | `agent_plan` | `deepseek-v4-flash` | `https://ark.cn-beijing.volces.com/api/plan/v3` |
 | `byteplus_model_square` | `deepseek-v4-flash-260425` | `https://ark.ap-southeast.bytepluses.com/api/v3` |
