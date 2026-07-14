@@ -344,6 +344,7 @@ def sso_setup(
     bucket = bucket or f"agentkit-cli-{acct}"
     url = publish_discovery(
         coords, bucket=bucket, custom_domain=custom_domain, access_key=api.ak, secret_key=api.sk,
+        session_token=api.token,
     )
     if custom_domain:
         manual.append(
@@ -360,6 +361,7 @@ def publish_discovery(
     custom_domain: str | None = None,
     access_key: str | None = None,
     secret_key: str | None = None,
+    session_token: str | None = None,
 ) -> str:
     """Publish the discovery doc to TOS static hosting (real https). Returns the login URL.
 
@@ -379,8 +381,9 @@ def publish_discovery(
         ) from exc
     ak = access_key or _os.getenv("VOLCENGINE_ACCESS_KEY")
     sk = secret_key or _os.getenv("VOLCENGINE_SECRET_KEY")
+    token = session_token or _os.getenv("VOLCENGINE_SESSION_TOKEN")
     endpoint = f"tos-{coords.region}.volces.com"
-    client = tos.TosClientV2(ak, sk, endpoint, coords.region)
+    client = tos.TosClientV2(ak, sk, endpoint, coords.region, security_token=token)
     try:
         client.create_bucket(bucket, acl=tos.ACLType.ACL_Public_Read)
     except Exception as exc:  # noqa: BLE001
