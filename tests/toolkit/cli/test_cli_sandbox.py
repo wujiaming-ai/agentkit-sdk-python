@@ -279,6 +279,53 @@ def _write_session_store(store_path, records):
     )
 
 
+def _expected_session_store(tool_id, session_id, result):
+    return {tool_id: {session_id: result}}
+
+
+def test_session_store_migrates_flat_records_to_tool_groups(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.sandbox_client as sandbox_client
+
+    store_path = _patch_store_path(monkeypatch, tmp_path)
+    flat_result = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-1",
+        "endpoint": "https://sandbox.example.com",
+        "terminal_shell_id": "shell-legacy",
+    }
+    store_path.write_text(
+        json.dumps({"user-1": flat_result}, indent=2),
+        encoding="utf-8",
+    )
+
+    assert sandbox_client.find_session_result("tool-1", "user-1") == {
+        **flat_result,
+        "terminal_shell_id": ["shell-legacy"],
+    }
+
+    updated_result = {
+        "session_id": "user-1",
+        "tool_id": "tool-1",
+        "instance_id": "session-new",
+        "endpoint": "https://new.example.com",
+    }
+    sandbox_client.save_session_result(updated_result)
+
+    stored = json.loads(store_path.read_text(encoding="utf-8"))
+    assert stored == _expected_session_store(
+        "tool-1",
+        "user-1",
+        {
+            **updated_result,
+            "terminal_shell_id": ["shell-legacy"],
+        },
+    )
+
+
 def _patch_exec_session(monkeypatch, cli_exec, session, capture=None, is_new=True):
     def fake_ensure_sandbox_session(session_id=None, tool_id=None, **kwargs):
         if capture is not None:
@@ -378,9 +425,9 @@ def test_ensure_sandbox_session_uses_env_defaults(monkeypatch, tmp_path) -> None
         "instance_id": "session-from-api",
         "endpoint": "https://sandbox.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {
-        "user-session-from-api": result
-    }
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-env", "user-session-from-api", result)
+    )
 
     request = _FakeToolsClient.last_request
     assert request.tool_id == "tool-env"
@@ -1551,7 +1598,9 @@ def test_ensure_sandbox_session_confirms_create_start_fail_by_user_session_id(
         "instance_id": "confirmed-instance",
         "endpoint": "https://confirmed.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {"user-cli": result}
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-cli", "user-cli", result)
+    )
 
 
 def test_ensure_sandbox_session_waits_for_ready_after_create_start_fail(
@@ -2687,7 +2736,9 @@ def test_cli_mount_syncs_current_tool_sessions_when_session_not_cached(
     assert _FakeToolsClient.last_get_tool_request.tool_id == "tool-cache"
     assert "tool-tool-cache/session-session-cli" in opened["command"]
     assert json.loads(result.output)["tool_id"] == "tool-cache"
-    assert json.loads(store_path.read_text(encoding="utf-8"))["session-cli"] == {
+    assert json.loads(store_path.read_text(encoding="utf-8"))["tool-cache"][
+        "session-cli"
+    ] == {
         "session_id": "session-cli",
         "tool_id": "tool-cache",
         "instance_id": "instance-cli",
@@ -2921,6 +2972,7 @@ def test_ensure_sandbox_session_reuses_existing_remote_session(
 
     result = session_create.ensure_sandbox_session(
         session_id="same-user-session",
+        tool_id="tool-stored",
     )
 
     assert _FakeToolsClient.create_call_count == 0
@@ -2936,7 +2988,7 @@ def test_ensure_sandbox_session_reuses_existing_remote_session(
     }
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert stored["same-user-session"] == result
+    assert stored["tool-stored"]["same-user-session"] == result
 
 
 def test_ensure_sandbox_session_syncs_missing_local_session_before_create(
@@ -2987,7 +3039,9 @@ def test_ensure_sandbox_session_syncs_missing_local_session_before_create(
         "instance_id": "remote-instance",
         "endpoint": "https://remote.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {"remote-user": result}
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-cli", "remote-user", result)
+    )
 
 
 def test_ensure_sandbox_session_without_snapshot_enabled_does_not_list_snapshots(
@@ -3064,7 +3118,9 @@ def test_ensure_sandbox_session_snapshot_tool_reuses_existing_remote_session(
         "instance_id": "instance-existing",
         "endpoint": "https://existing.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {"user-cli": result}
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-cli", "user-cli", result)
+    )
 
 
 def test_ensure_sandbox_session_snapshot_tool_creates_when_no_snapshot(
@@ -3163,7 +3219,9 @@ def test_ensure_sandbox_session_snapshot_tool_restores_first_snapshot(
         "instance_id": "instance-restored",
         "endpoint": "https://restored.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {"user-cli": result}
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-cli", "user-cli", result)
+    )
 
 
 def test_ensure_sandbox_session_recreates_when_remote_session_missing(
@@ -3188,7 +3246,7 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
             {
                 "same-user-session": {
                     "session_id": "same-user-session",
-                    "tool_id": "tool-stored",
+                    "tool_id": "tool-new",
                     "instance_id": "session-old",
                     "endpoint": "https://old.example.com",
                 }
@@ -3204,7 +3262,7 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
         tool_id="tool-new",
     )
 
-    assert _FakeToolsClient.get_call_count == 2
+    assert _FakeToolsClient.get_call_count == 1
     assert _FakeToolsClient.get_tool_call_count == 3
     assert _FakeToolsClient.create_call_count == 1
     assert _FakeToolsClient.list_sessions_call_count == 1
@@ -3213,14 +3271,14 @@ def test_ensure_sandbox_session_recreates_when_remote_session_missing(
     assert _FakeToolsClient.last_request.tool_id == "tool-new"
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert list(stored) == ["same-user-session"]
-    assert stored["same-user-session"] == {
+    assert list(stored) == ["tool-new"]
+    assert stored["tool-new"]["same-user-session"] == {
         "session_id": "same-user-session",
         "tool_id": "tool-new",
         "instance_id": "session-new",
         "endpoint": "https://new.example.com",
     }
-    assert result == stored["same-user-session"]
+    assert result == stored["tool-new"]["same-user-session"]
 
 
 def test_ensure_sandbox_session_syncs_existing_session_after_stale_instance(
@@ -3277,6 +3335,7 @@ def test_ensure_sandbox_session_syncs_existing_session_after_stale_instance(
 
     result = session_create.ensure_sandbox_session(
         session_id="same-user-session",
+        tool_id="tool-stored",
     )
 
     assert _FakeToolsClient.create_call_count == 0
@@ -3290,9 +3349,9 @@ def test_ensure_sandbox_session_syncs_existing_session_after_stale_instance(
         "instance_id": "session-remote",
         "endpoint": "https://remote.example.com",
     }
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {
-        "same-user-session": result
-    }
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-stored", "same-user-session", result)
+    )
 
 
 def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
@@ -3335,14 +3394,14 @@ def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
 
     result = runner.invoke(
         app,
-        ["sandbox", "get", "--session-id", "user-1"],
+        ["sandbox", "get", "--session-id", "user-1", "--tool-id", "tool-1"],
     )
 
     assert result.exit_code == 0
     assert json.loads(result.output) == remote_result
-    assert json.loads(store_path.read_text(encoding="utf-8")) == {
-        "user-1": remote_result
-    }
+    assert json.loads(store_path.read_text(encoding="utf-8")) == (
+        _expected_session_store("tool-1", "user-1", remote_result)
+    )
 
 
 def test_cli_get_syncs_remote_sessions_with_pagination(
@@ -3423,15 +3482,15 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
         request.next_token for request in _FakeToolsClient.list_sessions_requests
     ] == [None, "page-2"]
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert "stale-user" not in stored
-    assert stored["other-user"]["tool_id"] == "other-tool"
-    assert stored["user-1"] == {
+    assert "stale-user" not in stored.get("tool-1", {})
+    assert stored["other-tool"]["other-user"]["tool_id"] == "other-tool"
+    assert stored["tool-1"]["user-1"] == {
         "session_id": "user-1",
         "tool_id": "tool-1",
         "instance_id": "instance-1",
         "endpoint": "https://one.example.com",
     }
-    assert stored["user-2"]["terminal_shell_id"] == ["shell-local"]
+    assert stored["tool-1"]["user-2"]["terminal_shell_id"] == ["shell-local"]
 
 
 def test_cli_get_ignores_remote_sessions_without_user_session_id(
@@ -3489,14 +3548,14 @@ def test_cli_get_ignores_remote_sessions_without_user_session_id(
 
     assert result.exit_code == 0
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert list(stored) == ["user-1"]
-    assert stored["user-1"] == {
+    assert list(stored) == ["tool-1"]
+    assert stored["tool-1"]["user-1"] == {
         "session_id": "user-1",
         "tool_id": "tool-1",
         "instance_id": "instance-1",
         "endpoint": "https://one.example.com",
     }
-    assert json.loads(result.output) == stored["user-1"]
+    assert json.loads(result.output) == stored["tool-1"]["user-1"]
 
 
 def test_cli_get_without_session_id_returns_all_synced_sessions(
@@ -3546,17 +3605,21 @@ def test_cli_get_without_session_id_returns_all_synced_sessions(
 
     assert result.exit_code == 0
     expected = {
-        "local-other": {
-            "session_id": "local-other",
-            "tool_id": "other-tool",
-            "instance_id": "local-instance",
-            "endpoint": "https://local.example.com",
+        "other-tool": {
+            "local-other": {
+                "session_id": "local-other",
+                "tool_id": "other-tool",
+                "instance_id": "local-instance",
+                "endpoint": "https://local.example.com",
+            },
         },
-        "remote-user-1": {
-            "session_id": "remote-user-1",
-            "tool_id": "tool-1",
-            "instance_id": "remote-instance-1",
-            "endpoint": "https://one.example.com",
+        "tool-1": {
+            "remote-user-1": {
+                "session_id": "remote-user-1",
+                "tool_id": "tool-1",
+                "instance_id": "remote-instance-1",
+                "endpoint": "https://one.example.com",
+            },
         },
     }
     assert json.loads(result.output) == expected
@@ -3708,7 +3771,7 @@ def test_cli_web_returns_session_browser_url(monkeypatch, tmp_path) -> None:
     assert opened_urls == [json.loads(result.output)["url"]]
 
 
-def test_cli_web_uses_stored_tool_id_when_tool_id_omitted(
+def test_cli_web_uses_explicit_tool_id_with_stored_session(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -3746,7 +3809,10 @@ def test_cli_web_uses_stored_tool_id_when_tool_id_omitted(
         lambda url: opened_urls.append(url) or True,
     )
 
-    result = runner.invoke(app, ["sandbox", "web", "--session-id", "user-1"])
+    result = runner.invoke(
+        app,
+        ["sandbox", "web", "--session-id", "user-1", "--tool-id", "tool-stored"],
+    )
 
     assert result.exit_code == 0
     assert _FakeToolsClient.last_get_request.tool_id == "tool-stored"
@@ -4537,7 +4603,7 @@ def test_cli_shell_creates_session_when_session_id_omitted(
     payload = json.loads(result.output)
     assert payload["data"]["shell_id"] == "shell-1"
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert stored["user-session-from-api"]["tool_id"] == "tool-cli"
+    assert stored["tool-cli"]["user-session-from-api"]["tool_id"] == "tool-cli"
 
 
 def test_cli_exec_connects_to_ws_endpoint(monkeypatch, tmp_path) -> None:
@@ -6143,7 +6209,7 @@ def test_cli_exec_clears_remote_shell_id_on_disconnect(
         assert on_shell_id is not None
         on_shell_id("shell-from-ws")
         stored = json.loads(store_path.read_text(encoding="utf-8"))
-        assert stored["user-1"]["terminal_shell_id"] == ["shell-from-ws"]
+        assert stored["tool-1"]["user-1"]["terminal_shell_id"] == ["shell-from-ws"]
 
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
 
@@ -6154,7 +6220,7 @@ def test_cli_exec_clears_remote_shell_id_on_disconnect(
 
     assert result.exit_code == 0
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert "terminal_shell_id" not in stored["user-1"]
+    assert "terminal_shell_id" not in stored["tool-1"]["user-1"]
     assert "Shell ID: shell-from-ws" in result.output
 
 
@@ -6182,7 +6248,9 @@ def test_cli_exec_does_not_clear_newer_shell_id(
         assert on_shell_id is not None
         on_shell_id("shell-from-ws")
         stored = json.loads(store_path.read_text(encoding="utf-8"))
-        stored["user-1"]["terminal_shell_id"].append("shell-from-newer-terminal")
+        stored["tool-1"]["user-1"]["terminal_shell_id"].append(
+            "shell-from-newer-terminal"
+        )
         store_path.write_text(json.dumps(stored), encoding="utf-8")
 
     monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
@@ -6194,7 +6262,9 @@ def test_cli_exec_does_not_clear_newer_shell_id(
 
     assert result.exit_code == 0
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert stored["user-1"]["terminal_shell_id"] == ["shell-from-newer-terminal"]
+    assert stored["tool-1"]["user-1"]["terminal_shell_id"] == [
+        "shell-from-newer-terminal"
+    ]
 
 
 def test_cli_exec_keeps_stored_shell_ids_without_current_shell_id(
@@ -6261,6 +6331,7 @@ def test_session_store_tracks_terminal_shell_ids_thread_safely(
         list(
             executor.map(
                 lambda shell_id: sandbox_client.add_session_terminal_shell_id(
+                    "tool-1",
                     "user-1",
                     shell_id,
                 ),
@@ -6269,7 +6340,7 @@ def test_session_store_tracks_terminal_shell_ids_thread_safely(
         )
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert sorted(stored["user-1"]["terminal_shell_id"]) == sorted(
+    assert sorted(stored["tool-1"]["user-1"]["terminal_shell_id"]) == sorted(
         ["legacy-shell", *shell_ids]
     )
 
@@ -6277,6 +6348,7 @@ def test_session_store_tracks_terminal_shell_ids_thread_safely(
         list(
             executor.map(
                 lambda shell_id: sandbox_client.remove_session_terminal_shell_id(
+                    "tool-1",
                     "user-1",
                     shell_id,
                 ),
@@ -6285,7 +6357,7 @@ def test_session_store_tracks_terminal_shell_ids_thread_safely(
         )
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert sorted(stored["user-1"]["terminal_shell_id"]) == sorted(
+    assert sorted(stored["tool-1"]["user-1"]["terminal_shell_id"]) == sorted(
         ["legacy-shell", *shell_ids[10:]]
     )
 
@@ -6328,7 +6400,7 @@ def test_cli_exec_creates_session_when_session_id_omitted(
     assert captured["on_shell_id"] is not None
 
     stored = json.loads(store_path.read_text(encoding="utf-8"))
-    assert stored["user-session-from-api"]["tool_id"] == "tool-cli"
+    assert stored["tool-cli"]["user-session-from-api"]["tool_id"] == "tool-cli"
 
 
 def test_cli_exec_creates_tool_when_tool_resolution_is_empty(
