@@ -83,8 +83,12 @@ MODEL_PROVIDER_CONFIGS: dict[str, ModelProviderConfig] = {
     ModelProviderType.MODEL_SQUARE.value: ModelProviderConfig(
         model_base_url="https://ark.cn-beijing.volces.com/api/v3",
         anthropic_base_url="https://ark.cn-beijing.volces.com/api/compatible",
-        default_model_name="deepseek-v4-flash-260425",
+        default_model_name="glm-5-2-260617",
         models={
+            "glm-5-2-260617": ModelSpec(
+                supports_reasoning_summaries=True,
+                context_window=DEFAULT_MODEL_CONTEXT_WINDOW,
+            ),
             "doubao-seed-2-0-pro-260215": ModelSpec(
                 supports_reasoning_summaries=True,
                 context_window=LIMITED_MODEL_CONTEXT_WINDOW,
@@ -435,7 +439,11 @@ def build_codex_config_toml(
             'wire_api = "responses"',
             # OAuth (ChatGPT login) providers carry no API key - codex uses the injected
             # auth.json via `requires_openai_auth`; all others use the CODEX_API_KEY env.
-            ("requires_openai_auth = true" if requires_openai_auth else 'env_key = "CODEX_API_KEY"'),
+            (
+                "requires_openai_auth = true"
+                if requires_openai_auth
+                else 'env_key = "CODEX_API_KEY"'
+            ),
             "",
             "[tui]",
             "show_tooltips = false",
@@ -552,7 +560,7 @@ if [ -n "$REQ_CODEX_BASE_URL" ]; then
   CODEX_BASE_URL="$REQ_CODEX_BASE_URL"
 fi
 
-CODEX_MODEL="${CODEX_MODEL:-deepseek-v4-flash-260425}"
+CODEX_MODEL="${CODEX_MODEL:-glm-5-2-260617}"
 CODEX_BASE_URL="${CODEX_BASE_URL:-https://ark.cn-beijing.volces.com/api/v3}"
 
 : >"$ENV_FILE"
@@ -653,8 +661,10 @@ def _build_model_catalog_item(model_name: str, spec: ModelSpec) -> dict:
 
 def infer_model_spec(model_name: str) -> ModelSpec:
     normalized_model_name = model_name.strip().lower()
-    if normalized_model_name == "glm-5.2" or normalized_model_name.startswith(
-        "deepseek-v4"
+    if (
+        normalized_model_name == "glm-5.2"
+        or normalized_model_name.startswith("glm-5-")
+        or normalized_model_name.startswith("deepseek-v4")
     ):
         context_window = DEFAULT_MODEL_CONTEXT_WINDOW
     else:
