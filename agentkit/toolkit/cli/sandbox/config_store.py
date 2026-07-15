@@ -134,15 +134,15 @@ CONFIG_KEY_SPECS: dict[str, ConfigKeySpec] = {
     "model-base-url": ConfigKeySpec(("model", "base_url"), _str_value),
     "model-provider": ConfigKeySpec(("model", "provider"), _str_value),
     "model-api-key": ConfigKeySpec(("model", "api_key"), _str_value),
-    "network-enable-public": ConfigKeySpec(
+    "network-public": ConfigKeySpec(
         ("network", "enable_public"),
         _bool_value,
     ),
-    "network-enable-private": ConfigKeySpec(
+    "network-private": ConfigKeySpec(
         ("network", "enable_private"),
         _bool_value,
     ),
-    "network-enable-shared-internet": ConfigKeySpec(
+    "network-shared-internet": ConfigKeySpec(
         ("network", "enable_shared_internet"),
         _bool_value,
     ),
@@ -152,8 +152,8 @@ CONFIG_KEY_SPECS: dict[str, ConfigKeySpec] = {
         _string_list_value,
     ),
     "tool-type": ConfigKeySpec(("tool", "type"), _str_value, VALID_TOOL_TYPES),
-    "tool-id": ConfigKeySpec(("tool", "id"), _str_value),
-    "tool-name": ConfigKeySpec(("tool", "name"), _str_value),
+    "tool-id": ConfigKeySpec(("session", "tool_id"), _str_value),
+    "tool-name": ConfigKeySpec(("session", "tool_name"), _str_value),
     "region": ConfigKeySpec(("tool", "region"), _str_value),
     "cpu": ConfigKeySpec(("tool", "cpu"), _int_value, VALID_CPU_VALUES),
     "tos-bucket": ConfigKeySpec(("tool", "tos_bucket"), _str_value),
@@ -179,9 +179,12 @@ def _alias_keys() -> dict[str, str]:
         {
             "websearch-api-key": "websearch-apikey",
             "websearch_api_key": "websearch-apikey",
-            "network-public": "network-enable-public",
-            "network-private": "network-enable-private",
-            "network-shared-internet": "network-enable-shared-internet",
+            "network-enable-public": "network-public",
+            "network_enable_public": "network-public",
+            "network-enable-private": "network-private",
+            "network_enable_private": "network-private",
+            "network-enable-shared-internet": "network-shared-internet",
+            "network_enable_shared_internet": "network-shared-internet",
             "tool_type": "tool-type",
             "tool_id": "tool-id",
             "tool_name": "tool-name",
@@ -276,7 +279,7 @@ def load_sandbox_config(
     config_path = path or get_sandbox_config_path()
     if not config_path.exists():
         return build_default_sandbox_config() if include_defaults else {}
-    payload = _load_yaml_file(config_path)
+    payload = migrate_tool_identifier_config(_load_yaml_file(config_path))
     if include_defaults:
         return merge_sandbox_config(build_default_sandbox_config(), payload)
     return payload
@@ -365,6 +368,35 @@ def _unset_path(data: dict[str, Any], path: tuple[str, ...]) -> bool:
         if isinstance(child, dict) and not child:
             del parent[key]
     return True
+
+
+def migrate_tool_identifier_config(data: dict[str, Any]) -> dict[str, Any]:
+    """Move persisted tool identifiers from tool.* to session.*."""
+    tool = data.get("tool")
+    if not isinstance(tool, dict):
+        return data
+
+    migrations = {
+        "id": "tool_id",
+        "name": "tool_name",
+    }
+    if not any(old_key in tool for old_key in migrations):
+        return data
+
+    session = data.get("session")
+    if not isinstance(session, dict):
+        session = {}
+        data["session"] = session
+
+    for old_key, new_key in migrations.items():
+        value = tool.pop(old_key, None)
+        if (
+            isinstance(value, str)
+            and value.strip()
+            and not (isinstance(session.get(new_key), str) and session[new_key].strip())
+        ):
+            session[new_key] = value.strip()
+    return data
 
 
 def get_config_value(key: str, data: Optional[dict[str, Any]] = None) -> Any:
@@ -496,7 +528,7 @@ def _apply_environment_overrides(
 
     tool_id = (os.getenv("AGENTKIT_SANDBOX_TOOL_ID") or "").strip()
     if tool_id and get_config_value("tool-id", configured) is None:
-        _set_path(data, ("tool", "id"), tool_id)
+        _set_path(data, ("session", "tool_id"), tool_id)
 
     ttl = (os.getenv("AGENTKIT_SANDBOX_TTL") or "").strip()
     if ttl and get_config_value("ttl", configured) is None:
@@ -614,6 +646,27 @@ def config_default_if_unprovided(
     return transform(value) if transform is not None else value
 
 
+def config_tool_identifier_defaults_if_unprovided(
+    ctx: Any,
+    *,
+    tool_id: Optional[str],
+    tool_name: Optional[str],
+    data: Optional[dict[str, Any]] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    if param_was_provided(ctx, "tool_id") or param_was_provided(ctx, "tool_name"):
+        return tool_id, tool_name
+
+    configured_tool_id = config_default_str("tool-id", data=data)
+    if configured_tool_id:
+        return configured_tool_id, tool_name
+
+    configured_tool_name = config_default_str("tool-name", data=data)
+    if configured_tool_name:
+        return tool_id, configured_tool_name
+
+    return tool_id, tool_name
+
+
 def config_tool_id_default_if_unprovided(
     ctx: Any,
     *,
@@ -621,9 +674,15 @@ def config_tool_id_default_if_unprovided(
     tool_name: Optional[str],
     data: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
-    if param_was_provided(ctx, "tool_id") or param_was_provided(ctx, "tool_name"):
-        return tool_id
-    return config_default_str("tool-id", data=data) or tool_id
+    resolved_tool_id, _resolved_tool_name = (
+        config_tool_identifier_defaults_if_unprovided(
+            ctx,
+            tool_id=tool_id,
+            tool_name=tool_name,
+            data=data,
+        )
+    )
+    return resolved_tool_id
 
 
 def configured_network_payload(
@@ -654,16 +713,14 @@ def save_created_tool_config(
     *,
     tool_id: str,
     tool_name: str | None,
-    tool_type: str,
 ) -> Path:
     path, data, _created = ensure_sandbox_config_initialized()
-    tool = data.setdefault("tool", {})
-    if not isinstance(tool, dict):
-        tool = {}
-        data["tool"] = tool
-    tool["id"] = tool_id
-    tool["type"] = tool_type
+    session = data.setdefault("session", {})
+    if not isinstance(session, dict):
+        session = {}
+        data["session"] = session
+    session["tool_id"] = tool_id
     if tool_name:
-        tool["name"] = tool_name
+        session["tool_name"] = tool_name
     write_sandbox_config(data, path)
     return path

@@ -489,7 +489,6 @@ def _create_tool(tool_type: str) -> str:
     network_payload = configured_network_payload(data=config_defaults)
     result = create_tool(
         tool_type=tool_type,
-        tool_name=config_default_str("tool-name", data=config_defaults),
         cpu=config_default_int("cpu", data=config_defaults) or 4,
         model_name=config_default_str("model-name", data=config_defaults),
         model_api_key=config_default_str("model-api-key", data=config_defaults),

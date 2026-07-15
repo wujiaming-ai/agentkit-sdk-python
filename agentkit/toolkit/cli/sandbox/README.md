@@ -141,12 +141,12 @@ Options:
 - `--enable-snapshot`: optional. Enables snapshot support for the created
   sandbox tool. If omitted, the CLI does not send `EnableSnapshot` in the
   `CreateTool` request.
-- `--network-enable-public` / `--no-network-enable-public`: optional. Enables
+- `--network-public` / `--no-network-public`: optional. Enables
   public network access; defaults to enabled.
-- `--network-enable-private` / `--no-network-enable-private`: optional. Enables
+- `--network-private` / `--no-network-private`: optional. Enables
   private VPC network access; defaults to disabled.
-- `--network-enable-shared-internet` /
-  `--no-network-enable-shared-internet`: optional. Enables shared internet
+- `--network-shared-internet` /
+  `--no-network-shared-internet`: optional. Enables shared internet
   access for private VPC networking; defaults to disabled.
 - `--network-vpc-id`: optional VPC ID. Required when private network access is
   enabled.
@@ -191,14 +191,14 @@ Examples:
 
 ```bash
 agentkit sandbox create \
-  --network-enable-private \
+  --network-private \
   --network-vpc-id vpc-xxxxxxxx \
   --network-subnet-ids subnet-aaaaaaaa,subnet-bbbbbbbb
 
 agentkit sandbox create \
-  --no-network-enable-public \
-  --network-enable-private \
-  --network-enable-shared-internet \
+  --no-network-public \
+  --network-private \
+  --network-shared-internet \
   --network-vpc-id vpc-xxxxxxxx \
   --network-subnet-ids subnet-aaaaaaaa
 ```

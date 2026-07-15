@@ -165,11 +165,11 @@ def _build_network_configuration(
 
     if not network_enable_private and not network_enable_public:
         _network_config_error(
-            "--network-enable-private and --network-enable-public cannot both be false"
+            "--network-private and --network-public cannot both be false"
         )
     if network_enable_private and not vpc_id:
         _network_config_error(
-            "--network-vpc-id is required when --network-enable-private is true"
+            "--network-vpc-id is required when --network-private is true"
         )
     if not network_enable_private and any(
         [
@@ -180,7 +180,7 @@ def _build_network_configuration(
     ):
         _network_config_error(
             "--network-vpc-id, --network-subnet-ids, and "
-            "--network-enable-shared-internet require --network-enable-private"
+            "--network-shared-internet require --network-private"
         )
 
     vpc_configuration = None
@@ -614,23 +614,23 @@ def create_command(
     ),
     network_enable_public: bool = typer.Option(
         True,
-        "--network-enable-public/--no-network-enable-public",
+        "--network-public/--no-network-public",
         help="Enable public network access for the sandbox tool.",
     ),
     network_enable_private: bool = typer.Option(
         False,
-        "--network-enable-private/--no-network-enable-private",
+        "--network-private/--no-network-private",
         help="Enable private VPC network access for the sandbox tool.",
     ),
     network_enable_shared_internet: bool = typer.Option(
         False,
-        "--network-enable-shared-internet/--no-network-enable-shared-internet",
+        "--network-shared-internet/--no-network-shared-internet",
         help="Enable shared internet access for private VPC networking.",
     ),
     network_vpc_id: Optional[str] = typer.Option(
         None,
         "--network-vpc-id",
-        help="VPC ID for private network access. Requires --network-enable-private.",
+        help="VPC ID for private network access. Requires --network-private.",
     ),
     network_subnet_ids: Optional[str] = typer.Option(
         None,
@@ -652,9 +652,6 @@ def create_command(
         config_defaults = configured_sandbox_config()
         tool_type = config_default_if_unprovided(
             ctx, "tool_type", "tool-type", tool_type, data=config_defaults
-        )
-        tool_name = config_default_if_unprovided(
-            ctx, "tool_name", "tool-name", tool_name, data=config_defaults
         )
         tos_bucket = config_default_if_unprovided(
             ctx, "tos_bucket", "tos-bucket", tos_bucket, data=config_defaults
@@ -715,7 +712,7 @@ def create_command(
         network_enable_public = config_default_if_unprovided(
             ctx,
             "network_enable_public",
-            "network-enable-public",
+            "network-public",
             network_enable_public,
             data=config_defaults,
             getter=config_default_bool,
@@ -723,7 +720,7 @@ def create_command(
         network_enable_private = config_default_if_unprovided(
             ctx,
             "network_enable_private",
-            "network-enable-private",
+            "network-private",
             network_enable_private,
             data=config_defaults,
             getter=config_default_bool,
@@ -731,7 +728,7 @@ def create_command(
         network_enable_shared_internet = config_default_if_unprovided(
             ctx,
             "network_enable_shared_internet",
-            "network-enable-shared-internet",
+            "network-shared-internet",
             network_enable_shared_internet,
             data=config_defaults,
             getter=config_default_bool,
@@ -792,7 +789,6 @@ def create_command(
         save_created_tool_config(
             tool_id=str(result["tool_id"]),
             tool_name=str(result.get("name") or ""),
-            tool_type=str(result["tool_type"]),
         )
     except (typer.Abort, typer.Exit):
         raise

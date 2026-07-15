@@ -25,7 +25,7 @@ import typer
 from agentkit.toolkit.cli.sandbox.config_store import (
     SandboxConfigError,
     config_default_if_unprovided,
-    config_tool_id_default_if_unprovided,
+    config_tool_identifier_defaults_if_unprovided,
     configured_sandbox_config,
 )
 from agentkit.toolkit.cli.sandbox.cli_exec import (
@@ -121,7 +121,7 @@ def shell_command(
         session_id = config_default_if_unprovided(
             ctx, "session_id", "session-id", session_id, data=config_defaults
         )
-        tool_id = config_tool_id_default_if_unprovided(
+        tool_id, tool_name = config_tool_identifier_defaults_if_unprovided(
             ctx, tool_id=tool_id, tool_name=tool_name, data=config_defaults
         )
         tool_type = config_default_if_unprovided(

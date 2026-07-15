@@ -249,9 +249,62 @@ def test_create_command_skips_tos_mount_by_default(
         }
     }
     sandbox_config = yaml.safe_load(sandbox_config_path.read_text(encoding="utf-8"))
-    assert sandbox_config["tool"]["id"] == "t-created"
-    assert sandbox_config["tool"]["name"] == "demo-tool"
-    assert sandbox_config["tool"]["type"] == "SkillEnv"
+    assert sandbox_config["session"]["tool_id"] == "t-created"
+    assert sandbox_config["session"]["tool_name"] == "demo-tool"
+    assert "id" not in sandbox_config.get("tool", {})
+    assert "name" not in sandbox_config.get("tool", {})
+
+
+def test_create_command_does_not_read_config_tool_name(
+    monkeypatch,
+    sandbox_config_path,
+):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    sandbox_config_path.parent.mkdir(parents=True, exist_ok=True)
+    sandbox_config_path.write_text(
+        "session:\n  tool_name: configured-tool-name\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(app, ["sandbox", "create"])
+
+    assert result.exit_code == 0
+    assert _FakeToolsClient.last_request.name != "configured-tool-name"
+    assert _FakeToolsClient.last_request.name.startswith("agentkit-codeenv-")
+
+
+def test_create_command_only_updates_session_tool_identifier_config(
+    monkeypatch,
+    sandbox_config_path,
+):
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+
+    _reset_fake_tools_client()
+    sandbox_config_path.parent.mkdir(parents=True, exist_ok=True)
+    sandbox_config_path.write_text(
+        "tool:\n  type: CodeEnv\n  cpu: 8\n  enable_snapshot: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli_create, "AgentkitToolsClient", _FakeToolsClient)
+    monkeypatch.setattr(cli_create, "TOSService", _FakeTOSService)
+
+    result = runner.invoke(app, ["sandbox", "create", "--tool-name", "demo-tool"])
+
+    assert result.exit_code == 0
+    payload = yaml.safe_load(sandbox_config_path.read_text(encoding="utf-8"))
+    assert payload["tool"] == {
+        "type": "CodeEnv",
+        "cpu": 8,
+        "enable_snapshot": True,
+    }
+    assert payload["session"]["tool_id"] == "t-created"
+    assert payload["session"]["tool_name"] == "demo-tool"
 
 
 def test_create_command_passes_network_options(monkeypatch):
@@ -269,9 +322,9 @@ def test_create_command_passes_network_options(monkeypatch):
             "create",
             "--tool-name",
             "demo-tool",
-            "--no-network-enable-public",
-            "--network-enable-private",
-            "--network-enable-shared-internet",
+            "--no-network-public",
+            "--network-private",
+            "--network-shared-internet",
             "--network-vpc-id",
             "vpc-123",
             "--network-subnet-ids",
@@ -781,21 +834,21 @@ def test_build_create_tool_request_can_disable_public_network(monkeypatch):
     [
         (
             {"network_enable_private": True},
-            "--network-vpc-id is required when --network-enable-private is true",
+            "--network-vpc-id is required when --network-private is true",
         ),
         (
             {"network_enable_public": False, "network_enable_private": False},
-            "--network-enable-private and --network-enable-public cannot both be false",
+            "--network-private and --network-public cannot both be false",
         ),
         (
             {"network_vpc_id": "vpc-123"},
             "--network-vpc-id, --network-subnet-ids, and "
-            "--network-enable-shared-internet require --network-enable-private",
+            "--network-shared-internet require --network-private",
         ),
         (
             {"network_enable_shared_internet": True},
             "--network-vpc-id, --network-subnet-ids, and "
-            "--network-enable-shared-internet require --network-enable-private",
+            "--network-shared-internet require --network-private",
         ),
         (
             {"network_subnet_ids": " , "},

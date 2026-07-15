@@ -389,14 +389,17 @@ def ensure_sandbox_session_with_status(
     ttl_seconds = _resolve_ttl(ttl)
 
     if resolve_tool:
-        resolved_tool_arg = (
-            tool_id
-            if tool_name is not None
-            else tool_id or config_default_str("tool-id")
-        )
+        resolved_tool_name = tool_name
+        if tool_name is None and not (tool_id or "").strip():
+            configured_tool_id = config_default_str("tool-id")
+            configured_tool_name = config_default_str("tool-name")
+            tool_id = configured_tool_id
+            if not configured_tool_id:
+                resolved_tool_name = configured_tool_name
+        resolved_tool_arg = tool_id if resolved_tool_name is not None else tool_id
         resolved_tool_id = resolve_sandbox_tool_id(
             tool_id=resolved_tool_arg,
-            tool_name=tool_name,
+            tool_name=resolved_tool_name,
             tool_type=tool_type,
             client=client,
             env_var_name=SANDBOX_TOOL_ID_ENV,

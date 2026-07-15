@@ -33,7 +33,7 @@ from agentkit.toolkit.cli.sandbox.agentkit_client import AgentkitToolsClient
 from agentkit.toolkit.cli.sandbox.config_store import (
     SandboxConfigError,
     config_default_if_unprovided,
-    config_tool_id_default_if_unprovided,
+    config_tool_identifier_defaults_if_unprovided,
     configured_sandbox_config,
 )
 from agentkit.toolkit.cli.sandbox.session_create import SANDBOX_TOOL_ID_ENV
@@ -666,7 +666,7 @@ def file_upload_command(
         dst_dir = config_default_if_unprovided(
             ctx, "dst_dir", "dst-dir", dst_dir, data=config_defaults
         )
-        tool_id = config_tool_id_default_if_unprovided(
+        tool_id, tool_name = config_tool_identifier_defaults_if_unprovided(
             ctx, tool_id=tool_id, tool_name=tool_name, data=config_defaults
         )
         tool_type = config_default_if_unprovided(
@@ -802,7 +802,7 @@ def file_download_command(
         workspace = config_default_if_unprovided(
             ctx, "workspace", "workspace", workspace, data=config_defaults
         )
-        tool_id = config_tool_id_default_if_unprovided(
+        tool_id, tool_name = config_tool_identifier_defaults_if_unprovided(
             ctx, tool_id=tool_id, tool_name=tool_name, data=config_defaults
         )
         tool_type = config_default_if_unprovided(
@@ -968,7 +968,7 @@ def file_list_command(
         workspace = config_default_if_unprovided(
             ctx, "workspace", "workspace", workspace, data=config_defaults
         )
-        tool_id = config_tool_id_default_if_unprovided(
+        tool_id, tool_name = config_tool_identifier_defaults_if_unprovided(
             ctx, tool_id=tool_id, tool_name=tool_name, data=config_defaults
         )
         tool_type = config_default_if_unprovided(

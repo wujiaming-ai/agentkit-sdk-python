@@ -146,6 +146,7 @@ def test_sandbox_config_unset_option_accepts_repeated_keys(tmp_path, monkeypatch
         (tmp_path / ".agentkit" / "sandbox.yaml").read_text(encoding="utf-8")
     )
     assert "id" not in payload.get("tool", {})
+    assert "tool_id" not in payload.get("session", {})
     assert "id" not in payload.get("session", {})
 
 
@@ -214,7 +215,60 @@ def test_sandbox_config_unset_option_removes_value(tmp_path, monkeypatch):
     payload = yaml.safe_load(
         (tmp_path / ".agentkit" / "sandbox.yaml").read_text(encoding="utf-8")
     )
-    assert "id" not in payload["tool"]
+    assert "id" not in payload.get("tool", {})
+    assert "tool_id" not in payload["session"]
+
+
+def test_sandbox_config_tool_identifier_keys_write_session_domain(
+    tmp_path,
+    monkeypatch,
+):
+    from agentkit.toolkit.cli.cli import app
+
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "config",
+            "--set",
+            "tool-id=tool-123",
+            "--set",
+            "tool-name=demo-tool",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = yaml.safe_load(
+        (tmp_path / ".agentkit" / "sandbox.yaml").read_text(encoding="utf-8")
+    )
+    assert payload["session"]["tool_id"] == "tool-123"
+    assert payload["session"]["tool_name"] == "demo-tool"
+    assert "id" not in payload.get("tool", {})
+    assert "name" not in payload.get("tool", {})
+
+
+def test_sandbox_config_migrates_tool_identifier_keys_to_session_domain(
+    tmp_path,
+    monkeypatch,
+):
+    from agentkit.toolkit.cli.sandbox.config_store import configured_sandbox_config
+
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / ".agentkit"
+    config_dir.mkdir()
+    (config_dir / "sandbox.yaml").write_text(
+        "tool:\n  id: tool-legacy\n  name: legacy-tool\n",
+        encoding="utf-8",
+    )
+
+    payload = configured_sandbox_config()
+
+    assert payload["session"]["tool_id"] == "tool-legacy"
+    assert payload["session"]["tool_name"] == "legacy-tool"
+    assert "id" not in payload.get("tool", {})
+    assert "name" not in payload.get("tool", {})
 
 
 def test_sandbox_config_accepts_underscore_aliases(tmp_path, monkeypatch):
@@ -232,6 +286,37 @@ def test_sandbox_config_accepts_underscore_aliases(tmp_path, monkeypatch):
         (tmp_path / ".agentkit" / "sandbox.yaml").read_text(encoding="utf-8")
     )
     assert payload["network"]["subnet_ids"] == ["subnet-a", "subnet-b"]
+
+
+def test_sandbox_config_accepts_short_network_boolean_keys(tmp_path, monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "config",
+            "--set",
+            "network-public=false",
+            "--set",
+            "network-private=true",
+            "--set",
+            "network-enable-shared-internet=true",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Set network-public: False" in result.output
+    assert "Set network-private: True" in result.output
+    assert "Set network-shared-internet: True" in result.output
+    payload = yaml.safe_load(
+        (tmp_path / ".agentkit" / "sandbox.yaml").read_text(encoding="utf-8")
+    )
+    assert payload["network"]["enable_public"] is False
+    assert payload["network"]["enable_private"] is True
+    assert payload["network"]["enable_shared_internet"] is True
 
 
 def test_sandbox_config_rejects_invalid_ttl(tmp_path, monkeypatch):
@@ -315,7 +400,7 @@ def test_sandbox_tool_id_prefers_config_over_env(tmp_path, monkeypatch):
     config_dir = tmp_path / ".agentkit"
     config_dir.mkdir()
     (config_dir / "sandbox.yaml").write_text(
-        "tool:\n  id: tool-from-file\n",
+        "session:\n  tool_id: tool-from-file\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(session_create, "AgentkitToolsClient", lambda: object())
@@ -339,6 +424,45 @@ def test_sandbox_tool_id_prefers_config_over_env(tmp_path, monkeypatch):
 
     assert captured["tool_id"] == "tool-from-file"
     assert "default_tool_id" not in captured
+
+
+def test_sandbox_tool_name_config_resolves_session_tool(tmp_path, monkeypatch):
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+
+    captured = {}
+
+    def fake_resolve_sandbox_tool_id(**kwargs):
+        captured.update(kwargs)
+        return "tool-from-resolver"
+
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / ".agentkit"
+    config_dir.mkdir()
+    (config_dir / "sandbox.yaml").write_text(
+        "session:\n  tool_name: demo-tool\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(session_create, "AgentkitToolsClient", lambda: object())
+    monkeypatch.setattr(
+        session_create,
+        "resolve_sandbox_tool_id",
+        fake_resolve_sandbox_tool_id,
+    )
+    monkeypatch.setattr(
+        session_create,
+        "_create_session",
+        lambda *_args, **_kwargs: {
+            "session_id": "session-1",
+            "tool_id": "tool-from-resolver",
+            "instance_id": "instance-1",
+            "endpoint": "https://sandbox.example.com",
+        },
+    )
+
+    session_create.ensure_sandbox_session()
+
+    assert captured["tool_id"] is None
+    assert captured["tool_name"] == "demo-tool"
 
 
 def test_sandbox_region_prefers_config_over_env(tmp_path, monkeypatch):
