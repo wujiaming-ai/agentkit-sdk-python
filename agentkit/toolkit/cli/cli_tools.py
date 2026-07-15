@@ -31,7 +31,6 @@ from rich.panel import Panel
 
 from agentkit.sdk.tools.client import AgentkitToolsClient
 from agentkit.sdk.tools import types as tools_types
-from agentkit.toolkit.cli.tool_lookup import resolve_tool_identifier
 
 console = Console()
 
@@ -261,12 +260,7 @@ def create_tool_command(
 
 @tools_app.command("show")
 def show_tool_command(
-    tool_id: Optional[str] = typer.Option(None, "--tool-id", "-t", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
+    tool_id: str = typer.Option(..., "--tool-id", "-t", help="Tool ID"),
     output: str = typer.Option(
         "yaml", "--output", "-o", help="Output format: json|yaml"
     ),
@@ -285,13 +279,7 @@ def show_tool_command(
     """Show tool details."""
     try:
         client = AgentkitToolsClient(region=(region or "").strip())
-        resolved_tool_id = resolve_tool_identifier(
-            client,
-            tool_id=tool_id,
-            tool_name=tool_name,
-            required=True,
-        )
-        req = tools_types.GetToolRequest(tool_id=resolved_tool_id)
+        req = tools_types.GetToolRequest(tool_id=tool_id)
         resp = client.get_tool(req)
         data = resp.model_dump(by_alias=True, exclude_none=True)
         if quiet:
@@ -314,12 +302,7 @@ def show_tool_command(
 
 @tools_app.command("update")
 def update_tool_command(
-    tool_id: Optional[str] = typer.Option(None, "--tool-id", "-t", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
+    tool_id: str = typer.Option(..., "--tool-id", "-t", help="Tool ID"),
     description: Optional[str] = typer.Option(
         None, "--description", help="Description"
     ),
@@ -344,18 +327,11 @@ def update_tool_command(
     """Update tool description."""
     try:
         client = AgentkitToolsClient(region=(region or "").strip())
-        resolved_tool_id = resolve_tool_identifier(
-            client,
-            tool_id=tool_id,
-            tool_name=tool_name,
-            required=True,
-        )
         if json_body:
             payload = json.loads(json_body)
-            payload["ToolId"] = resolved_tool_id
         else:
             payload = tools_types.UpdateToolRequest(
-                tool_id=resolved_tool_id, description=description
+                tool_id=tool_id, description=description
             ).model_dump(by_alias=True, exclude_none=True)
 
         if print_json:
@@ -379,12 +355,7 @@ def update_tool_command(
 
 @tools_app.command("delete")
 def delete_tool_command(
-    tool_id: Optional[str] = typer.Option(None, "--tool-id", "-t", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
+    tool_id: str = typer.Option(..., "--tool-id", "-t", help="Tool ID"),
     force: bool = typer.Option(False, "--force", help="Skip confirmation"),
     region: Optional[str] = typer.Option(
         None,
@@ -397,16 +368,10 @@ def delete_tool_command(
 ):
     """Delete tool."""
     try:
-        client = AgentkitToolsClient(region=(region or "").strip())
-        resolved_tool_id = resolve_tool_identifier(
-            client,
-            tool_id=tool_id,
-            tool_name=tool_name,
-            required=True,
-        )
         if not force:
             typer.confirm("Are you sure you want to delete this tool?", abort=True)
-        req = tools_types.DeleteToolRequest(tool_id=resolved_tool_id)
+        client = AgentkitToolsClient(region=(region or "").strip())
+        req = tools_types.DeleteToolRequest(tool_id=tool_id)
         resp = client.delete_tool(req)
         console.print(
             Panel.fit(
@@ -669,12 +634,7 @@ def list_tools_command(
 # --------------------- Sessions Commands ---------------------
 @session_app.command("create")
 def create_session_command(
-    tool_id: Optional[str] = typer.Option(None, "--tool-id", "-t", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
+    tool_id: str = typer.Option(..., "--tool-id", "-t", help="Tool ID"),
     name: Optional[str] = typer.Option(None, "--name", "-n", help="Session name"),
     ttl: Optional[int] = typer.Option(None, "--ttl", "-l", help="TTL value"),
     ttl_unit: Optional[str] = typer.Option(
@@ -701,22 +661,12 @@ def create_session_command(
     """Create a session for a tool."""
     try:
         client = AgentkitToolsClient(region=(region or "").strip())
-        resolved_tool_id = resolve_tool_identifier(
-            client,
-            tool_id=tool_id,
-            tool_name=tool_name,
-            required=True,
-        )
         if json_body:
             payload = json.loads(json_body)
-            payload["ToolId"] = resolved_tool_id
         else:
             normalized_unit = _normalize_ttl_unit(ttl_unit)
             payload = tools_types.CreateSessionRequest(
-                tool_id=resolved_tool_id,
-                name=name,
-                ttl=ttl,
-                ttl_unit=normalized_unit,
+                tool_id=tool_id, name=name, ttl=ttl, ttl_unit=normalized_unit
             ).model_dump(by_alias=True, exclude_none=True)
 
         if print_json:
@@ -740,12 +690,7 @@ def create_session_command(
 
 @session_app.command("show")
 def get_session_command(
-    tool_id: Optional[str] = typer.Option(None, "--tool-id", "-t", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
+    tool_id: str = typer.Option(..., "--tool-id", "-t", help="Tool ID"),
     session_id: str = typer.Option(..., "--session-id", "-s", help="Session ID"),
     output: str = typer.Option(
         "yaml", "--output", "-o", help="Output format: json|yaml"
@@ -762,15 +707,7 @@ def get_session_command(
     """Show session details."""
     try:
         client = AgentkitToolsClient(region=(region or "").strip())
-        resolved_tool_id = resolve_tool_identifier(
-            client,
-            tool_id=tool_id,
-            tool_name=tool_name,
-            required=True,
-        )
-        req = tools_types.GetSessionRequest(
-            tool_id=resolved_tool_id, session_id=session_id
-        )
+        req = tools_types.GetSessionRequest(tool_id=tool_id, session_id=session_id)
         resp = client.get_session(req)
         data = resp.model_dump(by_alias=True, exclude_none=True)
         if output.lower() == "yaml":
@@ -791,11 +728,8 @@ def get_session_command(
 @session_app.command("delete")
 def delete_session_command(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Session ID"),
-    tool_id: Optional[str] = typer.Option(None, "--tool-id", "-t", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
+    tool_id: Optional[str] = typer.Option(
+        ..., "--tool-id", "-t", help="Tool ID (optional)"
     ),
     force: bool = typer.Option(False, "--force", help="Skip confirmation"),
     region: Optional[str] = typer.Option(
@@ -809,18 +743,10 @@ def delete_session_command(
 ):
     """Delete session."""
     try:
-        client = AgentkitToolsClient(region=(region or "").strip())
-        resolved_tool_id = resolve_tool_identifier(
-            client,
-            tool_id=tool_id,
-            tool_name=tool_name,
-            required=True,
-        )
         if not force:
             typer.confirm("Are you sure you want to delete this session?", abort=True)
-        req = tools_types.DeleteSessionRequest(
-            session_id=session_id, tool_id=resolved_tool_id
-        )
+        client = AgentkitToolsClient(region=(region or "").strip())
+        req = tools_types.DeleteSessionRequest(session_id=session_id, tool_id=tool_id)
         resp = client.delete_session(req)
         console.print(
             Panel.fit(
@@ -836,12 +762,7 @@ def delete_session_command(
 
 @session_app.command("list")
 def list_sessions_command(
-    tool_id: Optional[str] = typer.Option(None, "--tool-id", "-t", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
+    tool_id: str = typer.Option(..., "--tool-id", "-t", help="Tool ID"),
     # Exact filters
     id: Optional[str] = typer.Option(
         None, "--id", help="Exact SessionId filter (comma-separated)"
@@ -920,12 +841,6 @@ def list_sessions_command(
     """List sessions with exact/substring filters and cursor pagination (limit/next-token)."""
     try:
         client = AgentkitToolsClient(region=(region or "").strip())
-        resolved_tool_id = resolve_tool_identifier(
-            client,
-            tool_id=tool_id,
-            tool_name=tool_name,
-            required=True,
-        )
         allowed_status = {"Creating", "Error", "Ready", "Deleting"}
 
         def _parse_csv(v: Optional[str]) -> Optional[List[str]]:
@@ -994,7 +909,7 @@ def list_sessions_command(
 
         while True:
             req = tools_types.ListSessionsRequest(
-                tool_id=resolved_tool_id,
+                tool_id=tool_id,
                 max_results=limit,
                 next_token=token,
                 filters=filters or None,
@@ -1131,12 +1046,7 @@ def list_sessions_command(
 
 @session_app.command("logs")
 def session_logs_command(
-    tool_id: Optional[str] = typer.Option(None, "--tool-id", "-t", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
+    tool_id: str = typer.Option(..., "--tool-id", "-t", help="Tool ID"),
     session_id: str = typer.Option(..., "--session-id", "-s", help="Session ID"),
     limit: Optional[int] = typer.Option(None, "--limit", help="Max log lines"),
     region: Optional[str] = typer.Option(
@@ -1151,14 +1061,8 @@ def session_logs_command(
     """Get session logs."""
     try:
         client = AgentkitToolsClient(region=(region or "").strip())
-        resolved_tool_id = resolve_tool_identifier(
-            client,
-            tool_id=tool_id,
-            tool_name=tool_name,
-            required=True,
-        )
         req = tools_types.GetSessionLogsRequest(
-            tool_id=resolved_tool_id, session_id=session_id, limit=limit
+            tool_id=tool_id, session_id=session_id, limit=limit
         )
         resp = client.get_session_logs(req)
         logs = resp.logs or ""
@@ -1170,12 +1074,7 @@ def session_logs_command(
 
 @session_app.command("set-ttl")
 def set_session_ttl_command(
-    tool_id: Optional[str] = typer.Option(None, "--tool-id", "-t", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
+    tool_id: str = typer.Option(..., "--tool-id", "-t", help="Tool ID"),
     session_id: str = typer.Option(..., "--session-id", "-s", help="Session ID"),
     ttl: int = typer.Option(..., "--ttl", "-l", help="TTL value"),
     ttl_unit: Optional[str] = typer.Option(
@@ -1193,18 +1092,9 @@ def set_session_ttl_command(
     """Set session TTL."""
     try:
         client = AgentkitToolsClient(region=(region or "").strip())
-        resolved_tool_id = resolve_tool_identifier(
-            client,
-            tool_id=tool_id,
-            tool_name=tool_name,
-            required=True,
-        )
         normalized_unit = _normalize_ttl_unit(ttl_unit)
         req = tools_types.SetSessionTtlRequest(
-            tool_id=resolved_tool_id,
-            session_id=session_id,
-            ttl=ttl,
-            ttl_unit=normalized_unit,
+            tool_id=tool_id, session_id=session_id, ttl=ttl, ttl_unit=normalized_unit
         )
         resp = client.set_session_ttl(req)
         console.print(

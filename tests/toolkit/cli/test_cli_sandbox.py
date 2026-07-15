@@ -6696,6 +6696,72 @@ def test_cli_exec_creates_tool_when_tool_resolution_is_empty(
     assert _FakeToolsClient.last_request.tool_id == "tool-from-create"
 
 
+def test_cli_exec_auto_create_tool_uses_split_network_config(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    from agentkit.toolkit.cli.sandbox import cli_create
+    import agentkit.toolkit.cli.sandbox.session_create as session_create
+    import agentkit.toolkit.cli.sandbox.cli_exec as cli_exec
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENTKIT_SANDBOX_TOOL_ID", raising=False)
+    _patch_store_path(monkeypatch, tmp_path)
+    _patch_tool_store_path(monkeypatch, tmp_path)
+    config_path = tmp_path / ".agentkit" / "sandbox.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "network:",
+                "  enable_public: false",
+                "  enable_private: true",
+                "  enable_shared_internet: true",
+                "  vpc_id: vpc-from-config",
+                "  subnet_ids:",
+                "    - subnet-a",
+                "    - subnet-b",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        session_create,
+        "AgentkitToolsClient",
+        lambda: _FakeToolsClient(),
+    )
+    captured_create = {}
+
+    def fake_create_tool(tool_type="CodeEnv", **kwargs):
+        captured_create.update(kwargs)
+        return {
+            "tool_id": "tool-from-create",
+            "tool_type": tool_type,
+            "name": "created-tool",
+            "status": "Ready",
+        }
+
+    def fake_connect(ws_url, initial_command, on_shell_id=None):
+        assert ws_url == "ws://sandbox.example.com/v1/shell/ws"
+        assert initial_command is None
+        assert on_shell_id is not None
+
+    monkeypatch.setattr(cli_create, "create_tool", fake_create_tool)
+    monkeypatch.setattr(cli_exec, "_connect_terminal", fake_connect)
+
+    result = runner.invoke(app, ["sandbox", "exec"])
+
+    assert result.exit_code == 0
+    assert "network_config" not in captured_create
+    assert captured_create["network_enable_public"] is False
+    assert captured_create["network_enable_private"] is True
+    assert captured_create["network_enable_shared_internet"] is True
+    assert captured_create["network_vpc_id"] == "vpc-from-config"
+    assert captured_create["network_subnet_ids"] == "subnet-a,subnet-b"
+    assert _FakeToolsClient.last_request.tool_id == "tool-from-create"
+
+
 def test_cli_exec_detach_sequence_closes_websocket(monkeypatch) -> None:
     import json as json_module
     import threading

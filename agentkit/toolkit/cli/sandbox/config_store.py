@@ -685,30 +685,6 @@ def config_tool_id_default_if_unprovided(
     return resolved_tool_id
 
 
-def configured_network_payload(
-    *,
-    data: Optional[dict[str, Any]] = None,
-) -> dict[str, Any] | None:
-    payload = data if data is not None else configured_sandbox_config()
-    network = payload.get("network")
-    if not isinstance(network, dict):
-        return None
-
-    result: dict[str, Any] = {}
-    mapping = {
-        "enable_public": "public_access",
-        "enable_private": "private_access",
-        "enable_shared_internet": "enable_shared_internet_access",
-        "vpc_id": "vpc_id",
-        "subnet_ids": "subnet_ids",
-    }
-    for source_key, target_key in mapping.items():
-        value = network.get(source_key)
-        if value is not None:
-            result[target_key] = value
-    return result or None
-
-
 def save_created_tool_config(
     *,
     tool_id: str,

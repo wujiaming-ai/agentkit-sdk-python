@@ -478,15 +478,21 @@ def _create_tool(tool_type: str) -> str:
     from agentkit.toolkit.cli.sandbox.config_store import (
         config_default_bool,
         config_default_int,
+        config_default_list,
         config_default_str,
-        configured_network_payload,
         configured_sandbox_config,
     )
     from agentkit.toolkit.cli.sandbox.cli_create import create_tool
 
     config_defaults = configured_sandbox_config()
     role_name = config_default_str("role-name", data=config_defaults)
-    network_payload = configured_network_payload(data=config_defaults)
+    enable_public = config_default_bool("network-public", data=config_defaults)
+    enable_private = config_default_bool("network-private", data=config_defaults)
+    enable_shared_internet = config_default_bool(
+        "network-shared-internet",
+        data=config_defaults,
+    )
+    subnet_ids = config_default_list("network-subnet-ids", data=config_defaults)
     result = create_tool(
         tool_type=tool_type,
         cpu=config_default_int("cpu", data=config_defaults) or 4,
@@ -504,7 +510,11 @@ def _create_tool(tool_type: str) -> str:
         enable_snapshot=bool(
             config_default_bool("enable-snapshot", data=config_defaults)
         ),
-        network_config=json.dumps(network_payload) if network_payload else None,
+        network_enable_public=enable_public if enable_public is not None else True,
+        network_enable_private=bool(enable_private),
+        network_enable_shared_internet=bool(enable_shared_internet),
+        network_vpc_id=config_default_str("network-vpc-id", data=config_defaults),
+        network_subnet_ids=",".join(subnet_ids) if subnet_ids else None,
     )
     save_tool_result(tool_type, result)
     tool_id = _get_string_value(result, "ToolId", "tool_id")

@@ -26,8 +26,6 @@ from rich.panel import Panel
 
 from agentkit.sdk.runtime.client import AgentkitRuntimeClient
 from agentkit.sdk.runtime import types as rt
-from agentkit.sdk.tools.client import AgentkitToolsClient
-from agentkit.toolkit.cli.tool_lookup import resolve_tool_identifier
 
 console = Console()
 
@@ -115,11 +113,6 @@ def create_runtime_command(
         None, "--knowledge-id", help="Knowledge ID"
     ),
     tool_id: Optional[str] = typer.Option(None, "--tool-id", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
     mcp_toolset_id: Optional[str] = typer.Option(
         None, "--mcp-toolset-id", help="MCP Toolset ID"
     ),
@@ -175,20 +168,9 @@ def create_runtime_command(
 ):
     """Create a Runtime."""
     try:
-        resolved_region = (region or "").strip()
-        client = AgentkitRuntimeClient(region=resolved_region)
-        resolved_tool_id = None
-        if tool_id is not None or tool_name is not None:
-            resolved_tool_id = resolve_tool_identifier(
-                AgentkitToolsClient(region=resolved_region),
-                tool_id=tool_id,
-                tool_name=tool_name,
-                required=False,
-            )
+        client = AgentkitRuntimeClient(region=(region or "").strip())
         if json_body:
             payload = json.loads(json_body)
-            if resolved_tool_id is not None:
-                payload["ToolId"] = resolved_tool_id
             req = rt.CreateRuntimeRequest(**payload)
         else:
             authorizer = None
@@ -247,7 +229,7 @@ def create_runtime_command(
                 project_name=project_name,
                 memory_id=memory_id,
                 knowledge_id=knowledge_id,
-                tool_id=resolved_tool_id,
+                tool_id=tool_id,
                 mcp_toolset_id=mcp_toolset_id,
                 model_agent_name=model_agent_name,
                 authorizer_configuration=authorizer,
@@ -313,11 +295,6 @@ def update_runtime_command(
         None, "--knowledge-id", help="Knowledge ID"
     ),
     tool_id: Optional[str] = typer.Option(None, "--tool-id", help="Tool ID"),
-    tool_name: Optional[str] = typer.Option(
-        None,
-        "--tool-name",
-        help="Tool name. Resolved with ListTools(Name=...).",
-    ),
     mcp_toolset_id: Optional[str] = typer.Option(
         None, "--mcp-toolset-id", help="MCP Toolset ID"
     ),
@@ -341,20 +318,9 @@ def update_runtime_command(
 ):
     """Update runtime metadata and associations."""
     try:
-        resolved_region = (region or "").strip()
-        client = AgentkitRuntimeClient(region=resolved_region)
-        resolved_tool_id = None
-        if tool_id is not None or tool_name is not None:
-            resolved_tool_id = resolve_tool_identifier(
-                AgentkitToolsClient(region=resolved_region),
-                tool_id=tool_id,
-                tool_name=tool_name,
-                required=False,
-            )
+        client = AgentkitRuntimeClient(region=(region or "").strip())
         if json_body:
             payload = json.loads(json_body)
-            if resolved_tool_id is not None:
-                payload["ToolId"] = resolved_tool_id
             req = rt.UpdateRuntimeRequest(**payload)
         else:
             envs = None
@@ -376,7 +342,7 @@ def update_runtime_command(
                 description=description,
                 memory_id=memory_id,
                 knowledge_id=knowledge_id,
-                tool_id=resolved_tool_id,
+                tool_id=tool_id,
                 mcp_toolset_id=mcp_toolset_id,
                 envs=envs,
                 tags=tags,
