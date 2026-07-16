@@ -116,6 +116,51 @@ def test_shell_copy_runs_before_command(monkeypatch, tmp_path) -> None:
     assert json.loads(result.output)["data"]["shell_id"] == "shell-1"
 
 
+def test_shell_copy_preserves_trailing_slash_destination(monkeypatch, tmp_path) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_shell as cli_shell
+
+    source = tmp_path / "sessions.json"
+    source.write_text("session", encoding="utf-8")
+    monkeypatch.setattr(
+        cli_shell, "ensure_sandbox_session", lambda **_kwargs: _session()
+    )
+    copied = []
+    monkeypatch.setattr(
+        cli_shell,
+        "_upload_scp_source",
+        lambda _session, *, source, destination: copied.append((source, destination)),
+    )
+    monkeypatch.setattr(cli_shell, "apply_git_config_to_session", lambda *_args: None)
+
+    class Response:
+        text = ""
+
+        def json(self):
+            return {"success": True, "data": {"session_id": "shell-1"}}
+
+    monkeypatch.setattr(
+        cli_shell.requests, "post", lambda *_args, **_kwargs: Response()
+    )
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "shell",
+            "-s",
+            "user-1",
+            "--copy",
+            str(source),
+            "/home/gem/exec/",
+            "--command",
+            "cd /home/gem/exec && ls",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert copied == [(source, "/home/gem/exec/")]
+
+
 def test_copy_rejects_missing_destination_before_session_resolution(
     monkeypatch,
     tmp_path,

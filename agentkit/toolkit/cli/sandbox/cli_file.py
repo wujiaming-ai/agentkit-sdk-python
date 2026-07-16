@@ -63,6 +63,12 @@ def _is_path_inside(path: str, root: str) -> bool:
     return path == normalized_root or path.startswith(f"{normalized_root}/")
 
 
+def _preserve_trailing_slash(path: str, raw: str) -> str:
+    if raw.endswith("/") and path != "/" and not path.endswith("/"):
+        return f"{path}/"
+    return path
+
+
 def _resolve_sandbox_operand(value: str) -> str:
     if not value.startswith(SANDBOX_OPERAND_PREFIX):
         error(f"Sandbox path must start with {SANDBOX_OPERAND_PREFIX}")
@@ -74,12 +80,12 @@ def _resolve_sandbox_operand(value: str) -> str:
         error("Sandbox path must not contain NUL bytes")
 
     if raw.startswith("/"):
-        return posixpath.normpath(raw)
+        return _preserve_trailing_slash(posixpath.normpath(raw), raw)
 
     resolved = posixpath.normpath(posixpath.join(DEFAULT_SANDBOX_PATH_ROOT, raw))
     if not _is_path_inside(resolved, DEFAULT_SANDBOX_PATH_ROOT):
         error(f"Relative sandbox path must stay inside {DEFAULT_SANDBOX_PATH_ROOT}")
-    return resolved
+    return _preserve_trailing_slash(resolved, raw)
 
 
 def _resolve_scp_operands(
@@ -323,10 +329,18 @@ def _build_remote_scp_upload_command(
     stage_dir = f"{archive_path}.d"
     cleanup = f"rm -rf {shlex.quote(stage_dir)}; rm -f {shlex.quote(archive_path)}"
     staged_source = posixpath.join(stage_dir, source_name)
+    destination_is_directory = destination.endswith("/")
+    destination_parent = posixpath.dirname(destination.rstrip("/")) or "/"
+    prepare_destination = (
+        f"mkdir -p {shlex.quote(destination)}"
+        if destination_is_directory
+        else f"mkdir -p {shlex.quote(destination_parent)}"
+    )
     return (
         f"trap {shlex.quote(cleanup)} EXIT; "
         f"mkdir -p {shlex.quote(stage_dir)} && "
         f"tar -xf {shlex.quote(archive_path)} -C {shlex.quote(stage_dir)} && "
+        f"{prepare_destination} && "
         f"cp -R -- {shlex.quote(staged_source)} {shlex.quote(destination)}"
     )
 

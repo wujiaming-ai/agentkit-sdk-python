@@ -336,7 +336,12 @@ Path rules:
 - `sandbox:relative/path` is resolved under `/home/gem`.
 - Relative sandbox paths that escape `/home/gem` through `..` are rejected.
 - Empty sandbox paths and paths containing NUL bytes are rejected.
-- As with Linux `scp`, the destination's parent directory must already exist.
+- Upload destinations follow Linux `scp`-style target interpretation:
+  - `DEST` without a trailing slash is treated as a file path for file sources
+    when the destination does not already exist.
+  - `DEST/` with a trailing slash is treated as a directory, which is created
+    when missing. The source is copied inside it using the source basename.
+  - Missing parent directories are created for uploads.
 
 Upload a local file or directory:
 
@@ -394,7 +399,10 @@ Options:
 - `--exec-dir`: optional execution directory.
 - `--copy SOURCE DESTINATION`: optional local-to-sandbox copy before executing
   the shell command. May be repeated. `DESTINATION` may be `sandbox:/absolute`
-  or relative; relative destinations are resolved under `/home/gem`.
+  or relative; relative destinations are resolved under `/home/gem`. Upload
+  target interpretation is the same as `sandbox scp`: `DEST` is a file path
+  when appropriate, while `DEST/` is a directory target and is created when
+  missing.
 
 The command posts to `<endpoint>/v1/shell/exec` with:
 
@@ -521,7 +529,10 @@ Options:
   Repeated execs then attach to the same tmux session.
 - `--copy SOURCE DESTINATION`: optional local-to-sandbox copy before opening
   the exec session. May be repeated. `DESTINATION` may be `sandbox:/absolute`
-  or relative; relative destinations are resolved under `/home/gem`.
+  or relative; relative destinations are resolved under `/home/gem`. Upload
+  target interpretation is the same as `sandbox scp`: `DEST` is a file path
+  when appropriate, while `DEST/` is a directory target and is created when
+  missing.
 - `--model-name`: optional. When creating a sandbox session, injects the value
   as `OPENCODE_MODEL`, `CODEX_MODEL`, and `ANTHROPIC_MODEL`. Custom model names
   are allowed.

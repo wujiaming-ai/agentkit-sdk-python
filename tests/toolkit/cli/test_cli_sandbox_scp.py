@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tarfile
 
 import pytest
@@ -98,8 +99,10 @@ def test_scp_command_replaces_file_command_group() -> None:
     ("value", "expected"),
     [
         ("sandbox:/tmp/project", "/tmp/project"),
+        ("sandbox:/tmp/project/", "/tmp/project/"),
         ("sandbox:/tmp/../project", "/project"),
         ("sandbox:project/config.yaml", "/home/gem/project/config.yaml"),
+        ("sandbox:project/", "/home/gem/project/"),
         ("sandbox:./project", "/home/gem/project"),
         ("sandbox:project/../config.yaml", "/home/gem/config.yaml"),
     ],
@@ -238,6 +241,115 @@ def test_scp_upload_directory_is_recursive_and_resolves_relative_remote_path(
         "project/nested/app.py",
     ]
     assert "/project /home/gem/workspace" in captured["shell_command"]
+
+
+def _run_upload_command_locally(
+    tmp_path: Path,
+    source: Path,
+    destination: Path,
+    *,
+    destination_as_directory: bool = False,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+
+    archive_path = cli_file._create_sources_upload_archive([source])
+    remote_archive_path = tmp_path / "remote-upload.tar"
+    archive_path.replace(remote_archive_path)
+    destination_arg = (
+        str(destination) + "/" if destination_as_directory else str(destination)
+    )
+    command = cli_file._build_remote_scp_upload_command(
+        archive_path=str(remote_archive_path),
+        source_name=source.name,
+        destination=destination_arg,
+    )
+    subprocess.run(["bash", "-lc", command], check=True, cwd=tmp_path)
+
+
+def test_scp_upload_file_without_trailing_slash_treats_destination_as_file(
+    tmp_path,
+) -> None:
+    source = tmp_path / "sessions.json"
+    source.write_text("session", encoding="utf-8")
+
+    _run_upload_command_locally(tmp_path, source, tmp_path / "exec")
+
+    assert (tmp_path / "exec").is_file()
+    assert (tmp_path / "exec").read_text(encoding="utf-8") == "session"
+
+
+def test_scp_upload_file_with_trailing_slash_creates_destination_directory(
+    tmp_path,
+) -> None:
+    source = tmp_path / "sessions.json"
+    source.write_text("session", encoding="utf-8")
+
+    _run_upload_command_locally(
+        tmp_path,
+        source,
+        tmp_path / "exec",
+        destination_as_directory=True,
+    )
+
+    assert (tmp_path / "exec").is_dir()
+    assert (tmp_path / "exec" / "sessions.json").read_text(
+        encoding="utf-8"
+    ) == "session"
+
+
+def test_scp_upload_file_creates_missing_destination_parent(tmp_path) -> None:
+    source = tmp_path / "tools.json"
+    source.write_text("tools", encoding="utf-8")
+
+    _run_upload_command_locally(tmp_path, source, tmp_path / "tmp" / "tools.json")
+
+    assert (tmp_path / "tmp" / "tools.json").read_text(encoding="utf-8") == "tools"
+
+
+def test_scp_upload_file_into_existing_directory_without_trailing_slash(
+    tmp_path,
+) -> None:
+    source = tmp_path / "tools.json"
+    source.write_text("tools", encoding="utf-8")
+    destination = tmp_path / "existing"
+    destination.mkdir()
+
+    _run_upload_command_locally(tmp_path, source, destination)
+
+    assert (destination / "tools.json").read_text(encoding="utf-8") == "tools"
+
+
+def test_scp_upload_directory_with_trailing_slash_copies_directory_under_target(
+    tmp_path,
+) -> None:
+    source = tmp_path / ".agentkit"
+    source.mkdir()
+    (source / "config").write_text("config", encoding="utf-8")
+
+    _run_upload_command_locally(
+        tmp_path,
+        source,
+        tmp_path / "tmp2",
+        destination_as_directory=True,
+    )
+
+    assert (tmp_path / "tmp2").is_dir()
+    assert (tmp_path / "tmp2" / ".agentkit" / "config").read_text(
+        encoding="utf-8"
+    ) == "config"
+
+
+def test_scp_upload_directory_without_trailing_slash_keeps_scp_copy_semantics(
+    tmp_path,
+) -> None:
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "app.py").write_text("print(42)", encoding="utf-8")
+
+    _run_upload_command_locally(tmp_path, source, tmp_path / "renamed")
+
+    assert (tmp_path / "renamed").is_dir()
+    assert (tmp_path / "renamed" / "app.py").read_text(encoding="utf-8") == "print(42)"
 
 
 def test_scp_upload_rejects_missing_local_source(monkeypatch, tmp_path) -> None:
