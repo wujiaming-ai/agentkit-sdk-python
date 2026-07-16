@@ -467,6 +467,48 @@ def test_scp_download_file_into_existing_directory_uses_source_name(
     assert (destination / "source.txt").read_bytes() == b"content"
 
 
+def test_scp_download_file_into_existing_trailing_slash_directory_uses_source_name(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+
+    _patch_session(monkeypatch, tmp_path, cli_file)
+    destination = tmp_path / "downloads"
+    destination.mkdir()
+    archive = _tar_bytes({"source.txt": b"content"})
+
+    def fake_post(_url, **kwargs):
+        command = kwargs["json"]["command"]
+        output = "file" if "printf 'file'" in command else ""
+        return _FakeResponse(
+            payload={"success": True, "data": {"exit_code": 0, "output": output}}
+        )
+
+    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(
+        cli_file.requests,
+        "get",
+        lambda *_args, **_kwargs: _FakeResponse(content=archive),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "scp",
+            "-s",
+            "user-1",
+            "sandbox:/tmp/source.txt",
+            f"{destination}/",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (destination / "source.txt").read_bytes() == b"content"
+
+
 def test_scp_download_directory_merges_and_overwrites(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
     import agentkit.toolkit.cli.sandbox.cli_file as cli_file
@@ -509,6 +551,97 @@ def test_scp_download_directory_merges_and_overwrites(monkeypatch, tmp_path) -> 
     assert result.exit_code == 0
     assert (existing / "same.txt").read_text(encoding="utf-8") == "new"
     assert (existing / "new.txt").read_text(encoding="utf-8") == "added"
+
+
+def test_scp_download_directory_source_with_trailing_slash_uses_source_parent(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+
+    _patch_session(monkeypatch, tmp_path, cli_file)
+    destination = tmp_path / "downloads"
+    destination.mkdir()
+    archive = _tar_bytes(
+        {"project/nested/value.txt": b"content"},
+        dirs=["project", "project/nested"],
+    )
+    commands = []
+
+    def fake_post(_url, **kwargs):
+        command = kwargs["json"]["command"]
+        commands.append(command)
+        output = "directory" if "printf 'directory'" in command else ""
+        return _FakeResponse(
+            payload={"success": True, "data": {"exit_code": 0, "output": output}}
+        )
+
+    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(
+        cli_file.requests,
+        "get",
+        lambda *_args, **_kwargs: _FakeResponse(content=archive),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "scp",
+            "-s",
+            "user-1",
+            "sandbox:/tmp/project/",
+            str(destination),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (destination / "project" / "nested" / "value.txt").read_bytes() == b"content"
+    assert "-C /tmp project" in commands[1]
+    assert "-C /tmp/project project" not in commands[1]
+
+
+def test_scp_download_file_to_missing_trailing_slash_destination_rejects_directory(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from agentkit.toolkit.cli.cli import app
+    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+
+    _patch_session(monkeypatch, tmp_path, cli_file)
+    archive = _tar_bytes({"source.txt": b"content"})
+    destination = tmp_path / "missing-dir"
+
+    def fake_post(_url, **kwargs):
+        command = kwargs["json"]["command"]
+        output = "file" if "printf 'file'" in command else ""
+        return _FakeResponse(
+            payload={"success": True, "data": {"exit_code": 0, "output": output}}
+        )
+
+    monkeypatch.setattr(cli_file.requests, "post", fake_post)
+    monkeypatch.setattr(
+        cli_file.requests,
+        "get",
+        lambda *_args, **_kwargs: _FakeResponse(content=archive),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "sandbox",
+            "scp",
+            "-s",
+            "user-1",
+            "sandbox:/tmp/source.txt",
+            f"{destination}/",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert f"Destination directory not found: {destination}" in result.output
+    assert not destination.exists()
 
 
 def test_scp_download_rejects_file_directory_collision(monkeypatch, tmp_path) -> None:
@@ -559,6 +692,18 @@ def test_remote_archive_command_handles_root_source() -> None:
         archive_path="/tmp/archive.tar",
         source="/",
     ).startswith("tar -cf /tmp/archive.tar -C / .;")
+
+
+def test_remote_archive_command_strips_trailing_slash_before_parent_lookup() -> None:
+    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+
+    command = cli_file._build_remote_scp_archive_command(
+        archive_path="/tmp/archive.tar",
+        source="/tmp/project/",
+    )
+
+    assert "-C /tmp project" in command
+    assert "-C /tmp/project project" not in command
 
 
 def test_shell_output_returns_empty_for_unexpected_payload() -> None:
@@ -765,6 +910,22 @@ def test_copy_downloaded_source_rejects_parent_type_and_missing_source(
 
     with pytest.raises(cli_file.typer.Exit):
         cli_file._copy_downloaded_source(tmp_path / "missing-source", tmp_path / "out")
+
+
+def test_copy_downloaded_source_rejects_missing_explicit_directory_destination(
+    tmp_path,
+) -> None:
+    import agentkit.toolkit.cli.sandbox.cli_file as cli_file
+
+    source_file = tmp_path / "source.txt"
+    source_file.write_text("source", encoding="utf-8")
+
+    with pytest.raises(cli_file.typer.Exit):
+        cli_file._copy_downloaded_source(
+            source_file,
+            tmp_path / "missing-dir",
+            destination_is_directory=True,
+        )
 
 
 def test_scp_command_defensive_operand_type_checks(monkeypatch, tmp_path) -> None:

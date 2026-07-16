@@ -105,6 +105,10 @@ def _resolve_scp_operands(
     return "upload", Path(source), _resolve_sandbox_operand(destination)
 
 
+def _local_destination_is_directory_operand(value: str) -> bool:
+    return value.endswith("/") or bool(os.altsep and value.endswith(os.altsep))
+
+
 def _new_remote_archive_path(prefix: str) -> str:
     return f"{SANDBOX_REMOTE_TMP_DIR}/{prefix}-{uuid.uuid4().hex}.tar"
 
@@ -475,11 +479,12 @@ def _build_remote_scp_archive_command(
     source: str,
 ) -> str:
     quoted_archive = shlex.quote(archive_path)
-    source_name = _remote_source_name(source)
+    normalized_source = source.rstrip("/") or "/"
+    source_name = _remote_source_name(normalized_source)
     if source_name is None:
         tar_command = f"tar -cf {quoted_archive} -C / ."
     else:
-        source_dir = posixpath.dirname(source) or "/"
+        source_dir = posixpath.dirname(normalized_source) or "/"
         tar_command = (
             f"tar -cf {quoted_archive} -C {shlex.quote(source_dir)} "
             f"{shlex.quote(source_name)}"
@@ -495,9 +500,15 @@ def _copy_downloaded_source(
     destination: Path,
     *,
     source_name: str | None = None,
+    destination_is_directory: bool = False,
 ) -> Path:
     name = source.name if source_name is None else source_name
-    target = destination / name if destination.is_dir() and name else destination
+    if destination_is_directory:
+        if not destination.is_dir():
+            error(f"Destination directory not found: {destination}")
+        target = destination / name if name else destination
+    else:
+        target = destination / name if destination.is_dir() and name else destination
     if not target.parent.is_dir():
         error(f"Destination parent directory not found: {target.parent}")
 
@@ -520,6 +531,7 @@ def _download_scp_source(
     *,
     source: str,
     destination: Path,
+    destination_is_directory: bool = False,
 ) -> Path:
     _remote_source_type(session, source)
     source_name = _remote_source_name(source)
@@ -548,6 +560,7 @@ def _download_scp_source(
                 staged_source,
                 destination,
                 source_name=source_name or "",
+                destination_is_directory=destination_is_directory,
             )
     finally:
         _cleanup_remote_file(session, remote_archive_path)
@@ -630,6 +643,9 @@ def scp_command(
                 session,
                 source=remote_path,
                 destination=local_path,
+                destination_is_directory=_local_destination_is_directory_operand(
+                    destination
+                ),
             )
     except typer.Exit:
         raise

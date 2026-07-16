@@ -342,6 +342,9 @@ Path rules:
   - `DEST/` with a trailing slash is treated as a directory, which is created
     when missing. The source is copied inside it using the source basename.
   - Missing parent directories are created for uploads.
+- Download destinations also preserve explicit directory intent: an existing
+  local `DEST/` receives the sandbox source under its basename; if `DEST/` does
+  not exist, the command fails instead of creating a file named `DEST`.
 
 Upload a local file or directory:
 
