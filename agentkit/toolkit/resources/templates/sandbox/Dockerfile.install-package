@@ -2,7 +2,6 @@
 # Usage:
 #   1. Replace or append packages in the npm install command below.
 #   2. agentkit sandbox build --dockerfile Dockerfile.install-package
-#   3. agentkit sandbox deploy
 
 FROM enterprise-public-cn-beijing.cr.volces.com/vefaas-public/code-cli:0.0.7
 

@@ -81,15 +81,15 @@ Options:
   `agentkit`.
 - `--tag`: optional. Container image tag; defaults to `{{timestamp}}`.
 
-### Init Dockerfile
+### Init
 
 Create a Dockerfile template for a custom sandbox image.
 
 ```bash
-agentkit sandbox init-dockerfile --template package
-agentkit sandbox init-dockerfile --template skill
-agentkit sandbox init-dockerfile --template web-server
-agentkit sandbox init-dockerfile --template package -o ./Dockerfile
+agentkit sandbox init --template package
+agentkit sandbox init --template skill
+agentkit sandbox init --template web-server
+agentkit sandbox init --template package -o ./Dockerfile
 ```
 
 Options:

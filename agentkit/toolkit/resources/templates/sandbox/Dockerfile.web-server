@@ -4,7 +4,6 @@
 #      The default command expects ./server/server.py to accept --host and --port.
 #   2. Adjust the nginx location, APP_PORT, and the CMD as needed.
 #   3. agentkit sandbox build --dockerfile Dockerfile.web-server
-#   4. agentkit sandbox deploy
 
 FROM enterprise-public-cn-beijing.cr.volces.com/vefaas-public/code-cli:0.0.7
 
