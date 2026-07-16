@@ -24,7 +24,7 @@ from agentkit.toolkit.cli.sandbox.cli_create import create_command
 from agentkit.toolkit.cli.sandbox.cli_delete import delete_command
 from agentkit.toolkit.cli.sandbox.cli_exec import exec_command
 from agentkit.toolkit.cli.sandbox.cli_file import scp_command
-from agentkit.toolkit.cli.sandbox.cli_get import get_command
+from agentkit.toolkit.cli.sandbox.cli_list import list_command
 from agentkit.toolkit.cli.sandbox.cli_invoke import invoke_command
 from agentkit.toolkit.cli.sandbox.cli_init_dockerfile import init_dockerfile_command
 from agentkit.toolkit.cli.sandbox.cli_model_login import codex_login_command
@@ -46,7 +46,7 @@ sandbox_app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )(create_command)
 sandbox_app.command(name="delete")(delete_command)
-sandbox_app.command(name="get")(get_command)
+sandbox_app.command(name="list")(list_command)
 sandbox_app.command(name="mount")(mount_command)
 sandbox_app.command(
     name="exec",

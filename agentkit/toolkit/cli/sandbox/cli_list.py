@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Get command for sandbox CLI."""
+"""List command for sandbox CLI."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def _session_not_found_result(
     }
 
 
-def get_command(
+def list_command(
     ctx: typer.Context,
     session_id: Optional[str] = typer.Option(
         None,
@@ -78,7 +78,7 @@ def get_command(
         help="Sandbox tool type to resolve when tool id/name is omitted.",
     ),
 ) -> None:
-    """Get a sandbox session after syncing remote sessions for the current tool."""
+    """List sandbox sessions after syncing remote sessions for the current tool."""
     try:
         config_defaults = configured_sandbox_config()
         session_id = config_default_if_unprovided(

@@ -32,6 +32,20 @@ def _clear_cloud_provider_env(monkeypatch):
     monkeypatch.delenv("CLOUD_PROVIDER", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _use_local_sandbox_config(monkeypatch, tmp_path):
+    import agentkit.toolkit.cli.sandbox.config_store as config_store
+
+    config_path = tmp_path / ".agentkit" / "sandbox.yaml"
+    legacy_path = tmp_path / ".agentkit" / "sandbox" / "sandbox.yaml"
+    monkeypatch.setattr(config_store, "get_sandbox_config_path", lambda: config_path)
+    monkeypatch.setattr(
+        config_store,
+        "get_legacy_sandbox_config_path",
+        lambda: legacy_path,
+    )
+
+
 class _FakeCreateSessionResponse:
     user_session_id = "user-session-from-api"
     session_id = "session-from-api"
@@ -2022,8 +2036,8 @@ def test_sandbox_command_group_is_registered() -> None:
     assert result.exit_code == 0
     assert "create" in result.output
     assert "exec" in result.output
-    assert "get" in result.output
     assert "invoke" in result.output
+    assert "list" in result.output
     assert "mount" in result.output
     assert "shell" in result.output
     assert "web" in result.output
@@ -2032,7 +2046,7 @@ def test_sandbox_command_group_is_registered() -> None:
 @pytest.mark.parametrize(
     "args",
     [
-        ["sandbox", "get", "--help"],
+        ["sandbox", "list", "--help"],
         ["sandbox", "shell", "--help"],
         ["sandbox", "web", "--help"],
         ["sandbox", "exec", "--help"],
@@ -3607,9 +3621,9 @@ def test_ensure_sandbox_session_syncs_existing_session_after_stale_instance(
     )
 
 
-def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
+def test_cli_list_returns_stored_session(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     stored_result = {
@@ -3629,7 +3643,7 @@ def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
@@ -3647,7 +3661,7 @@ def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
 
     result = runner.invoke(
         app,
-        ["sandbox", "get", "--session-id", "user-1", "--tool-id", "tool-1"],
+        ["sandbox", "list", "--session-id", "user-1", "--tool-id", "tool-1"],
     )
 
     assert result.exit_code == 0
@@ -3657,12 +3671,12 @@ def test_cli_get_returns_stored_session(monkeypatch, tmp_path) -> None:
     )
 
 
-def test_cli_get_syncs_remote_sessions_with_pagination(
+def test_cli_list_syncs_remote_sessions_with_pagination(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     store_path.write_text(
@@ -3692,7 +3706,7 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
@@ -3720,7 +3734,7 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
 
     result = runner.invoke(
         app,
-        ["sandbox", "get", "--session-id", "user-2", "--tool-id", "tool-1"],
+        ["sandbox", "list", "--session-id", "user-2", "--tool-id", "tool-1"],
     )
 
     assert result.exit_code == 0
@@ -3746,12 +3760,12 @@ def test_cli_get_syncs_remote_sessions_with_pagination(
     assert stored["tool-1"]["user-2"]["terminal_shell_id"] == ["shell-local"]
 
 
-def test_cli_get_ignores_remote_sessions_without_user_session_id(
+def test_cli_list_ignores_remote_sessions_without_user_session_id(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     store_path.write_text(
@@ -3768,7 +3782,7 @@ def test_cli_get_ignores_remote_sessions_without_user_session_id(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
@@ -3796,7 +3810,7 @@ def test_cli_get_ignores_remote_sessions_without_user_session_id(
 
     result = runner.invoke(
         app,
-        ["sandbox", "get", "--session-id", "user-1", "--tool-id", "tool-1"],
+        ["sandbox", "list", "--session-id", "user-1", "--tool-id", "tool-1"],
     )
 
     assert result.exit_code == 0
@@ -3811,12 +3825,12 @@ def test_cli_get_ignores_remote_sessions_without_user_session_id(
     assert json.loads(result.output) == stored["tool-1"]["user-1"]
 
 
-def test_cli_get_without_session_id_returns_all_synced_sessions(
+def test_cli_list_without_session_id_returns_all_synced_sessions(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     store_path.write_text(
@@ -3833,7 +3847,7 @@ def test_cli_get_without_session_id_returns_all_synced_sessions(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
@@ -3854,7 +3868,7 @@ def test_cli_get_without_session_id_returns_all_synced_sessions(
         )
     ]
 
-    result = runner.invoke(app, ["sandbox", "get", "--tool-id", "tool-1"])
+    result = runner.invoke(app, ["sandbox", "list", "--tool-id", "tool-1"])
 
     assert result.exit_code == 0
     expected = {
@@ -3880,45 +3894,45 @@ def test_cli_get_without_session_id_returns_all_synced_sessions(
     assert _FakeToolsClient.list_sessions_call_count == 1
 
 
-def test_cli_get_without_session_id_returns_empty_store(
+def test_cli_list_without_session_id_returns_empty_store(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     _patch_store_path(monkeypatch, tmp_path)
     _patch_tool_store_path(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
     _FakeToolsClient.list_response = _FakeListToolsResponse()
 
-    result = runner.invoke(app, ["sandbox", "get"])
+    result = runner.invoke(app, ["sandbox", "list"])
 
     assert result.exit_code == 0
     assert json.loads(result.output) == {}
     assert _FakeToolsClient.list_sessions_call_count == 0
 
 
-def test_cli_get_reports_missing_session(monkeypatch, tmp_path) -> None:
+def test_cli_list_reports_missing_session(monkeypatch, tmp_path) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     _patch_tool_store_path(monkeypatch, tmp_path)
     store_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
 
     result = runner.invoke(
         app,
-        ["sandbox", "get", "--session-id", "missing-user"],
+        ["sandbox", "list", "--session-id", "missing-user"],
     )
 
     assert result.exit_code == 1
@@ -3929,17 +3943,17 @@ def test_cli_get_reports_missing_session(monkeypatch, tmp_path) -> None:
     }
 
 
-def test_cli_get_missing_session_includes_resolved_tool_id(
+def test_cli_list_missing_session_includes_resolved_tool_id(
     monkeypatch,
     tmp_path,
 ) -> None:
     from agentkit.toolkit.cli.cli import app
-    import agentkit.toolkit.cli.sandbox.cli_get as cli_get
+    import agentkit.toolkit.cli.sandbox.cli_list as cli_list
 
     store_path = _patch_store_path(monkeypatch, tmp_path)
     store_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        cli_get,
+        cli_list,
         "AgentkitToolsClient",
         lambda: _FakeToolsClient(),
     )
@@ -3948,7 +3962,7 @@ def test_cli_get_missing_session_includes_resolved_tool_id(
         app,
         [
             "sandbox",
-            "get",
+            "list",
             "--session-id",
             "missing-user",
             "--tool-id",

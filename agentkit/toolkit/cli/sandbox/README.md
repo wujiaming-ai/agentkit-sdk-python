@@ -273,14 +273,14 @@ that type's record. Tools created or resolved with snapshot support include
 `EnableSnapshot: true`; older cached records without this field are treated as
 snapshot-disabled.
 
-### Get
+### List
 
 Sync sessions for the current tool, then read sandbox sessions from the local
 session store.
 
 ```bash
-agentkit sandbox get --session-id 123456789
-agentkit sandbox get
+agentkit sandbox list --session-id 123456789
+agentkit sandbox list
 ```
 
 Options:
@@ -294,7 +294,7 @@ Options:
   Used when resolving the current tool after `--tool-id` and
   `AGENTKIT_SANDBOX_TOOL_ID` are both absent.
 
-Before returning, `get` calls `ListSessions` for the resolved tool and follows
+Before returning, `list` calls `ListSessions` for the resolved tool and follows
 `NextToken` until all pages are loaded. The returned remote sessions replace
 the same tool's records in `.agentkit/sandbox/sessions.json`; records for other
 tools are preserved. Sessions whose `UserSessionId` is empty are ignored because
@@ -466,7 +466,7 @@ Options:
 
 The CLI reads `tool_id` from `.agentkit/sandbox/sessions.json` by
 `--session-id`. If the session is not found locally, it syncs sessions for the
-current tool using the same resolution behavior as `agentkit sandbox get`, then
+current tool using the same resolution behavior as `agentkit sandbox list`, then
 checks the local session store again. After resolving the tool, the CLI calls
 `GetTool` and reads the bucket from `TosMountConfig.MountPoints[].BucketName`;
 if the tool has no TOS mount, the command exits with an error. The discovery
@@ -691,7 +691,7 @@ Example:
 - `session_sync.py`: shared remote session list/sync helpers.
 - `tool_resolve.py`: shared sandbox tool resolution and local tool cache helpers.
 - `cli_create.py`: create command implementation.
-- `cli_get.py`: get command implementation.
+- `cli_list.py`: list command implementation.
 - `cli_shell.py`: shell command implementation.
 - `cli_exec.py`: streaming exec command implementation.
 - `cli_run.py`: multi-tab exec runner implementation.
