@@ -50,6 +50,24 @@ def test_streaming_cumulative_chunks_are_emitted_as_deltas():
     ]
 
 
+def test_streaming_ignores_empty_chunks_and_duplicate_cumulative_text():
+    class DuplicateRunnable:
+        async def astream(self, payload):
+            assert payload == {"input": "hi"}
+            yield ""
+            yield "a"
+            yield "a"
+
+    events = _collect_events(
+        LangChainAgentkitBridge(DuplicateRunnable(), name="lc_duplicate"),
+    )
+
+    assert events == [
+        {"partial": True, "text": "a"},
+        {"partial": False, "text": "a"},
+    ]
+
+
 def test_streaming_falls_back_to_text_input_for_text_only_runnables():
     class TextOnlyRunnable:
         async def astream(self, payload):

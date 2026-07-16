@@ -7,7 +7,7 @@ import hashlib
 import inspect
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 try:
     from langchain_core.messages import HumanMessage
@@ -35,6 +35,7 @@ from agentkit.frameworks._common import (
     chunk_to_text,
     user_text,
 )
+from agentkit.observability import framework_telemetry
 
 
 LANGGRAPH_PENDING_INTERRUPT_STATE_KEY = "agentkit:langgraph:pending_interrupt"
@@ -185,6 +186,7 @@ def _update_output_text(data: Any) -> str:
 class LangGraphAgentkitBridge(BaseAgent):
     """Adapt a compiled LangGraph graph to AgentKit's ADK runtime boundary."""
 
+    agentkit_source_framework: ClassVar[str] = "langgraph"
     _graph: Any = PrivateAttr()
     _graph_factory: bool = PrivateAttr(default=False)
     _input_key: str | None = PrivateAttr(default=None)
@@ -413,76 +415,103 @@ class LangGraphAgentkitBridge(BaseAgent):
         self,
         ctx: InvocationContext,
     ) -> AsyncGenerator[Event, None]:
-        config = self._graph_config(ctx)
-        resume_pending = self._pending_interrupt(ctx) is not None
-        payload = self._run_payload(ctx)
-        graph = await self._graph_for_run(config)
-        accumulated_text = ""
-        last_update: Any = None
-        pending_update_text = ""
-        streamed = False
+        session = getattr(ctx, "session", None)
+        with framework_telemetry.start_invocation(
+            framework="langgraph",
+            agent_name=self.name,
+            invocation_id=ctx.invocation_id,
+            session_id=getattr(session, "id", None),
+        ) as observation:
+            config = self._graph_config(ctx)
+            resume_pending = self._pending_interrupt(ctx) is not None
+            payload = self._run_payload(ctx)
+            graph = await self._graph_for_run(config)
+            accumulated_text = ""
+            last_update: Any = None
+            pending_update_text = ""
+            streamed = False
 
-        async for item in self._stream_graph(graph, payload, config, prefer_sync=resume_pending):
-            streamed = True
-            mode = ""
-            data = item
-            if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
-                mode, data = item
-            elif isinstance(item, dict) and isinstance(item.get("type"), str):
-                mode = item["type"]
-                data = item.get("data")
-            elif isinstance(item, dict):
-                mode = "updates"
+            async for item in self._stream_graph(
+                graph,
+                payload,
+                config,
+                prefer_sync=resume_pending,
+            ):
+                streamed = True
+                mode = ""
+                data = item
+                if (
+                    isinstance(item, tuple)
+                    and len(item) == 2
+                    and isinstance(item[0], str)
+                ):
+                    mode, data = item
+                elif isinstance(item, dict) and isinstance(item.get("type"), str):
+                    mode = item["type"]
+                    data = item.get("data")
+                elif isinstance(item, dict):
+                    mode = "updates"
 
-            if mode == "messages":
-                if not self._message_stream_allowed(data):
+                if mode == "messages":
+                    if not self._message_stream_allowed(data):
+                        continue
+                    message = data[0] if isinstance(data, tuple) and data else data
+                    text = chunk_to_text(message)
+                    if not text:
+                        continue
+                    delta = chunk_delta(accumulated_text, text)
+                    if not delta:
+                        continue
+                    accumulated_text += delta
+                    observation.observe_output(delta)
+                    yield adk_event(ctx, self.name, delta, partial=True)
                     continue
-                message = data[0] if isinstance(data, tuple) and data else data
-                text = chunk_to_text(message)
-                if not text:
-                    continue
-                delta = chunk_delta(accumulated_text, text)
-                if not delta:
-                    continue
-                accumulated_text += delta
-                yield adk_event(ctx, self.name, delta, partial=True)
-                continue
 
-            if mode == "updates":
-                interrupt = _interrupt_payload(data)
-                if interrupt is not None:
-                    state_delta = self._interrupt_state_delta(ctx, config, interrupt)
-                    event_kwargs: dict[str, Any] = {}
-                    if state_delta:
-                        event_kwargs["actions"] = EventActions(state_delta=state_delta)
-                    yield Event(
-                        invocation_id=ctx.invocation_id,
-                        author=self.name,
-                        branch=ctx.branch,
-                        interrupted=True,
-                        error_code="LANGGRAPH_INTERRUPT",
-                        error_message="LangGraph execution interrupted and requires resume input.",
-                        custom_metadata={"langgraph_interrupt": interrupt},
-                        **event_kwargs,
-                    )
-                    return
-                last_update = data
-                text = _update_output_text(data)
+                if mode == "updates":
+                    interrupt = _interrupt_payload(data)
+                    if interrupt is not None:
+                        state_delta = self._interrupt_state_delta(ctx, config, interrupt)
+                        event_kwargs: dict[str, Any] = {}
+                        if state_delta:
+                            event_kwargs["actions"] = EventActions(
+                                state_delta=state_delta
+                            )
+                        observation.mark_interrupted("LANGGRAPH_INTERRUPT")
+                        yield Event(
+                            invocation_id=ctx.invocation_id,
+                            author=self.name,
+                            branch=ctx.branch,
+                            interrupted=True,
+                            error_code="LANGGRAPH_INTERRUPT",
+                            error_message="LangGraph execution interrupted and requires resume input.",
+                            custom_metadata={"langgraph_interrupt": interrupt},
+                            **event_kwargs,
+                        )
+                        return
+                    last_update = data
+                    text = _update_output_text(data)
+                    if text:
+                        pending_update_text = text
+                    continue
+
+                text = chunk_to_text(data)
                 if text:
                     pending_update_text = text
-                continue
 
-            text = chunk_to_text(data)
-            if text:
-                pending_update_text = text
+            if streamed:
+                update_text = pending_update_text or _update_output_text(last_update)
+                final_text = update_text or accumulated_text
+            else:
+                final_text = _update_output_text(
+                    await self._call_once(graph, payload, config)
+                )
 
-        if streamed:
-            update_text = pending_update_text or _update_output_text(last_update)
-            final_text = update_text or accumulated_text
-        else:
-            final_text = _update_output_text(await self._call_once(graph, payload, config))
-
-        if final_text:
-            yield self._final_event(ctx, final_text, clear_pending_interrupt=resume_pending)
-        elif resume_pending:
-            yield self._clear_pending_interrupt_event(ctx)
+            if final_text:
+                observation.observe_output(final_text)
+                yield self._final_event(
+                    ctx,
+                    final_text,
+                    clear_pending_interrupt=resume_pending,
+                )
+            elif resume_pending:
+                yield self._clear_pending_interrupt_event(ctx)

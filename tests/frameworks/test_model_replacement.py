@@ -106,13 +106,55 @@ def test_model_replacement_patches_strands_bedrock_and_anthropic(monkeypatch):
     assert model.config["model_id"] == "doubao-test-model"
     assert model.config["params"] == {"max_tokens": 128}
     assert model.config["context_window_limit"] == 2048
-    assert model.config["stream"] is True
+    assert "stream" not in model.config
     assert model.client_args == {
         "base_url": ARK_DEFAULT_BASE_URL,
         "api_key": "ark-test-key",
+        "timeout": 60.0,
+        "max_retries": 0,
     }
     assert type(bedrock.BedrockModel()).__name__ == "AgentKitOpenAIModel"
     assert anthropic.AnthropicModel().config["model_id"] == "doubao-test-model"
+
+
+def test_model_replacement_model_client_timeout_and_retries_are_configurable(monkeypatch):
+    models, _, _ = _install_fake_strands(monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "ark-test-key")
+    monkeypatch.setenv("ARK_MODEL_ID", "doubao-test-model")
+    monkeypatch.setenv("ARK_MODEL_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("ARK_MODEL_MAX_RETRIES", "2")
+
+    assert apply_agentkit_model_replacement() is True
+
+    model = models.BedrockModel()
+    assert model.client_args["timeout"] == 12.5
+    assert model.client_args["max_retries"] == 2
+
+
+def test_model_replacement_rejects_invalid_timeout_and_retries(monkeypatch):
+    models, _, _ = _install_fake_strands(monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "ark-test-key")
+    monkeypatch.setenv("ARK_MODEL_ID", "doubao-test-model")
+    monkeypatch.setenv("ARK_MODEL_TIMEOUT_SECONDS", "0")
+    assert apply_agentkit_model_replacement() is True
+
+    with pytest.raises(RuntimeError, match="ARK_MODEL_TIMEOUT_SECONDS"):
+        models.BedrockModel()
+
+    monkeypatch.setenv("ARK_MODEL_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("ARK_MODEL_MAX_RETRIES", "-1")
+    with pytest.raises(RuntimeError, match="ARK_MODEL_MAX_RETRIES"):
+        models.BedrockModel()
+
+    monkeypatch.setenv("ARK_MODEL_TIMEOUT_SECONDS", "bad")
+    monkeypatch.setenv("ARK_MODEL_MAX_RETRIES", "0")
+    with pytest.raises(RuntimeError, match="ARK_MODEL_TIMEOUT_SECONDS"):
+        models.BedrockModel()
+
+    monkeypatch.setenv("ARK_MODEL_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("ARK_MODEL_MAX_RETRIES", "bad")
+    with pytest.raises(RuntimeError, match="ARK_MODEL_MAX_RETRIES"):
+        models.BedrockModel()
 
 
 def test_model_replacement_can_be_disabled(monkeypatch, caplog):

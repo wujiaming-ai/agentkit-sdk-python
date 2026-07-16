@@ -19,7 +19,12 @@ from starlette.responses import Response
 from starlette.routing import Mount
 from typing_extensions import override
 
+from agentkit.apps.agent_server_app.middleware import (
+    AgentkitTelemetryHTTPMiddleware,
+)
+from agentkit.apps.agent_server_app.telemetry import exception_message, telemetry
 from agentkit.apps.base_app import BaseAgentkitApp
+from agentkit.observability import framework_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -504,6 +509,7 @@ class AgentkitLangGraphServerApp(BaseAgentkitApp):
         self.app = server_module.app
         self._client = get_client(url=None, api_key=None)
         self._attach_agentkit_routes()
+        self.app.add_middleware(AgentkitTelemetryHTTPMiddleware)
 
     def _run_kwargs(self, req: AgentkitRunRequest) -> dict[str, Any]:
         app_name = req.app_name or self.graph_id
@@ -546,35 +552,55 @@ class AgentkitLangGraphServerApp(BaseAgentkitApp):
         )
 
     async def _stream_events(self, req: AgentkitRunRequest):
-        await self._ensure_thread(req.app_name or self.graph_id, req.user_id, req.session_id)
-        accumulated_text = ""
-        final_text = ""
-        async for chunk in self._client.runs.stream(
-            **self._run_kwargs(req),
-            stream_mode=["messages", "updates", "values"],
-            version="v2",
-        ):
-            mode, data = _stream_chunk(chunk)
-            if mode == "messages" or mode.startswith("messages/"):
-                text = _stream_message_text(data)
-                delta = _chunk_delta(accumulated_text, text)
-                if delta:
-                    accumulated_text += delta
-                    yield _agentkit_text_event(self.graph_id, delta, partial=True)
-                if text:
-                    final_text = text
-                continue
-            if mode in {"updates", "values"}:
-                interrupt = _interrupt_payload(data)
-                if interrupt is not None:
-                    yield _interrupt_event(self.graph_id, interrupt)
-                    return
-                text = _update_output_text(data)
-                if text:
-                    final_text = text
-        final_text = final_text or accumulated_text
-        if final_text:
-            yield _agentkit_text_event(self.graph_id, final_text, partial=False)
+        with framework_telemetry.start_invocation(
+            framework="langgraph",
+            agent_name=self.graph_id,
+            session_id=req.session_id,
+        ) as observation:
+            await self._ensure_thread(
+                req.app_name or self.graph_id,
+                req.user_id,
+                req.session_id,
+            )
+            accumulated_text = ""
+            final_text = ""
+            async for chunk in self._client.runs.stream(
+                **self._run_kwargs(req),
+                stream_mode=["messages", "updates", "values"],
+                version="v2",
+            ):
+                mode, data = _stream_chunk(chunk)
+                if mode == "messages" or mode.startswith("messages/"):
+                    text = _stream_message_text(data)
+                    delta = _chunk_delta(accumulated_text, text)
+                    if delta:
+                        accumulated_text += delta
+                        observation.observe_output(delta)
+                        yield _agentkit_text_event(
+                            self.graph_id,
+                            delta,
+                            partial=True,
+                        )
+                    if text:
+                        final_text = text
+                    continue
+                if mode in {"updates", "values"}:
+                    interrupt = _interrupt_payload(data)
+                    if interrupt is not None:
+                        observation.mark_interrupted("LANGGRAPH_INTERRUPT")
+                        yield _interrupt_event(self.graph_id, interrupt)
+                        return
+                    text = _update_output_text(data)
+                    if text:
+                        final_text = text
+            final_text = final_text or accumulated_text
+            if final_text:
+                observation.observe_output(final_text)
+                yield _agentkit_text_event(
+                    self.graph_id,
+                    final_text,
+                    partial=False,
+                )
 
     def _attach_agentkit_routes(self) -> None:
         async def health(request: Request) -> JSONResponse:
@@ -676,7 +702,8 @@ class AgentkitLangGraphServerApp(BaseAgentkitApp):
                         yield f"data: {_event_json(event)}\n\n"
                 except Exception as exc:
                     logger.exception("Error in LangGraph Server AgentKit stream: %s", exc)
-                    yield f"data: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
+                    telemetry.record_current_exception(exc)
+                    yield f"data: {json.dumps({'error': exception_message(exc)}, ensure_ascii=False)}\n\n"
 
             return StreamingResponse(event_generator(), media_type="text/event-stream")
 

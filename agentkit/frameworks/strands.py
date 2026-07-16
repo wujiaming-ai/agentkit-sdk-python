@@ -9,7 +9,7 @@ import copy
 from dataclasses import dataclass
 import inspect
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -25,6 +25,7 @@ from agentkit.frameworks._common import (
     maybe_await,
     user_text,
 )
+from agentkit.observability import framework_telemetry
 
 
 STRANDS_PENDING_INTERRUPT_STATE_KEY = "agentkit:strands:pending_interrupt"
@@ -386,6 +387,7 @@ def _is_interrupt_result(result: Any) -> bool:
 class StrandsAgentkitBridge(BaseAgent):
     """Adapt a Strands Agent, A2AAgent, Graph, or Swarm to AgentKit's ADK runtime."""
 
+    agentkit_source_framework: ClassVar[str] = "strands"
     _source: Any = PrivateAttr()
     _agent_factory: bool = PrivateAttr(default=False)
     _max_session_agents: int = PrivateAttr(default=1000)
@@ -587,39 +589,58 @@ class StrandsAgentkitBridge(BaseAgent):
         self,
         ctx: InvocationContext,
     ) -> AsyncGenerator[Event, None]:
-        pending = _pending_interrupt(ctx, self.name)
-        prompt = _resume_prompt(user_text(ctx), pending) if pending else user_text(ctx)
-        accumulated_text = ""
-        final_text = ""
-
-        stream = (
-            self._run_with_factory(ctx, prompt)
-            if self._agent_factory
-            else self._run_with_singleton(ctx, prompt)
-        )
-
-        async for item in stream:
-            result = _result_from_event(item)
-            if result is not None:
-                if _is_interrupt_result(result):
-                    yield self._interrupt_event(ctx, result)
-                    return
-                text = _result_to_text(result)
-                if text:
-                    final_text = text
-                continue
-
-            text = _stream_text_from_event(item)
-            if text:
-                accumulated_text += text
-                yield adk_event(ctx, self.name, text, partial=True)
-
-        text = final_text or accumulated_text
-        if text:
-            yield self._final_event(
-                ctx,
-                text,
-                clear_pending_interrupt=pending is not None,
+        session = getattr(ctx, "session", None)
+        with framework_telemetry.start_invocation(
+            framework="strands",
+            agent_name=self.name,
+            invocation_id=ctx.invocation_id,
+            session_id=getattr(session, "id", None),
+        ) as observation:
+            pending = _pending_interrupt(ctx, self.name)
+            prompt = (
+                _resume_prompt(user_text(ctx), pending) if pending else user_text(ctx)
             )
-        elif pending is not None:
-            yield self._clear_pending_interrupt_event(ctx)
+            accumulated_text = ""
+            final_text = ""
+
+            stream = (
+                self._run_with_factory(ctx, prompt)
+                if self._agent_factory
+                else self._run_with_singleton(ctx, prompt)
+            )
+
+            async for item in stream:
+                result = _result_from_event(item)
+                if result is not None:
+                    if _is_interrupt_result(result):
+                        observation.mark_interrupted("STRANDS_INTERRUPT")
+                        yield self._interrupt_event(ctx, result)
+                        return
+                    text = _result_to_text(result)
+                    if text:
+                        final_text = text
+                    metrics_value = getattr(result, "metrics", None)
+                    usage = getattr(metrics_value, "accumulated_usage", None)
+                    if isinstance(usage, dict):
+                        observation.observe_usage(
+                            input_tokens=usage.get("inputTokens"),
+                            output_tokens=usage.get("outputTokens"),
+                        )
+                    continue
+
+                text = _stream_text_from_event(item)
+                if text:
+                    accumulated_text += text
+                    observation.observe_output(text)
+                    yield adk_event(ctx, self.name, text, partial=True)
+
+            text = final_text or accumulated_text
+            if text:
+                observation.observe_output(text)
+                yield self._final_event(
+                    ctx,
+                    text,
+                    clear_pending_interrupt=pending is not None,
+                )
+            elif pending is not None:
+                yield self._clear_pending_interrupt_event(ctx)

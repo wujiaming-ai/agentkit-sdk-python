@@ -12,17 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable
+from __future__ import annotations
 
-from opentelemetry import trace
-from opentelemetry import context as context_api
+from typing import Callable
 
 from agentkit.apps.agent_server_app.telemetry import telemetry
 
-_EXCLUDED_HEADERS = {"authorization", "token"}
+
+def _headers(scope: dict) -> dict[str, str]:
+    return {
+        key.decode("latin-1").lower(): value.decode("latin-1")
+        for key, value in scope.get("headers", ())
+    }
+
+
+def _server_address(scope: dict) -> str | None:
+    server = scope.get("server")
+    if isinstance(server, (tuple, list)) and server:
+        return str(server[0])
+    return None
 
 
 class AgentkitTelemetryHTTPMiddleware:
+    """OTel-compatible ASGI request instrumentation.
+
+    The middleware enriches an existing auto-instrumented HTTP span when one is
+    current. Otherwise it creates a SERVER span using the configured global
+    propagator, so W3C Trace Context and custom ``OTEL_PROPAGATORS`` settings
+    remain authoritative.
+    """
+
     def __init__(self, app: Callable):
         self.app = app
 
@@ -32,47 +51,37 @@ class AgentkitTelemetryHTTPMiddleware:
 
         method = scope.get("method", "")
         path = scope.get("path", "")
-        headers_list = scope.get("headers", [])
-        headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in headers_list}
-        span = telemetry.tracer.start_span(name="agent_server_request")
-        ctx = trace.set_span_in_context(span)
-        token = context_api.attach(ctx)
-        headers = {
-            k: v for k, v in headers.items() if k.lower() not in _EXCLUDED_HEADERS
-        }
-
-        # Currently unable to retrieve user_id and session_id from headers; keep logic for future use
-        user_id = headers.get("user_id")
-        session_id = headers.get("session_id")
-        if user_id:
-            headers["user_id"] = user_id
-        if session_id:
-            headers["session_id"] = session_id
-        telemetry.trace_agent_server(
-            func_name=f"{method} {path}",
-            span=span,
-            headers=headers,
-            text="",  # do not consume body in middleware
+        state = telemetry.start_server_request(
+            method=method,
+            path=path,
+            headers=_headers(scope),
+            server_address=_server_address(scope),
         )
+        finished = False
+
+        def finish(*, exception: BaseException | None = None) -> None:
+            nonlocal finished
+            if finished:
+                return
+            finished = True
+            telemetry.finish_server_request(state, exception=exception)
 
         async def send_wrapper(message):
-            try:
-                if message.get("type") == "http.response.body":
-                    more_body = message.get("more_body", False)
-                    if not more_body:
-                        telemetry.trace_agent_server_finish(
-                            path=path, func_result="", exception=None
-                        )
-                elif message.get("type") == "http.response.start":
-                    # could record status code if needed
-                    pass
-            finally:
-                await send(message)
+            if message.get("type") == "http.response.start":
+                status = message.get("status")
+                if isinstance(status, int):
+                    state.status_code = status
+            await send(message)
+            if (
+                message.get("type") == "http.response.body"
+                and not message.get("more_body", False)
+            ):
+                finish()
 
         try:
-            await self.app(scope, receive, send_wrapper)
-        except Exception as e:
-            telemetry.trace_agent_server_finish(path=path, func_result="", exception=e)
+            return await self.app(scope, receive, send_wrapper)
+        except BaseException as exc:
+            finish(exception=exc)
             raise
         finally:
-            context_api.detach(token)
+            finish()

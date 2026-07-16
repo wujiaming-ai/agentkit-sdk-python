@@ -150,10 +150,7 @@ def test_bridge_handles_plain_text_invalid_json_and_sync_generator():
         {"partial": True, "text": "he"},
         {"partial": True, "text": "ll"},
         {"partial": True, "text": "o"},
-        {"partial": True, "text": "!"},
-        {"partial": True, "text": '{"nested": {"value": 1}}'},
-        {"partial": True, "text": "2"},
-        {"partial": False, "text": 'hello!{"nested": {"value": 1}}2'},
+        {"partial": False, "text": "!"},
     ]
 
 
@@ -298,6 +295,18 @@ def test_agentcore_compat_invocations_uses_source_context_builder():
     assert seen == {"session_id": "built-session", "request_path": "/invocations"}
 
 
+def test_agentcore_compat_invocations_finishes_observation_when_handler_raises():
+    async def invoke(payload, context=None):
+        del payload, context
+        raise RuntimeError("handler boom")
+
+    app = FastAPI()
+    attach_bedrock_agentcore_compat_routes(app, AgentCoreLikeApp(invoke))
+
+    with pytest.raises(RuntimeError, match="handler boom"):
+        _request(app, "POST", "/invocations", json={"prompt": "hi"})
+
+
 def test_agentcore_compat_invocations_exposes_stream_errors_as_sse():
     async def invoke(payload, context=None):
         async def stream():
@@ -407,3 +416,24 @@ def test_agentcore_private_edge_helpers(monkeypatch):
 
     assert context.session_id == "session-1"
     assert context.request_headers[AGENTCORE_WORKLOAD_ACCESS_TOKEN_HEADER] == "workload-token"
+
+    assert agentcore_module._agentcore_chunk_text(
+        {"type": "response.failed", "message": "failed"}
+    ) == ""
+
+    class Observation:
+        def __init__(self):
+            self.calls = []
+
+        def observe_usage(self, **kwargs):
+            self.calls.append(kwargs)
+
+    observation = Observation()
+    agentcore_module._observe_agentcore_usage(observation, {"usage": "not-dict"})
+    assert observation.calls == []
+
+    agentcore_module._observe_agentcore_usage(
+        observation,
+        {"usage": {"inputTokens": 3, "output_tokens": 5}},
+    )
+    assert observation.calls == [{"input_tokens": 3, "output_tokens": 5}]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, ClassVar
 
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
@@ -19,6 +19,7 @@ from agentkit.frameworks._common import (
     maybe_await,
     user_text,
 )
+from agentkit.observability import framework_telemetry
 
 
 try:
@@ -30,6 +31,7 @@ except ImportError:  # pragma: no cover - depends on optional packages.
 class LangChainAgentkitBridge(BaseAgent):
     """Adapt a LangChain Runnable or callable to AgentKit's ADK runtime boundary."""
 
+    agentkit_source_framework: ClassVar[str] = "langchain"
     _runnable: Any = PrivateAttr()
     _input_key: str = PrivateAttr(default="input")
 
@@ -141,30 +143,39 @@ class LangChainAgentkitBridge(BaseAgent):
         self,
         ctx: InvocationContext,
     ) -> AsyncGenerator[Event, None]:
-        text_input = user_text(ctx)
-        payload = {self._input_key: text_input}
-        accumulated_text = ""
-        has_output = False
-        last_text = ""
-        streamed = False
+        session = getattr(ctx, "session", None)
+        with framework_telemetry.start_invocation(
+            framework="langchain",
+            agent_name=self.name,
+            invocation_id=ctx.invocation_id,
+            session_id=getattr(session, "id", None),
+        ) as observation:
+            text_input = user_text(ctx)
+            payload = {self._input_key: text_input}
+            accumulated_text = ""
+            has_output = False
+            last_text = ""
+            streamed = False
 
-        async for chunk in self._stream_chunks(payload, text_input):
-            streamed = True
-            text = chunk_to_text(chunk)
-            if not text:
-                continue
-            delta = chunk_delta(accumulated_text, text)
-            if not delta:
-                continue
-            accumulated_text += delta
-            has_output = True
-            last_text = accumulated_text
-            yield adk_event(ctx, self.name, delta, partial=True)
+            async for chunk in self._stream_chunks(payload, text_input):
+                streamed = True
+                text = chunk_to_text(chunk)
+                if not text:
+                    continue
+                delta = chunk_delta(accumulated_text, text)
+                if not delta:
+                    continue
+                accumulated_text += delta
+                has_output = True
+                last_text = accumulated_text
+                observation.observe_output(delta)
+                yield adk_event(ctx, self.name, delta, partial=True)
 
-        if not streamed:
-            result = await self._call_once(payload, text_input)
-            last_text = chunk_to_text(result)
+            if not streamed:
+                result = await self._call_once(payload, text_input)
+                last_text = chunk_to_text(result)
 
-        final_text = accumulated_text if has_output else last_text
-        if final_text:
-            yield adk_event(ctx, self.name, final_text, partial=False)
+            final_text = accumulated_text if has_output else last_text
+            if final_text:
+                observation.observe_output(final_text)
+                yield adk_event(ctx, self.name, final_text, partial=False)

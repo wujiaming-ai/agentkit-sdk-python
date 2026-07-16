@@ -46,6 +46,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from google.adk.agents.run_config import StreamingMode
+from google.adk.events import Event, EventActions
 from google.genai import types as genai_types
 
 import agentkit.apps.agent_server_app.agent_server_app as mod
@@ -76,6 +77,13 @@ assert _INVOKE_COMPAT_CODE is not None, "could not locate _invoke_compat code ob
 assert _INVOKE_COMPAT_CODE.co_freevars == ("self",), (
     f"unexpected freevars: {_INVOKE_COMPAT_CODE.co_freevars}"
 )
+_RUN_AGENT_SSE_CODE = _find_code(
+    mod.AgentkitAgentServerApp.__init__.__code__, "run_agent_sse"
+)
+assert _RUN_AGENT_SSE_CODE is not None, "could not locate run_agent_sse code object"
+assert _RUN_AGENT_SSE_CODE.co_freevars == ("self",), (
+    f"unexpected freevars: {_RUN_AGENT_SSE_CODE.co_freevars}"
+)
 
 
 def _make_cell(value):
@@ -93,6 +101,16 @@ def _bind_invoke_compat(fake_self):
         _INVOKE_COMPAT_CODE,
         mod.__dict__,
         "_invoke_compat",
+        None,
+        (_make_cell(fake_self),),
+    )
+
+
+def _bind_run_agent_sse(fake_self):
+    return pytypes.FunctionType(
+        _RUN_AGENT_SSE_CODE,
+        mod.__dict__,
+        "run_agent_sse",
         None,
         (_make_cell(fake_self),),
     )
@@ -241,8 +259,10 @@ class _FakeServer:
 class _FakeSelf:
     """The ``self`` the closure captures: only ``server`` is ever touched."""
 
-    def __init__(self, server) -> None:
+    def __init__(self, server, source_framework: str = "langchain") -> None:
         self.server = server
+        self._source_framework = source_framework
+        self._root_agent = pytypes.SimpleNamespace(name="root_agent")
 
 
 # Records of telemetry calls so tests can assert wiring without touching a
@@ -303,14 +323,44 @@ def _build(
     existing_session=None,
     events=None,
     run_exc: Exception | None = None,
+    source_framework: str = "langchain",
 ):
     runner = _FakeRunner(events if events is not None else [], raise_exc=run_exc)
     session_service = _FakeSessionService(existing_session=existing_session)
     agent_loader = _FakeAgentLoader(agents)
     server = _FakeServer(agent_loader, session_service, runner)
-    fake_self = _FakeSelf(server)
+    fake_self = _FakeSelf(server, source_framework=source_framework)
     invoke = _bind_invoke_compat(fake_self)
     return invoke, fake_self, server, session_service, runner
+
+
+class _FakeFrameworkTelemetry:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.observations: list[_FakeObservation] = []
+
+    def start_invocation(self, **kwargs):
+        self.calls.append(kwargs)
+        observation = _FakeObservation()
+        self.observations.append(observation)
+        return observation
+
+
+class _FakeObservation:
+    def __init__(self) -> None:
+        self.events = []
+        self.exited = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        del exc_type, exc, traceback
+        self.exited = True
+        return False
+
+    def observe_event(self, event):
+        self.events.append(event)
 
 
 async def _drain(response: StreamingResponse) -> list[str]:
@@ -648,6 +698,11 @@ def test_invoke_stream_is_lazy_no_runner_fetch_before_drain():
 # ===========================================================================
 
 
+class _EmptyStringError(Exception):
+    def __str__(self):
+        return ""
+
+
 def test_invoke_stream_emits_error_frame_when_runner_raises():
     boom = RuntimeError("runner exploded")
     invoke, _self, _server, _ss, _runner = _build(
@@ -660,6 +715,19 @@ def test_invoke_stream_emits_error_frame_when_runner_raises():
 
     # The generator catches the exception and yields a single error SSE frame.
     assert chunks == ['data: {"error": "runner exploded"}\n\n']
+
+
+def test_invoke_stream_uses_exception_type_when_error_message_is_empty():
+    boom = _EmptyStringError()
+    invoke, _self, _server, _ss, _runner = _build(
+        agents=("my_app",), existing_session=object(), run_exc=boom
+    )
+    request = _FakeRequest(json_payload={"prompt": "hi"})
+
+    response = asyncio.run(invoke(request))
+    chunks = asyncio.run(_drain(response))
+
+    assert chunks == ['data: {"error": "_EmptyStringError"}\n\n']
 
 
 def test_invoke_stream_error_path_traces_finish_with_the_exception():
@@ -677,3 +745,170 @@ def test_invoke_stream_error_path_traces_finish_with_the_exception():
     finish = _TELEMETRY_CALLS["finish"][0]
     assert finish["path"] == "/invoke"
     assert finish["exception"] is boom
+
+
+def test_invoke_adk_source_observes_events_without_changing_sse_payload(monkeypatch):
+    fake_telemetry = _FakeFrameworkTelemetry()
+    monkeypatch.setattr(mod, "framework_telemetry", fake_telemetry)
+    event = Event(
+        invocation_id="invocation",
+        author="agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="hello")],
+        ),
+    )
+    invoke, _self, _server, _ss, _runner = _build(
+        agents=("my_app",),
+        existing_session=object(),
+        events=[event],
+        source_framework="adk",
+    )
+
+    response = asyncio.run(invoke(_FakeRequest(json_payload={"prompt": "hi"})))
+    chunks = asyncio.run(_drain(response))
+
+    assert len(chunks) == 1
+    assert '"text":"hello"' in chunks[0]
+    assert fake_telemetry.calls == [
+        {
+            "framework": "adk",
+            "agent_name": "root_agent",
+            "session_id": "",
+        }
+    ]
+    assert fake_telemetry.observations[0].events == [event]
+
+
+def test_run_sse_raises_404_when_session_is_missing():
+    _invoke, fake_self, _server, _ss, _runner = _build(
+        existing_session=None,
+        source_framework="adk",
+    )
+    run_sse = _bind_run_agent_sse(fake_self)
+    req = pytypes.SimpleNamespace(
+        app_name="my_app",
+        user_id="user",
+        session_id="missing",
+        invocation_id="invocation",
+        streaming=True,
+        new_message=None,
+        state_delta=None,
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(run_sse(req))
+
+    assert excinfo.value.status_code == 404
+
+
+def test_run_sse_observes_adk_events_and_splits_artifact_delta(monkeypatch):
+    fake_telemetry = _FakeFrameworkTelemetry()
+    monkeypatch.setattr(mod, "framework_telemetry", fake_telemetry)
+    event = Event(
+        invocation_id="invocation",
+        author="agent",
+        content=genai_types.Content(
+            role="model",
+            parts=[genai_types.Part(text="answer")],
+        ),
+        actions=EventActions(artifactDelta={"artifact": 1}),
+    )
+    _invoke, fake_self, _server, _ss, runner = _build(
+        existing_session=object(),
+        events=[event],
+        source_framework="adk",
+    )
+    run_sse = _bind_run_agent_sse(fake_self)
+    req = pytypes.SimpleNamespace(
+        app_name="my_app",
+        user_id="user",
+        session_id="session",
+        invocation_id="invocation",
+        streaming=True,
+        new_message=genai_types.UserContent(parts=[genai_types.Part(text="hi")]),
+        state_delta={"k": "v"},
+    )
+
+    response = asyncio.run(run_sse(req))
+    chunks = asyncio.run(_drain(response))
+
+    assert len(chunks) == 2
+    content_event = json.loads(chunks[0].removeprefix("data: "))
+    artifact_event = json.loads(chunks[1].removeprefix("data: "))
+    assert content_event["content"]["parts"][0]["text"] == "answer"
+    assert content_event["actions"]["artifactDelta"] == {}
+    assert "content" not in artifact_event
+    assert artifact_event["actions"]["artifactDelta"] == {"artifact": 1}
+    call = runner.run_async_calls[0]
+    assert call["invocation_id"] == "invocation"
+    assert call["state_delta"] == {"k": "v"}
+    assert call["run_config"].streaming_mode == StreamingMode.SSE
+    assert fake_telemetry.calls == [
+        {
+            "framework": "adk",
+            "agent_name": "root_agent",
+            "invocation_id": "invocation",
+            "session_id": "session",
+            "streaming": True,
+        }
+    ]
+    assert fake_telemetry.observations[0].events == [event]
+
+
+def test_run_sse_stream_error_records_current_exception(monkeypatch):
+    monkeypatch.setattr(mod, "framework_telemetry", _FakeFrameworkTelemetry())
+    recorded = []
+    monkeypatch.setattr(
+        mod.telemetry,
+        "record_current_exception",
+        lambda exc: recorded.append(exc),
+    )
+    boom = RuntimeError("adk runner exploded")
+    _invoke, fake_self, _server, _ss, _runner = _build(
+        existing_session=object(),
+        run_exc=boom,
+        source_framework="adk",
+    )
+    run_sse = _bind_run_agent_sse(fake_self)
+    req = pytypes.SimpleNamespace(
+        app_name="my_app",
+        user_id="user",
+        session_id="session",
+        invocation_id="invocation",
+        streaming=False,
+        new_message=None,
+        state_delta=None,
+    )
+
+    response = asyncio.run(run_sse(req))
+    chunks = asyncio.run(_drain(response))
+
+    assert chunks == ['data: {"error": "adk runner exploded"}\n\n']
+    assert recorded == [boom]
+
+
+def test_run_sse_stream_uses_exception_type_when_error_message_is_empty(monkeypatch):
+    monkeypatch.setattr(mod, "framework_telemetry", _FakeFrameworkTelemetry())
+    monkeypatch.setattr(mod.telemetry, "record_current_exception", lambda exc: None)
+    boom = _EmptyStringError()
+    _invoke, fake_self, _server, _ss, _runner = _build(
+        existing_session=object(),
+        run_exc=boom,
+        source_framework="adk",
+    )
+    run_sse = _bind_run_agent_sse(fake_self)
+    req = pytypes.SimpleNamespace(
+        app_name="my_app",
+        user_id="user",
+        session_id="session",
+        invocation_id="invocation",
+        streaming=False,
+        new_message=None,
+        state_delta=None,
+    )
+
+    response = asyncio.run(run_sse(req))
+    chunks = asyncio.run(_drain(response))
+
+    assert chunks == ['data: {"error": "_EmptyStringError"}\n\n']

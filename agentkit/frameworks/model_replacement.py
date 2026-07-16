@@ -30,6 +30,8 @@ _BASE_URL_ALIAS_ENV_KEYS = (
     "OPENAI_API_BASE",
 )
 _API_KEY_ALIAS_ENV_KEYS = ("OPENAI_API_KEY",)
+_DEFAULT_MODEL_TIMEOUT_SECONDS = 60.0
+_DEFAULT_MODEL_MAX_RETRIES = 0
 
 
 def _target_model_id() -> str:
@@ -42,6 +44,32 @@ def _target_api_key() -> str:
 
 def _target_base_url() -> str:
     return os.getenv("ARK_BASE_URL") or ARK_DEFAULT_BASE_URL
+
+
+def _target_timeout_seconds() -> float:
+    raw = os.getenv("ARK_MODEL_TIMEOUT_SECONDS")
+    if raw is None or raw == "":
+        return _DEFAULT_MODEL_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError("ARK_MODEL_TIMEOUT_SECONDS must be a positive number.") from exc
+    if value <= 0:
+        raise RuntimeError("ARK_MODEL_TIMEOUT_SECONDS must be a positive number.")
+    return value
+
+
+def _target_max_retries() -> int:
+    raw = os.getenv("ARK_MODEL_MAX_RETRIES")
+    if raw is None or raw == "":
+        return _DEFAULT_MODEL_MAX_RETRIES
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("ARK_MODEL_MAX_RETRIES must be a non-negative integer.") from exc
+    if value < 0:
+        raise RuntimeError("ARK_MODEL_MAX_RETRIES must be a non-negative integer.")
+    return value
 
 
 def _replacement_enabled() -> bool:
@@ -67,8 +95,6 @@ def _replacement_model_config(config: dict[str, Any]) -> dict[str, Any]:
         replacement["params"] = params
     if "context_window_limit" in config:
         replacement["context_window_limit"] = config["context_window_limit"]
-    if "stream" in config:
-        replacement["stream"] = config["stream"]
     return replacement
 
 
@@ -86,11 +112,14 @@ def _agentkit_openai_model_cls() -> type[Any]:
                     "AgentKit model replacement is enabled, but no API key was "
                     "configured. Set ARK_API_KEY."
                 )
+            client_args = {
+                "base_url": _target_base_url(),
+                "api_key": api_key,
+                "timeout": _target_timeout_seconds(),
+                "max_retries": _target_max_retries(),
+            }
             super().__init__(
-                client_args={
-                    "base_url": _target_base_url(),
-                    "api_key": api_key,
-                },
+                client_args=client_args,
                 **_replacement_model_config(kwargs),
             )
 
@@ -156,8 +185,12 @@ def apply_agentkit_model_replacement() -> bool:
 
     The helper intentionally stays low-intrusion: it normalizes common model
     environment variables and patches only stable Strands Bedrock/Anthropic
-    model classes before user code constructs them. It does not rewrite project
-    source code or chase framework-specific model SDK constructor details.
+    model classes before user code constructs them. It preserves safe sampling
+    parameters, but does not carry provider-specific transport flags such as
+    ``stream`` across model SDKs. The replacement client also has a bounded
+    timeout/retry policy so provider incompatibilities fail explicitly instead
+    of hanging a migrated request. It does not rewrite project source code or
+    chase framework-specific model SDK constructor details.
     """
 
     if not _replacement_enabled():

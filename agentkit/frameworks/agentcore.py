@@ -6,7 +6,7 @@ import inspect
 import json
 from collections.abc import AsyncGenerator, Iterable
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
@@ -23,10 +23,7 @@ from agentkit.frameworks._common import (
     json_text,
     user_text,
 )
-from agentkit.frameworks.model_replacement import (
-    ARK_DEFAULT_BASE_URL,
-    apply_agentkit_model_replacement,
-)
+from agentkit.observability import FrameworkInvocation, framework_telemetry
 
 
 AGENTCORE_SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
@@ -227,7 +224,7 @@ def _agentcore_chunk_text(value: Any) -> str:
         if event_type == "response.thinking":
             return ""
         if event_type == "response.failed":
-            return content_to_text(value.get("message") or value.get("reason"))
+            return ""
         if isinstance(event_type, str) and event_type.startswith("response."):
             return ""
         for key in ("delta", "text", "content", "output", "answer", "message", "result"):
@@ -237,6 +234,72 @@ def _agentcore_chunk_text(value: Any) -> str:
                     return text
         return json_text(value)
     return content_to_text(value)
+
+
+_AGENTCORE_METADATA_KEYS = (
+    "runId",
+    "run_id",
+    "model",
+    "usage",
+    "timing",
+    "firstTokenAt",
+    "ttftMs",
+)
+
+
+def _json_value(value: Any) -> Any:
+    return json.loads(_safe_json(value))
+
+
+def _agentcore_event_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    metadata = {
+        key: _json_value(value[key])
+        for key in _AGENTCORE_METADATA_KEYS
+        if key in value
+    }
+    event_type = value.get("type")
+    if isinstance(event_type, str):
+        metadata["type"] = event_type
+    return metadata
+
+
+def _observe_agentcore_usage(
+    observation: FrameworkInvocation,
+    metadata: dict[str, Any],
+) -> None:
+    usage = metadata.get("usage")
+    if not isinstance(usage, dict):
+        return
+    observation.observe_usage(
+        input_tokens=usage.get("inputTokens", usage.get("input_tokens")),
+        output_tokens=usage.get("outputTokens", usage.get("output_tokens")),
+    )
+
+
+def _agentcore_error_event(
+    ctx: InvocationContext,
+    agent_name: str,
+    value: dict[str, Any],
+) -> Event:
+    message = content_to_text(value.get("message") or value.get("reason"))
+    error_code = content_to_text(value.get("code")) or "AGENTCORE_FAILED"
+    content = (
+        types.Content(role="model", parts=[types.Part(text=message)])
+        if message
+        else None
+    )
+    return Event(
+        invocation_id=ctx.invocation_id,
+        author=agent_name,
+        branch=ctx.branch,
+        partial=False,
+        content=content,
+        error_code=error_code,
+        error_message=message or "Bedrock AgentCore invocation failed.",
+        custom_metadata={"agentcore": _agentcore_event_metadata(value)},
+    )
 
 
 async def _iterate_stream(value: Any) -> AsyncGenerator[Any, None]:
@@ -262,11 +325,20 @@ def _sse_bytes(value: Any) -> bytes:
     return f"data: {_safe_json(value)}\n\n".encode("utf-8")
 
 
-async def _async_sse_stream(value: Any) -> AsyncGenerator[bytes, None]:
+async def _async_sse_stream(
+    value: Any,
+    observation: FrameworkInvocation | None = None,
+) -> AsyncGenerator[bytes, None]:
+    if observation is not None:
+        observation.attach_context()
     try:
         async for item in _iterate_stream(value):
             yield _sse_bytes(item)
     except Exception as exc:
+        if observation is not None:
+            observation.mark_failed(type(exc).__name__, str(exc))
+            if observation.span is not None:
+                observation.span.record_exception(exc)
         yield _sse_bytes(
             {
                 "error": str(exc),
@@ -274,6 +346,9 @@ async def _async_sse_stream(value: Any) -> AsyncGenerator[bytes, None]:
                 "message": "An error occurred during streaming",
             }
         )
+    finally:
+        if observation is not None:
+            observation.finish()
 
 
 def _json_response(value: Any) -> Response:
@@ -284,6 +359,8 @@ def _json_response(value: Any) -> Response:
 
 class BedrockAgentCoreAgentkitBridge(BaseAgent):
     """Adapt a Bedrock AgentCore entrypoint to AgentKit's ADK runtime."""
+
+    agentkit_source_framework: ClassVar[str] = "agentcore"
 
     def __init__(
         self,
@@ -299,31 +376,63 @@ class BedrockAgentCoreAgentkitBridge(BaseAgent):
         self,
         ctx: InvocationContext,
     ) -> AsyncGenerator[Event, None]:
-        payload = _payload_from_adk_text(user_text(ctx))
-        context = _context_from_adk(ctx)
-        result = await self._entry.invoke(payload, context)
-        accumulated = ""
+        session = getattr(ctx, "session", None)
+        with framework_telemetry.start_invocation(
+            framework="agentcore",
+            agent_name=self.name,
+            invocation_id=ctx.invocation_id,
+            session_id=getattr(session, "id", None),
+        ) as observation:
+            payload = _payload_from_adk_text(user_text(ctx))
+            context = _context_from_adk(ctx)
+            result = await self._entry.invoke(payload, context)
+            accumulated = ""
+            metadata: dict[str, Any] = {}
 
-        if _is_stream(result):
-            async for item in _iterate_stream(result):
-                text = _agentcore_chunk_text(item)
-                if text:
-                    accumulated += text
-                    yield adk_event(ctx, self.name, text, partial=True)
-        else:
-            accumulated = _agentcore_chunk_text(result)
+            if _is_stream(result):
+                async for item in _iterate_stream(result):
+                    item_metadata = _agentcore_event_metadata(item)
+                    if item_metadata:
+                        metadata.update(item_metadata)
+                        _observe_agentcore_usage(observation, item_metadata)
+                    if (
+                        isinstance(item, dict)
+                        and item.get("type") == "response.failed"
+                    ):
+                        error_event = _agentcore_error_event(ctx, self.name, item)
+                        observation.mark_failed(
+                            error_event.error_code or "AGENTCORE_FAILED",
+                            error_event.error_message,
+                        )
+                        yield error_event
+                        return
+                    text = _agentcore_chunk_text(item)
+                    if text:
+                        accumulated += text
+                        observation.observe_output(text)
+                        yield adk_event(ctx, self.name, text, partial=True)
+            else:
+                accumulated = _agentcore_chunk_text(result)
+                metadata.update(_agentcore_event_metadata(result))
+                _observe_agentcore_usage(observation, metadata)
 
-        if accumulated:
-            yield Event(
-                invocation_id=ctx.invocation_id,
-                author=self.name,
-                branch=ctx.branch,
-                partial=False,
-                content=types.Content(
-                    role="model",
-                    parts=[types.Part(text=accumulated)],
-                ),
-            )
+            if accumulated or metadata:
+                observation.observe_output(accumulated)
+                yield Event(
+                    invocation_id=ctx.invocation_id,
+                    author=self.name,
+                    branch=ctx.branch,
+                    partial=False,
+                    content=(
+                        types.Content(
+                            role="model",
+                            parts=[types.Part(text=accumulated)],
+                        )
+                        if accumulated
+                        else None
+                    ),
+                    custom_metadata={"agentcore": metadata} if metadata else None,
+                )
 
 
 def _normalize_prefix(prefix: str) -> str:
@@ -389,12 +498,26 @@ def attach_bedrock_agentcore_compat_routes(
             return task_response
 
         context = _context_from_request(source, request)
-        result = await entry.invoke(payload, context)
+        observation = framework_telemetry.start_invocation(
+            framework="agentcore",
+            agent_name=getattr(source, "name", None) or "bedrock_agentcore_agent",
+            invocation_id=request.headers.get(AGENTCORE_REQUEST_ID_HEADER),
+            session_id=request.headers.get(AGENTCORE_SESSION_HEADER),
+        )
+        observation.__enter__()
+        try:
+            result = await entry.invoke(payload, context)
+        except BaseException as exc:
+            observation.__exit__(type(exc), exc, exc.__traceback__)
+            raise
         if _is_stream(result):
+            observation.detach_context()
             return StreamingResponse(
-                _async_sse_stream(result),
+                _async_sse_stream(result, observation),
                 media_type="text/event-stream",
             )
+        observation.observe_output(_agentcore_chunk_text(result))
+        observation.finish()
         return _json_response(result)
 
     @app.get(ping_path)

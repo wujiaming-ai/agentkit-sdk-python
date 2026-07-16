@@ -32,6 +32,7 @@ assertions exercise the decorator in isolation.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -102,6 +103,14 @@ class _FakeHistogram:
 
     def record(self, value, attributes=None) -> None:
         self.records.append((value, attributes))
+
+
+class _FakeCounter:
+    def __init__(self) -> None:
+        self.adds: list = []
+
+    def add(self, value, attributes=None) -> None:
+        self.adds.append((value, attributes))
 
 
 def _make_func(name: str = "my_agent"):
@@ -337,6 +346,130 @@ def test_server_status_code_falsy_falls_back_to_plain_class_name(monkeypatch):
 
     _duration, attributes = fake_hist.records[0]
     assert attributes["error_type"] == "_StatusCodeExc"
+
+
+def test_server_span_validation_handles_broken_span_context():
+    class BrokenSpan:
+        def get_span_context(self):
+            raise RuntimeError("bad context")
+
+    assert server_tel._span_is_valid(BrokenSpan()) is False
+
+
+def test_server_set_invocation_context_sets_user_and_invocation(monkeypatch):
+    span = _FakeSpan()
+    monkeypatch.setattr(server_tel.trace, "get_current_span", lambda: span)
+
+    server_tel.telemetry.set_invocation_context(
+        session_id="session",
+        user_id="user",
+        invocation_id="invocation",
+    )
+
+    assert span.attributes["gen_ai.session.id"] == "session"
+    assert span.attributes["enduser.id"] == "user"
+    assert span.attributes["agentkit.invocation.id"] == "invocation"
+
+
+def test_server_record_current_exception_without_active_request(monkeypatch):
+    span = _FakeSpan()
+    monkeypatch.setattr(server_tel.trace, "get_current_span", lambda: span)
+    exc = RuntimeError("outside request")
+
+    server_tel.telemetry.record_current_exception(exc)
+
+    assert span.recorded_exceptions == [exc]
+    assert span.attributes["error.type"] == "RuntimeError"
+
+
+def test_server_finish_request_covers_status_error_cancel_and_idempotency(caplog):
+    telemetry = server_tel.Telemetry(clock_ns=lambda: 1_000_000_000)
+    telemetry.request_count = _FakeCounter()
+    telemetry.request_duration = _FakeHistogram()
+    telemetry.latency_histogram = _FakeHistogram()
+
+    server_error_span = _FakeSpan()
+    server_error = server_tel.RequestTelemetryState(
+        span=server_error_span,
+        path="/run",
+        method="POST",
+        start_ns=0,
+        owns_span=False,
+    )
+    telemetry.finish_server_request(server_error, status_code=503)
+    telemetry.finish_server_request(server_error, status_code=200)
+
+    assert len(telemetry.request_count.adds) == 1
+    assert telemetry.request_count.adds[0][1]["agentkit.operation.outcome"] == "error"
+    assert server_error_span.statuses[0].status_code == server_tel.StatusCode.ERROR
+    assert server_error_span.attributes["http.response.status_code"] == 503
+
+    cancelled_span = _FakeSpan()
+    cancelled = server_tel.RequestTelemetryState(
+        span=cancelled_span,
+        path="/run_sse",
+        method="POST",
+        start_ns=0,
+        owns_span=False,
+    )
+    telemetry.finish_server_request(cancelled, exception=asyncio.CancelledError())
+
+    assert telemetry.request_count.adds[-1][1]["agentkit.operation.outcome"] == "cancelled"
+    assert cancelled_span.attributes["agentkit.operation.outcome"] == "cancelled"
+
+    class BrokenMetric:
+        def add(self, *args, **kwargs):
+            raise RuntimeError("metric failed")
+
+        def record(self, *args, **kwargs):
+            raise RuntimeError("metric failed")
+
+    telemetry.request_count = BrokenMetric()
+    telemetry.request_duration = BrokenMetric()
+    telemetry.latency_histogram = BrokenMetric()
+    failed_metrics = server_tel.RequestTelemetryState(
+        span=_FakeSpan(),
+        path="/invoke",
+        method="POST",
+        start_ns=0,
+        owns_span=False,
+    )
+    telemetry.finish_server_request(failed_metrics)
+
+    assert "Failed to record AgentKit server metrics." in caplog.text
+
+
+def test_server_trace_finish_active_request_records_exception_and_noops_without_span(monkeypatch):
+    telemetry = server_tel.Telemetry()
+    state = server_tel.RequestTelemetryState(
+        span=_FakeSpan(),
+        path="/run",
+        method="POST",
+        start_ns=0,
+        owns_span=False,
+    )
+    token = telemetry._request_state.set(state)
+    exc = RuntimeError("active")
+    try:
+        telemetry.trace_agent_server_finish("/run", "", exc)
+    finally:
+        telemetry._request_state.reset(token)
+
+    assert state.exception is exc
+    assert state.span.recorded_exceptions == [exc]
+
+    monkeypatch.setattr(server_tel.trace, "get_current_span", lambda: None)
+    telemetry.trace_agent_server_finish("/run", "", RuntimeError("ignored"))
+
+
+def test_server_handle_exception_noops_for_missing_or_non_recording_span():
+    server_tel.Telemetry.handle_exception(None, RuntimeError("ignored"))
+
+    span = _FakeSpan(recording=False)
+    server_tel.Telemetry.handle_exception(span, RuntimeError("ignored"))
+
+    assert span.recorded_exceptions == []
+    assert span.statuses == []
 
 
 # ===========================================================================

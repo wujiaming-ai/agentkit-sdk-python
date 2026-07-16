@@ -16,7 +16,7 @@ import inspect
 import json
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import Any
 
 import uvicorn
@@ -66,8 +66,9 @@ from agentkit.apps.agent_server_app.origin import (
     split_allow_origins,
     supports_get_fast_api_kwarg,
 )
-from agentkit.apps.agent_server_app.telemetry import telemetry
+from agentkit.apps.agent_server_app.telemetry import exception_message, telemetry
 from agentkit.apps.base_app import BaseAgentkitApp
+from agentkit.observability import framework_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,12 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             raise TypeError("Either 'agent' or 'app' must be provided.")
 
         root_agent = entry.root_agent if isinstance(entry, App) else entry
+        self._root_agent = root_agent
+        self._source_framework = getattr(
+            root_agent,
+            "agentkit_source_framework",
+            "adk",
+        )
         session_service = _resolve_session_service(short_term_memory)
         memory_service = _resolve_memory_service(root_agent)
 
@@ -291,6 +298,11 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         @self.app.post("/run_sse")
         async def run_agent_sse(req: RunAgentRequest) -> StreamingResponse:
             logger.info("Overriding run_agent_sse endpoint...")
+            telemetry.set_invocation_context(
+                session_id=req.session_id,
+                user_id=req.user_id,
+                invocation_id=req.invocation_id,
+            )
             # SSE endpoint
             session = await self.server.session_service.get_session(
                 app_name=req.app_name,
@@ -298,11 +310,7 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                 session_id=req.session_id,
             )
             if not session:
-                e = HTTPException(status_code=404, detail="Session not found")
-                telemetry.trace_agent_server_finish(
-                    path="/run_sse", func_result="", exception=e
-                )
-                raise e
+                raise HTTPException(status_code=404, detail="Session not found")
 
             # Convert the events to properly formatted SSE
             async def event_generator():
@@ -311,51 +319,62 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
                         StreamingMode.SSE if req.streaming else StreamingMode.NONE
                     )
                     runner = await self.server.get_runner_async(req.app_name)
-                    async with Aclosing(
-                        runner.run_async(
-                            user_id=req.user_id,
-                            session_id=req.session_id,
-                            new_message=req.new_message,
-                            state_delta=req.state_delta,
-                            run_config=RunConfig(streaming_mode=stream_mode),
+                    observation_context = (
+                        framework_telemetry.start_invocation(
+                            framework="adk",
+                            agent_name=self._root_agent.name,
                             invocation_id=req.invocation_id,
+                            session_id=req.session_id,
+                            streaming=bool(req.streaming),
                         )
-                    ) as agen:
-                        async for event in agen:
-                            # ADK Web renders artifacts from `actions.artifactDelta`
-                            # during part processing *and* during action processing
-                            # 1) the original event with `artifactDelta` cleared (content)
-                            # 2) a content-less "action-only" event carrying `artifactDelta`
-                            events_to_stream = [event]
-                            if (
-                                event.actions.artifact_delta
-                                and event.content
-                                and event.content.parts
-                            ):
-                                content_event = event.model_copy(deep=True)
-                                content_event.actions.artifact_delta = {}
-                                artifact_event = event.model_copy(deep=True)
-                                artifact_event.content = None
-                                events_to_stream = [
-                                    content_event,
-                                    artifact_event,
-                                ]
-                            for event_to_stream in events_to_stream:
-                                sse_event = event_to_stream.model_dump_json(
-                                    exclude_none=True,
-                                    by_alias=True,
-                                )
-                                logger.debug(
-                                    "Generated event in agent run streaming: %s",
-                                    sse_event,
-                                )
-                                yield f"data: {sse_event}\n\n"
+                        if self._source_framework == "adk"
+                        else nullcontext(None)
+                    )
+                    with observation_context as observation:
+                        async with Aclosing(
+                            runner.run_async(
+                                user_id=req.user_id,
+                                session_id=req.session_id,
+                                new_message=req.new_message,
+                                state_delta=req.state_delta,
+                                run_config=RunConfig(streaming_mode=stream_mode),
+                                invocation_id=req.invocation_id,
+                            )
+                        ) as agen:
+                            async for event in agen:
+                                if observation is not None:
+                                    observation.observe_event(event)
+                                # ADK Web renders artifact deltas during both
+                                # content and action processing, so split mixed
+                                # events into content-only and action-only forms.
+                                events_to_stream = [event]
+                                if (
+                                    event.actions.artifact_delta
+                                    and event.content
+                                    and event.content.parts
+                                ):
+                                    content_event = event.model_copy(deep=True)
+                                    content_event.actions.artifact_delta = {}
+                                    artifact_event = event.model_copy(deep=True)
+                                    artifact_event.content = None
+                                    events_to_stream = [
+                                        content_event,
+                                        artifact_event,
+                                    ]
+                                for event_to_stream in events_to_stream:
+                                    sse_event = event_to_stream.model_dump_json(
+                                        exclude_none=True,
+                                        by_alias=True,
+                                    )
+                                    logger.debug(
+                                        "Generated event in agent run streaming: %s",
+                                        sse_event,
+                                    )
+                                    yield f"data: {sse_event}\n\n"
                 except Exception as e:
                     logger.exception("Error in event_generator: %s", e)
-                    telemetry.trace_agent_server_finish(
-                        path="/run_sse", func_result="", exception=e
-                    )
-                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    telemetry.record_current_exception(e)
+                    yield f"data: {json.dumps({'error': exception_message(e)})}\n\n"
                 # Returns a streaming response with the proper media type for SSE
 
             return StreamingResponse(
@@ -378,35 +397,35 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
         self.app.add_middleware(AgentkitTelemetryHTTPMiddleware)
 
         async def _invoke_compat(request: Request):
-            # Use current request span from middleware for telemetry
-            span = trace.get_current_span()
-
-            # Extract headers (fallback keys supported)
             headers = request.headers
-            telemetry_headers = {
-                k: v
-                for k, v in dict(headers).items()
-                if k.lower() not in {"authorization", "token"}
-            }
-            # trace request attributes on current span
             telemetry.trace_agent_server(
                 func_name="_invoke_compat",
-                span=span,
-                headers=telemetry_headers,
+                span=trace.get_current_span(),
+                headers={
+                    key: value
+                    for key, value in dict(headers).items()
+                    if key.lower() not in {"authorization", "token"}
+                },
                 text="",
             )
-
             user_id = headers.get("user_id") or "agentkit_user"
             session_id = headers.get("session_id") or ""
+            telemetry.set_invocation_context(
+                session_id=session_id,
+                user_id=user_id,
+            )
 
             # Determine app_name from loader
             app_names = self.server.agent_loader.list_agents()
             if not app_names:
                 exception = HTTPException(
-                    status_code=404, detail="No agents configured"
+                    status_code=404,
+                    detail="No agents configured",
                 )
                 telemetry.trace_agent_server_finish(
-                    path="/invoke", func_result="", exception=exception
+                    path="/invoke",
+                    func_result="",
+                    exception=exception,
                 )
                 raise exception
             app_name = app_names[0]
@@ -444,31 +463,47 @@ class AgentkitAgentServerApp(BaseAgentkitApp):
             async def event_generator():
                 try:
                     runner = await self.server.get_runner_async(app_name)
-                    async with Aclosing(
-                        runner.run_async(
-                            user_id=user_id,
-                            session_id=session_id,
-                            new_message=content,
-                            run_config=RunConfig(
-                                streaming_mode=StreamingMode.SSE
+                    observation_context = (
+                        framework_telemetry.start_invocation(
+                            framework="adk",
+                            agent_name=getattr(
+                                getattr(self, "_root_agent", None),
+                                "name",
+                                app_name,
                             ),
+                            session_id=session_id,
                         )
-                    ) as agen:
-                        async for event in agen:
-                            yield (
-                                "data: "
-                                + event.model_dump_json(
-                                    exclude_none=True, by_alias=True
-                                )
-                                + "\n\n"
+                        if getattr(self, "_source_framework", "adk") == "adk"
+                        else nullcontext(None)
+                    )
+                    with observation_context as observation:
+                        async with Aclosing(
+                            runner.run_async(
+                                user_id=user_id,
+                                session_id=session_id,
+                                new_message=content,
+                                run_config=RunConfig(
+                                    streaming_mode=StreamingMode.SSE
+                                ),
                             )
-                    # finish span on successful end of stream handled by middleware
-                    pass
+                        ) as agen:
+                            async for event in agen:
+                                if observation is not None:
+                                    observation.observe_event(event)
+                                yield (
+                                    "data: "
+                                    + event.model_dump_json(
+                                        exclude_none=True, by_alias=True
+                                    )
+                                    + "\n\n"
+                                )
                 except Exception as e:
                     telemetry.trace_agent_server_finish(
-                        path="/invoke", func_result="", exception=e
+                        path="/invoke",
+                        func_result="",
+                        exception=e,
                     )
-                    yield f'data: {{"error": "{str(e)}"}}\n\n'
+                    yield f"data: {json.dumps({'error': exception_message(e)})}\n\n"
 
             return StreamingResponse(
                 event_generator(),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -9,11 +10,21 @@ from types import SimpleNamespace
 
 import pytest
 from google.genai import types
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.testclient import TestClient
 
+from agentkit.apps.agent_server_app import middleware as middleware_mod
+from agentkit.apps.agent_server_app.telemetry import Telemetry
+from agentkit.apps.langgraph_server_app import langgraph_server_app as langgraph_app_mod
 from agentkit.apps.langgraph_server_app.langgraph_server_app import (
     AgentkitLangGraphServerApp,
     _agentkit_thread_id,
@@ -35,6 +46,7 @@ from agentkit.apps.langgraph_server_app.langgraph_server_app import (
     _stream_message_text,
     _update_output_text,
 )
+from agentkit.observability.framework import FrameworkTelemetry
 
 
 class _FakeThreads:
@@ -135,6 +147,18 @@ class _FailingRuns:
         yield
 
 
+class _EmptyStringError(Exception):
+    def __str__(self):
+        return ""
+
+
+class _EmptyErrorRuns:
+    async def stream(self, **kwargs):
+        del kwargs
+        raise _EmptyStringError()
+        yield
+
+
 class _FakeClient:
     def __init__(self):
         self.threads = _FakeThreads()
@@ -172,6 +196,38 @@ def _write_config(tmp_path: Path, body: str | None = None) -> Path:
         encoding="utf-8",
     )
     return config
+
+
+def _install_otel_test_stack(monkeypatch):
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    reader = InMemoryMetricReader()
+    meter_provider = MeterProvider(metric_readers=[reader])
+    request_telemetry = Telemetry(
+        tracer=tracer_provider.get_tracer("test.langgraph.server"),
+        meter=meter_provider.get_meter("test.langgraph.server"),
+    )
+    framework_telemetry = FrameworkTelemetry(
+        tracer=tracer_provider.get_tracer("test.langgraph.framework"),
+        meter=meter_provider.get_meter("test.langgraph.framework"),
+    )
+    monkeypatch.setattr(middleware_mod, "telemetry", request_telemetry)
+    monkeypatch.setattr(langgraph_app_mod, "telemetry", request_telemetry)
+    monkeypatch.setattr(langgraph_app_mod, "framework_telemetry", framework_telemetry)
+    return tracer_provider, exporter, meter_provider, reader
+
+
+def _metric_names(reader: InMemoryMetricReader) -> set[str]:
+    data = reader.get_metrics_data()
+    if data is None:
+        return set()
+    return {
+        metric.name
+        for resource in data.resource_metrics
+        for scope in resource.scope_metrics
+        for metric in scope.metrics
+    }
 
 
 def test_config_loader_reports_missing_invalid_and_non_object_files(tmp_path):
@@ -487,6 +543,78 @@ def test_run_sse_maps_agentkit_request_to_langgraph_thread_and_stream(tmp_path, 
     assert run_kwargs["if_not_exists"] == "create"
 
 
+def test_run_sse_links_request_and_langgraph_framework_observability(tmp_path, monkeypatch):
+    fake_client = _FakeClient()
+    _install_fake_langgraph(monkeypatch, fake_client)
+    tracer_provider, exporter, meter_provider, reader = _install_otel_test_stack(
+        monkeypatch
+    )
+    server = AgentkitLangGraphServerApp(config_path=_write_config(tmp_path))
+    client = TestClient(server.app)
+    message = types.UserContent(parts=[types.Part(text="hello")])
+    traceparent = (
+        "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+    )
+
+    response = client.post(
+        "/run_sse",
+        json={
+            "appName": "lead_agent",
+            "userId": "user-1",
+            "sessionId": "session-1",
+            "newMessage": message.model_dump(exclude_none=True, by_alias=True),
+            "streaming": True,
+        },
+        headers={
+            "traceparent": traceparent,
+            "authorization": "Bearer secret",
+            "x-api-key": "secret",
+        },
+    )
+
+    assert response.status_code == 200
+    tracer_provider.force_flush()
+    meter_provider.force_flush()
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    request_span = spans["POST /run_sse"]
+    framework_span = spans["invoke_agent langgraph"]
+    assert request_span.context.trace_id == int(
+        "0123456789abcdef0123456789abcdef",
+        16,
+    )
+    assert framework_span.parent.span_id == request_span.context.span_id
+    recorded_headers = json.loads(request_span.attributes["gen_ai.request.headers"])
+    assert recorded_headers["traceparent"] == traceparent
+    assert "authorization" not in recorded_headers
+    assert "x-api-key" not in recorded_headers
+    assert framework_span.attributes["agentkit.framework.name"] == "langgraph"
+    assert framework_span.attributes["agentkit.stream.event_count"] >= 1
+    metrics = _metric_names(reader)
+    assert "agentkit.server.request.duration" in metrics
+    assert "agentkit.framework.invocation.duration" in metrics
+
+
+def test_native_langgraph_routes_get_request_observability_only(tmp_path, monkeypatch):
+    fake_client = _FakeClient()
+    _install_fake_langgraph(monkeypatch, fake_client)
+    tracer_provider, exporter, meter_provider, reader = _install_otel_test_stack(
+        monkeypatch
+    )
+    server = AgentkitLangGraphServerApp(config_path=_write_config(tmp_path))
+    client = TestClient(server.app)
+
+    response = client.post("/threads")
+
+    assert response.status_code == 200
+    assert response.json() == {"native": "threads"}
+    tracer_provider.force_flush()
+    meter_provider.force_flush()
+    spans = exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["POST /threads"]
+    assert spans[0].attributes["agentkit.operation.outcome"] == "success"
+    assert "agentkit.framework.invocation.duration" not in _metric_names(reader)
+
+
 def test_run_sse_streams_langgraph_server_messages_partial_without_echoing_user(tmp_path, monkeypatch):
     fake_client = _FakeClient()
     fake_client.runs = _ServerStyleRuns()
@@ -642,6 +770,31 @@ def test_run_sse_returns_error_event_when_langgraph_stream_fails(tmp_path, monke
 
     assert response.status_code == 200
     assert "stream boom" in response.text
+
+
+def test_run_sse_uses_exception_type_when_langgraph_error_message_is_empty(
+    tmp_path, monkeypatch
+):
+    fake_client = _FakeClient()
+    fake_client.runs = _EmptyErrorRuns()
+    _install_fake_langgraph(monkeypatch, fake_client)
+    server = AgentkitLangGraphServerApp(config_path=_write_config(tmp_path))
+    client = TestClient(server.app)
+    message = types.UserContent(parts=[types.Part(text="hello")])
+
+    response = client.post(
+        "/run_sse",
+        json={
+            "appName": "lead_agent",
+            "userId": "user-1",
+            "sessionId": "session-1",
+            "newMessage": message.model_dump(exclude_none=True, by_alias=True),
+            "streaming": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert "_EmptyStringError" in response.text
 
 
 def test_session_create_tolerates_empty_and_invalid_json_bodies(tmp_path, monkeypatch):
