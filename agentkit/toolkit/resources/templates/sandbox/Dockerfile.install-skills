@@ -4,7 +4,6 @@
 #      You can create one with:
 #        agentkit skills init <skill-name> --path ./skills
 #   2. agentkit sandbox build --dockerfile Dockerfile.install-skills
-#   3. agentkit sandbox deploy
 
 FROM enterprise-public-cn-beijing.cr.volces.com/vefaas-public/code-cli:0.0.7
 

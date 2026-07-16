@@ -35,10 +35,7 @@ class DockerfileTemplate:
 
 
 _TEMPLATE_ROOT = (
-    Path(__file__).resolve().parents[2]
-    / "resources"
-    / "templates"
-    / "sandbox"
+    Path(__file__).resolve().parents[2] / "resources" / "templates" / "sandbox"
 )
 
 _AVAILABLE_TEMPLATES: dict[str, DockerfileTemplate] = {
@@ -78,7 +75,7 @@ def _read_template_file(template: DockerfileTemplate) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def init_dockerfile_command(
+def init_command(
     template: str = typer.Option(
         "package",
         "--template",

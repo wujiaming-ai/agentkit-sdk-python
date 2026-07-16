@@ -21,11 +21,11 @@ from agentkit.toolkit.cli.sandbox.cli import sandbox_app
 runner = CliRunner()
 
 
-def test_init_dockerfile_package_writes_default_template(monkeypatch, tmp_path):
+def test_init_package_writes_default_template(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(
         sandbox_app,
-        ["init-dockerfile", "--template", "package"],
+        ["init", "--template", "package"],
     )
 
     assert result.exit_code == 0
@@ -34,7 +34,7 @@ def test_init_dockerfile_package_writes_default_template(monkeypatch, tmp_path):
     )
     content = open("Dockerfile.install-package", encoding="utf-8").read()
     assert "Base image + npm package installation" in content
-    assert "agentkit sandbox deploy" in content
+    assert "agentkit sandbox build --dockerfile Dockerfile.install-package" in content
     assert (
         "FROM enterprise-public-cn-beijing.cr.volces.com/vefaas-public/code-cli:0.0.7"
         in content
@@ -42,11 +42,11 @@ def test_init_dockerfile_package_writes_default_template(monkeypatch, tmp_path):
     assert "is-even@1.0.0" in content
 
 
-def test_init_dockerfile_package_writes_custom_output_path(monkeypatch, tmp_path):
+def test_init_package_writes_custom_output_path(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(
         sandbox_app,
-        ["init-dockerfile", "--template", "package", "-o", "./Dockerfile"],
+        ["init", "--template", "package", "-o", "./Dockerfile"],
     )
 
     assert result.exit_code == 0
@@ -54,14 +54,14 @@ def test_init_dockerfile_package_writes_custom_output_path(monkeypatch, tmp_path
     assert 'ENV PATH="/opt/nodejs/22/bin:${PATH}"' in content
 
 
-def test_init_dockerfile_refuses_to_overwrite_without_force(monkeypatch, tmp_path):
+def test_init_refuses_to_overwrite_without_force(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     with open("Dockerfile", "w", encoding="utf-8") as file:
         file.write("FROM scratch\n")
 
     result = runner.invoke(
         sandbox_app,
-        ["init-dockerfile", "--template", "package", "-o", "./Dockerfile"],
+        ["init", "--template", "package", "-o", "./Dockerfile"],
     )
 
     assert result.exit_code == 1
@@ -69,7 +69,7 @@ def test_init_dockerfile_refuses_to_overwrite_without_force(monkeypatch, tmp_pat
     assert open("Dockerfile", encoding="utf-8").read() == "FROM scratch\n"
 
 
-def test_init_dockerfile_force_overwrites_existing_file(monkeypatch, tmp_path):
+def test_init_force_overwrites_existing_file(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     with open("Dockerfile", "w", encoding="utf-8") as file:
         file.write("FROM scratch\n")
@@ -77,7 +77,7 @@ def test_init_dockerfile_force_overwrites_existing_file(monkeypatch, tmp_path):
     result = runner.invoke(
         sandbox_app,
         [
-            "init-dockerfile",
+            "init",
             "--template",
             "package",
             "-o",
@@ -90,11 +90,11 @@ def test_init_dockerfile_force_overwrites_existing_file(monkeypatch, tmp_path):
     assert "is-even@1.0.0" in open("Dockerfile", encoding="utf-8").read()
 
 
-def test_init_dockerfile_skill_writes_default_template(monkeypatch, tmp_path):
+def test_init_skill_writes_default_template(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(
         sandbox_app,
-        ["init-dockerfile", "--template", "skill"],
+        ["init", "--template", "skill"],
     )
 
     assert result.exit_code == 0
@@ -108,11 +108,11 @@ def test_init_dockerfile_skill_writes_default_template(monkeypatch, tmp_path):
     assert "COPY skills/ /home/gem/.codex/skills/" in content
 
 
-def test_init_dockerfile_web_server_writes_default_template(monkeypatch, tmp_path):
+def test_init_web_server_writes_default_template(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(
         sandbox_app,
-        ["init-dockerfile", "--template", "web-server"],
+        ["init", "--template", "web-server"],
     )
 
     assert result.exit_code == 0
@@ -128,10 +128,10 @@ def test_init_dockerfile_web_server_writes_default_template(monkeypatch, tmp_pat
     assert "nginx -g 'daemon off;'" in content
 
 
-def test_init_dockerfile_unknown_template_exits_with_clear_error():
+def test_init_unknown_template_exits_with_clear_error():
     result = runner.invoke(
         sandbox_app,
-        ["init-dockerfile", "--template", "missing"],
+        ["init", "--template", "missing"],
     )
 
     assert result.exit_code == 1
