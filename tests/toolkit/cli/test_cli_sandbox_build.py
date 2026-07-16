@@ -52,6 +52,7 @@ class _FakeSandboxBuilder:
 def test_sandbox_build_maps_cli_options_to_builder_config(monkeypatch, tmp_path):
     import agentkit.toolkit.builders.ve_sandbox_pipeline as sandbox_pipeline
 
+    monkeypatch.chdir(tmp_path)
     _FakeSandboxBuilder.created = []
     _FakeSandboxBuilder.result = BuildResult(
         success=True,
@@ -95,6 +96,7 @@ def test_sandbox_build_maps_cli_options_to_builder_config(monkeypatch, tmp_path)
 def test_sandbox_build_exits_nonzero_on_failed_build(monkeypatch, tmp_path):
     import agentkit.toolkit.builders.ve_sandbox_pipeline as sandbox_pipeline
 
+    monkeypatch.chdir(tmp_path)
     _FakeSandboxBuilder.created = []
     _FakeSandboxBuilder.result = BuildResult(success=False, error="pipeline failed")
     _FakeSandboxConfig.created = []

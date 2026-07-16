@@ -38,7 +38,6 @@ CONFIG_VERSION = 1
 DEFAULT_TOOL_TYPE = "CodeEnv"
 DEFAULT_CPU = 4
 DEFAULT_SESSION_TTL = 28800
-DEFAULT_SESSION_WORKSPACE = "/home/gem"
 VALID_TOOL_TYPES = ("CodeEnv", "SkillEnv", "Private")
 VALID_CPU_VALUES = (2, 4, 8, 16)
 
@@ -165,8 +164,6 @@ CONFIG_KEY_SPECS: dict[str, ConfigKeySpec] = {
     "tool-image-url": ConfigKeySpec(("tool", "image_url"), _str_value),
     "session-id": ConfigKeySpec(("session", "id"), _str_value),
     "ttl": ConfigKeySpec(("session", "ttl"), _positive_int_value),
-    "workspace": ConfigKeySpec(("session", "workspace"), _str_value),
-    "dst-dir": ConfigKeySpec(("session", "dst_dir"), _str_value),
     "git-config": ConfigKeySpec(("session", "git_config"), _str_value),
 }
 
@@ -254,7 +251,6 @@ def build_default_sandbox_config() -> dict[str, Any]:
         },
         "session": {
             "ttl": DEFAULT_SESSION_TTL,
-            "workspace": DEFAULT_SESSION_WORKSPACE,
         },
     }
 

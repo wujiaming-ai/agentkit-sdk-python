@@ -38,14 +38,14 @@ def test_sandbox_config_set_initializes_defaults_and_redacts(tmp_path, monkeypat
     assert payload["tool"]["type"] == "CodeEnv"
     assert payload["tool"]["cpu"] == 4
     assert payload["session"]["ttl"] == 28800
-    assert payload["session"]["workspace"] == "/home/gem"
+    assert "workspace" not in payload["session"]
 
     list_result = runner.invoke(app, ["sandbox", "config", "--list"])
 
     assert list_result.exit_code == 0
     assert "sk-test-secret" not in list_result.output
     assert "api_key:" in list_result.output
-    assert "/home/gem" in list_result.output
+    assert "workspace" not in list_result.output
 
 
 def test_sandbox_config_help_has_no_subcommands():
@@ -73,7 +73,7 @@ def test_sandbox_config_rejects_removed_subcommands(tmp_path, monkeypatch):
     )
 
     assert result.exit_code != 0
-    assert "unexpected extra arguments" in result.output
+    assert "unexpected extra argument" in result.output.lower()
 
 
 def test_sandbox_config_set_option_accepts_repeated_key_values(tmp_path, monkeypatch):
@@ -170,7 +170,7 @@ def test_sandbox_config_list_option_prints_effective_config(tmp_path, monkeypatc
     assert "Wrote" in result.output
     assert "model:" in result.output
     assert "name: glm-5.2" in result.output
-    assert "workspace: /home/gem" in result.output
+    assert "workspace" not in result.output
 
 
 def test_sandbox_config_list_option_does_not_create_config(tmp_path, monkeypatch):
@@ -182,8 +182,23 @@ def test_sandbox_config_list_option_does_not_create_config(tmp_path, monkeypatch
 
     assert result.exit_code == 0
     assert "version: 1" in result.output
-    assert "workspace: /home/gem" in result.output
+    assert "workspace" not in result.output
     assert not (tmp_path / ".agentkit" / "sandbox.yaml").exists()
+
+
+def test_sandbox_config_rejects_removed_file_defaults(tmp_path, monkeypatch):
+    from agentkit.toolkit.cli.cli import app
+
+    monkeypatch.chdir(tmp_path)
+
+    for key in ("workspace", "dst-dir"):
+        result = runner.invoke(
+            app,
+            ["sandbox", "config", "--set", f"{key}=/tmp/out"],
+        )
+
+        assert result.exit_code != 0
+        assert f"unknown config key: {key}" in result.output
 
 
 def test_sandbox_config_set_option_rejects_non_key_value(tmp_path, monkeypatch):
