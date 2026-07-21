@@ -52,6 +52,7 @@ class _FakeSpanContext:
     def __init__(self, trace_id: int = 1, span_id: int = 2) -> None:
         self.trace_id = trace_id
         self.span_id = span_id
+        self.is_valid = True
 
 
 class _FakeSpan:
@@ -416,6 +417,20 @@ def test_server_finish_request_covers_status_error_cancel_and_idempotency(caplog
 
     assert telemetry.request_count.adds[-1][1]["agentkit.operation.outcome"] == "cancelled"
     assert cancelled_span.attributes["agentkit.operation.outcome"] == "cancelled"
+
+    ended_span = _FakeSpan(recording=False)
+    ended = server_tel.RequestTelemetryState(
+        span=ended_span,
+        path="/run",
+        method="POST",
+        start_ns=0,
+        owns_span=False,
+    )
+    telemetry.finish_server_request(ended, status_code=200)
+
+    assert telemetry.request_count.adds[-1][1]["agentkit.operation.outcome"] == "success"
+    assert ended_span.attributes == {}
+    assert ended_span.statuses == []
 
     class BrokenMetric:
         def add(self, *args, **kwargs):

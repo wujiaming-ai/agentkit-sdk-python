@@ -80,6 +80,16 @@ def _span_is_valid(span: Span) -> bool:
         return False
 
 
+def _set_attribute_if_recording(span: Span, key: str, value: Any) -> None:
+    if _span_is_valid(span):
+        span.set_attribute(key, value)
+
+
+def _set_status_if_recording(span: Span, status: Status) -> None:
+    if _span_is_valid(span):
+        span.set_status(status)
+
+
 def exception_message(exception: BaseException) -> str:
     message = str(exception)
     return message if message else type(exception).__name__
@@ -191,11 +201,11 @@ class Telemetry:
         if not hasattr(span, "set_attribute"):
             return
         if session_id:
-            span.set_attribute("gen_ai.session.id", session_id)
+            _set_attribute_if_recording(span, "gen_ai.session.id", session_id)
         if user_id:
-            span.set_attribute("enduser.id", user_id)
+            _set_attribute_if_recording(span, "enduser.id", user_id)
         if invocation_id:
-            span.set_attribute("agentkit.invocation.id", invocation_id)
+            _set_attribute_if_recording(span, "agentkit.invocation.id", invocation_id)
 
     def record_current_exception(self, exception: BaseException) -> None:
         state = self.current_request()
@@ -223,10 +233,14 @@ class Telemetry:
         if exception is not None:
             self.handle_exception(state.span, exception)
         elif state.status_code is not None and state.status_code >= 500:
-            state.span.set_status(Status(StatusCode.ERROR))
+            _set_status_if_recording(state.span, Status(StatusCode.ERROR))
 
         if state.status_code is not None:
-            state.span.set_attribute("http.response.status_code", state.status_code)
+            _set_attribute_if_recording(
+                state.span,
+                "http.response.status_code",
+                state.status_code,
+            )
 
         outcome = "success"
         if isinstance(exception, (asyncio.CancelledError, GeneratorExit)):
@@ -260,7 +274,7 @@ class Telemetry:
             except Exception:
                 logger.warning("Failed to record AgentKit server metrics.", exc_info=True)
 
-        state.span.set_attribute("agentkit.operation.outcome", outcome)
+        _set_attribute_if_recording(state.span, "agentkit.operation.outcome", outcome)
         if state.owns_span:
             state.span.end()
         if state.span_context_token is not None:
@@ -338,13 +352,14 @@ class Telemetry:
     def handle_exception(span: Span, exception: BaseException) -> None:
         if not span or not span.is_recording():
             return
-        span.set_status(
+        _set_status_if_recording(
+            span,
             Status(
                 status_code=StatusCode.ERROR,
                 description=f"{type(exception).__name__}: {exception}",
-            )
+            ),
         )
-        span.set_attribute("error.type", type(exception).__name__)
+        _set_attribute_if_recording(span, "error.type", type(exception).__name__)
         if isinstance(exception, Exception):
             span.record_exception(exception)
 
